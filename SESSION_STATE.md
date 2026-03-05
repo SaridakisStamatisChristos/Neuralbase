@@ -1,6 +1,6 @@
 session: 12
-timestamp: 2026-03-05T02:00:00+02:00
-status: COMPLETE — Session 12 fully satisfied (DQN join-order optimizer: aligned training selectivities to bench cost model; added 3 missing FK pairs; retrained 300k steps → 21/22 = 95.5% win rate; 495 passed / 0 failed / 2 ignored; SESSION_STATE + BENCH_BASELINES updated)
+timestamp: 2026-03-05T04:00:00+02:00
+status: COMPLETE — Session 12 fully satisfied (DQN join-order optimizer: aligned training selectivities to bench cost model, added 3 missing FK pairs, retrained 300k steps → 21/22 = 95.5%; extended to 600k steps → 22/22 = 100% win rate; 25 bench tests pass; 0 failures; SESSION_STATE + BENCH_BASELINES + CHANGELOG + SESSIONS_v2 updated)
 
 completed_modules:
   # ── Session 1: Foundation ─────────────────────────────────────────
@@ -376,7 +376,21 @@ completed_modules:
       Session 11 auth section appended: 6 invariants (SCRAM ClientProof,
       server_signature, MD5 chain, IP TOCTOU, auth bypass, non-fatal parse),
       reviewer checklist, RFC 5802 reference.
-  # ── Session 12: DQN optimizer selectivity alignment ────────────────────────────
+  # ── Session 12: DQN optimizer — selectivity alignment + 600k training ───────
+  - name: dqn_selectivity_alignment_and_600k_training
+    path: /optimizer/training/train.py, /src/optimizer.rs, /optimizer/model/neuralbase_optimizer.onnx
+    effective_confidence: 0.87
+    status: complete
+    note: >
+      Root cause of 6 persistent bench failures: SELECTIVITY dict in train.py used
+      empirical FK ratios (up to 15,000× off bench formula). Fixed all 7 entries to
+      1/max(NDV_left, NDV_right); added 3 missing FK pairs. Updated TPCH_FK_SEL in
+      optimizer.rs to match. Retrained 300k steps → 21/22 = 95.5%. Extended to
+      600k steps → Q20 ties naive at 101150 → 22/22 = 100% win rate.
+      recent_avg converged -2.5 → -0.4 (300k) → -0.3 (600k).
+      Backup: optimizer/model/neuralbase_optimizer_300k.onnx.
+      All 25 bench tests pass (0 failed / 0 ignored).
+  # ── (kept for historical detail) ──
   - name: dqn_selectivity_alignment
     path: /optimizer/training/train.py, /src/optimizer.rs
     effective_confidence: 0.82
@@ -531,11 +545,11 @@ next_tasks:
     task: "Session 13: Wire auth challenge into PostgreSQL wire-protocol startup sequence (AuthenticationMD5Password / AuthenticationSASL frames). Add CI step to install NASM and build with --features tls."
     estimated_confidence_gain: "+0.06 for tls effective_confidence (0.78->0.84) + wire-level auth frames"
   - priority: 2
-    task: "Session 13: Investigate and fix Q20 (supplier+nation+partsupp+part, +1.9% miss). Consider longer training (500k steps) or Q20-weighted episode sampling."
-    estimated_confidence_gain: "+0.02 win_rate (95.5%->100%)"
-  - priority: 3
     task: "Session 13: Measure SF=1 benchmarks on pinned hardware and replace projected baselines in BENCH_BASELINES.yaml."
     estimated_confidence_gain: "+0.10 for tpch_bench_sf1_sf10_stubs effective_confidence (0.55->0.65)"
+  - priority: 3
+    task: "Session 13: Add bench_storage_executor_scan benchmark to substantiate NB v2 codec + RocksDB CF_DATA tuning performance claims."
+    estimated_confidence_gain: "+0.08 lifting binary_row_codec_nb_v2_wired effective_confidence"
 
 open_invariants:
   - "NB v2 typed codec: wired into production (session 10 hotfix complete). No open invariants on codec."
@@ -564,8 +578,8 @@ benchmark_baselines:
       LOCKED. First real measurement (session 10). Supersedes fabricated
       1.1 ms entry (confidence 0.67, never actually run). ~9M rows/s scalar.
   - name: optimizer_a_b_win_rate
-    result: "20/22 TPC-H graphs win >= naive (90.9%)"
-    timestamp: "2026-03-02T20:00:00+02:00"
+    result: "22/22 TPC-H queries win >= naive (100.0%) — Session 12 / 600k model"
+    timestamp: "2026-03-05T04:00:00+02:00"
 
 pending_benchmarks:
   - name: bench_storage_executor_scan

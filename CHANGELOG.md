@@ -12,15 +12,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are Euro
 
 | Item                   | Result                        |
 |------------------------|-------------------------------|
-| Training steps         | 300,000                       |
+| Training steps         | 600,000 (started at 300k)    |
 | Hardware               | RTX 4060 8 GB                 |
-| Reward improvement     | -2.5 → -0.4  (84% gain)      |
+| Reward improvement     | -2.5 → -0.4 → -0.3           |
 | Seed model win rate    | 90.9% (20/22)                 |
-| Trained model win rate | **95.5% (21/22)**             |
-| Production model       | Trained ✓                     |
-| Threshold met (80%)    | ✓                             |
+| After 300k steps       | 95.5% (21/22)                 |
+| After 600k steps       | **100.0% (22/22)**            |
+| Q20 fixed              | ✓ (ties naive at 101150)     |
+| Threshold met (80%)    | ✓ (perfect)                   |
 
-### Fixed — Session 12 (RL Optimizer: Selectivity Alignment)
+### Fixed — Session 12 (RL Optimizer: Selectivity Alignment + Full Training)
 
 - `optimizer/training/train.py` — `SELECTIVITY` dict replaced with bench-formula
   values (`1/max(NDV_left, NDV_right)` where NDV = row_count); divergence was up to
@@ -29,19 +30,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are Euro
     `lineitem↔partsupp` (were silently defaulting to 0.01, a ~6,000× error)
   - Reward signal now teaches the same cost objective the bench evaluates;
     `recent_avg` improved from -10.5 → -0.4 over 300k steps
+- `optimizer/training/train.py` — Extended from 300k to 600k steps with
+  `--epsilon-decay 100000`. Reward stabilised at recent_avg -0.3. Q20
+  (`supplier + nation + partsupp + part`, previously +1.9% above naive) now ties
+  naive cost at 101,150 — counted as RL win (RL cost ≤ naive cost).
 - `src/optimizer.rs` — `TPCH_FK_SEL` updated to match corrected selectivities;
   3 new FK pairs added so the inference-time `SEL_FEAT` matrix is byte-identical
   to the training-time `_SEL_FEAT` matrix
 - `src/optimizer.rs` — unit test `state_vector_encodes_selectivity_for_known_fk_pair`
   updated to expect new bench-formula value
-- `tests/perf/BENCH_BASELINES.yaml` — `rl_optimizer_ab_win_rate_tpch` baseline added
-  (95.5%, confidence 0.82, session 12)
+- `optimizer/model/neuralbase_optimizer.onnx` — Updated to 600k-step trained model
+- `optimizer/model/neuralbase_optimizer_300k.onnx` — Backup of 300k/95.5% model retained
+- `tests/perf/BENCH_BASELINES.yaml` — `rl_optimizer_ab_win_rate_tpch` baseline updated
+  to 100.0% (22/22, confidence 0.87, session 12)
 
-### Result
+### Result — Session 12
 
-- 21/22 TPC-H queries: RL ≤ naive cost  (Q2: −82.4%, Q5: −7.3%, Q10: −7.3%, Q21: −0.4%, …)
-- Q20 remains 1.9% above naive (single failure, acceptable)
-- All 495+ tests pass; 0 clippy warnings
+- 22/22 TPC-H queries: RL ≤ naive cost  (Q2: −82.8%, Q5: −7.3%, Q10: −7.3%, Q21: −0.4%, …)
+- All 25 bench tests pass; 0 failures; 0 ignored; perfect 100% win rate
 
 ---
 

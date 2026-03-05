@@ -366,25 +366,27 @@ Replace the heuristic seed ONNX model with genuinely trained DQN weights. Run `t
 
 | Item                   | Result                        |
 |------------------------|-------------------------------|
-| Training steps         | 300,000                       |
+| Training steps         | 600,000 (started at 300k)    |
 | Hardware               | RTX 4060 8 GB                 |
-| Reward improvement     | -2.5 → -0.4 (84% gain)       |
+| Reward improvement     | -2.5 → -0.4 → -0.3           |
 | Seed model win rate    | 90.9% (20/22)                 |
-| Trained model win rate | **95.5% (21/22)**             |
-| Production model       | Trained ✓                     |
-| Threshold met (80%)    | ✓                             |
+| After 300k steps       | 95.5% (21/22)                 |
+| After 600k steps       | **100.0% (22/22)**            |
+| Q20 fixed              | ✓ (ties naive at 101150)     |
+| Threshold met (80%)    | ✓ (perfect)                   |
 
 **Root cause fixed:** `SELECTIVITY` dict in `train.py` used empirical FK ratios
 (e.g. `customer→orders = 0.1`) while the bench formula computes
 `1/max(NDV_left, NDV_right)` where NDV defaults to `row_count` — up to 15,000× off.
 Added 3 missing FK pairs (lineitem↔supplier, part↔lineitem, lineitem↔partsupp).
-Matching fix applied to `TPCH_FK_SEL` in `optimizer.rs` so state encoding is
-identical at training and inference time.
+Matching fix applied to `TPCH_FK_SEL` in `optimizer.rs`. Extended training to 600k
+steps; Q20 resolved (ties naive at 101,150). All 25 bench tests pass.
 
 ### Emit at End
 - `SESSION_STATE.md` (updated — session 12 complete)
-- `optimizer/model/neuralbase_optimizer.onnx` (trained weights)
-- `BENCH_BASELINES.yaml` (`rl_optimizer_ab_win_rate_tpch` baseline added)
+- `optimizer/model/neuralbase_optimizer.onnx` (600k trained weights)
+- `optimizer/model/neuralbase_optimizer_300k.onnx` (300k backup)
+- `BENCH_BASELINES.yaml` (`rl_optimizer_ab_win_rate_tpch` 100.0%, confidence 0.87)
 
 ---
 
@@ -628,11 +630,11 @@ Package NeuralBase for Kubernetes deployment. Helm chart for a 3-node cluster wi
 
 | Session | Title | Priority | Status | Depends On |
 |---|---|---|---|---|
-| 8 | INSERT + Basic DML | CRITICAL | `pending` | 7 |
-| 9 | Full SQL Coverage | HIGH | `pending` | 8 |
-| 10 | Storage Benchmarks + Binary Codec | HIGH | `pending` | 9 |
-| 11 | Authentication + TLS | CRITICAL | `pending` | 10 |
-| 12 | RL Optimizer Training | HIGH | `pending` | 11 |
+| 8 | INSERT + Basic DML | CRITICAL | `complete` | 7 |
+| 9 | Full SQL Coverage | HIGH | `complete` | 8 |
+| 10 | Storage Benchmarks + Binary Codec | HIGH | `complete` | 9 |
+| 11 | Authentication + TLS | CRITICAL | `complete` | 10 |
+| 12 | RL Optimizer Training (Real Weights) | HIGH | `complete` | 11 |
 | 13 | Fault Tolerance Hardening | CRITICAL | `pending` | 12 |
 | 14 | Connection Pooling + Advanced SQL | MEDIUM | `pending` | 13 |
 | 15 | Production Hardening + Security | HIGH | `pending` | 14 |
