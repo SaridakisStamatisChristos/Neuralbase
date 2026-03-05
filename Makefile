@@ -1,5 +1,5 @@
 test:
-	cargo test --all-targets --locked
+	cargo test --features tls --tests --locked
 
 lint:
 	cargo fmt --all -- --check
