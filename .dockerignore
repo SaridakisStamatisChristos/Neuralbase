@@ -1,0 +1,13 @@
+target/
+.git/
+.gitignore
+*.md
+tests/
+docker-compose.yml
+Dockerfile
+SESSIONS.md
+SESSION_STATE.md
+CONFIDENCE.yaml
+CONFIDENCE.md
+REVIEW_REQUIRED.md
+ops/

@@ -1,0 +1,5 @@
+[env]
+LIBCLANG_PATH = "C:\\Program Files\\LLVM\\bin"
+
+[build]
+jobs = 2

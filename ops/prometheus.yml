@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: Apache-2.0
+# Prometheus scrape configuration for the NeuralBase cluster.
+#
+# Each node exposes /metrics on port 9090.  The Prometheus container
+# scrapes all three nodes and provides federation to Grafana.
+#
+# Dashboard import:
+#   • Grafana → Dashboards → Import → upload ops/grafana-dashboard.json
+
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "neuralbase"
+    static_configs:
+      - targets:
+          - "node1:9090"
+          - "node2:9090"
+          - "node3:9090"
+        labels:
+          cluster: "neuralbase-local"
+    metrics_path: /metrics
+    scrape_timeout: 10s
+
+  - job_name: "prometheus-self"
+    static_configs:
+      - targets: ["localhost:9090"]

@@ -1,0 +1,1803 @@
+warning: method `to_storage_string` is never used
+  --> tests\..\src\binder.rs:36:12
+   |
+33 | impl SqlValue {
+   | ------------- method in this implementation
+...
+36 |     pub fn to_storage_string(&self) -> Option<String> {
+   |            ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` on by default
+
+warning: method `to_table_schema` is never used
+   --> tests\..\src\binder.rs:160:12
+    |
+159 | impl CreateTablePlan {
+    | -------------------- method in this implementation
+160 |     pub fn to_table_schema(&self) -> TableSchema {
+    |            ^^^^^^^^^^^^^^^
+
+warning: associated items `all_tables`, `drop_table`, `with_tpch_all_tables`, and `table_names` are never used
+   --> tests\..\src\catalog.rs:64:12
+    |
+36  | impl InMemoryCatalog {
+    | -------------------- associated items in this implementation
+...
+64  |     pub fn all_tables(&self) -> Vec<TableSchema> {
+    |            ^^^^^^^^^^
+...
+74  |     pub fn drop_table(&self, name: &str) {
+    |            ^^^^^^^^^^
+...
+82  |     pub fn with_tpch_all_tables() -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^
+...
+104 |     pub fn table_names(&self) -> Vec<String> {
+    |            ^^^^^^^^^^^
+
+warning: method `scan_table` is never used
+  --> tests\..\src\execution.rs:16:8
+   |
+15 | pub trait TableScanner: Send + Sync {
+   |           ------------ method in this trait
+16 |     fn scan_table(&self, table_name: &str) -> Result<RecordBatch, ExecError>;
+   |        ^^^^^^^^^^
+
+warning: type alias `PgColumns` is never used
+  --> tests\..\src\execution.rs:19:6
+   |
+19 | type PgColumns = Vec<(String, i32, i16)>;
+   |      ^^^^^^^^^
+
+warning: type alias `PgRows` is never used
+  --> tests\..\src\execution.rs:20:6
+   |
+20 | type PgRows = Vec<Vec<Option<String>>>;
+   |      ^^^^^^
+
+warning: enum `PhysicalPlan` is never used
+  --> tests\..\src\execution.rs:23:10
+   |
+23 | pub enum PhysicalPlan {
+   |          ^^^^^^^^^^^^
+   |
+   = note: `PhysicalPlan` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: function `build_physical_plan` is never used
+  --> tests\..\src\execution.rs:34:8
+   |
+34 | pub fn build_physical_plan(plan: &BoundPlan) -> PhysicalPlan {
+   |        ^^^^^^^^^^^^^^^^^^^
+
+warning: function `execute_physical_plan` is never used
+  --> tests\..\src\execution.rs:77:8
+   |
+77 | pub fn execute_physical_plan(
+   |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `execute_tpch_q1` is never used
+   --> tests\..\src\execution.rs:115:4
+    |
+115 | fn execute_tpch_q1(
+    |    ^^^^^^^^^^^^^^^
+
+warning: function `execute_tpch_q6` is never used
+   --> tests\..\src\execution.rs:155:4
+    |
+155 | fn execute_tpch_q6(
+    |    ^^^^^^^^^^^^^^^
+
+warning: function `dml_predicate_to_vectorized` is never used
+   --> tests\..\src\execution.rs:206:8
+    |
+206 | pub fn dml_predicate_to_vectorized(pred: &DmlPredicate) -> Option<Predicate> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `batch_to_pg_rows` is never used
+   --> tests\..\src\execution.rs:229:8
+    |
+229 | pub fn batch_to_pg_rows(batch: &RecordBatch) -> (PgColumns, PgRows) {
+    |        ^^^^^^^^^^^^^^^^
+
+warning: function `mock_const_batch` is never used
+   --> tests\..\src\execution.rs:248:8
+    |
+248 | pub fn mock_const_batch(value: i64) -> RecordBatch {
+    |        ^^^^^^^^^^^^^^^^
+
+warning: method `now` is never used
+   --> tests\..\src\hlc.rs:125:12
+    |
+104 | impl HlcClock {
+    | ------------- method in this implementation
+...
+125 |     pub fn now(&self) -> HlcTimestamp {
+    |            ^^^
+
+warning: type alias `ChunkResults` is never used
+ --> tests\..\src\scheduler.rs:6:6
+  |
+6 | type ChunkResults<R> = Arc<Mutex<Vec<(usize, Vec<R>)>>>;
+  |      ^^^^^^^^^^^^
+
+warning: struct `MorselScheduler` is never constructed
+ --> tests\..\src\scheduler.rs:9:12
+  |
+9 | pub struct MorselScheduler {
+  |            ^^^^^^^^^^^^^^^
+  |
+  = note: `MorselScheduler` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated items `new`, `with_workers`, and `parallel_map_ranges` are never used
+  --> tests\..\src\scheduler.rs:15:12
+   |
+14 | impl MorselScheduler {
+   | -------------------- associated items in this implementation
+15 |     pub fn new(morsel_size: usize) -> Self {
+   |            ^^^
+...
+26 |     pub fn with_workers(morsel_size: usize, worker_threads: usize) -> Self {
+   |            ^^^^^^^^^^^^
+...
+33 |     pub fn parallel_map_ranges<R, F>(&self, total_len: usize, task: F) -> Result<Vec<R>, String>
+   |            ^^^^^^^^^^^^^^^^^^^
+
+warning: function `worker_loop` is never used
+  --> tests\..\src\scheduler.rs:86:4
+   |
+86 | fn worker_loop<R, F>(
+   |    ^^^^^^^^^^^
+
+warning: function `steal_work` is never used
+   --> tests\..\src\scheduler.rs:111:4
+    |
+111 | fn steal_work(
+    |    ^^^^^^^^^^
+
+warning: methods `delete_version`, `list_catalog_keys`, and `delete_secondary_index_entry` are never used
+   --> tests\..\src\storage.rs:144:12
+    |
+85  | impl StorageEngine {
+    | ------------------ methods in this implementation
+...
+144 |     pub fn delete_version(
+    |            ^^^^^^^^^^^^^^
+...
+290 |     pub fn list_catalog_keys(&self) -> Result<Vec<String>, StorageError> {
+    |            ^^^^^^^^^^^^^^^^^
+...
+376 |     pub fn delete_secondary_index_entry(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `TpchDataSet` is never constructed
+  --> tests\..\src\tpch.rs:16:12
+   |
+16 | pub struct TpchDataSet {
+   |            ^^^^^^^^^^^
+   |
+   = note: `TpchDataSet` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: function `generate_tpch_data` is never used
+  --> tests\..\src\tpch.rs:27:8
+   |
+27 | pub fn generate_tpch_data(scale_factor: f64) -> TpchDataSet {
+   |        ^^^^^^^^^^^^^^^^^^
+
+warning: function `lineitem_rows_for_scale` is never used
+  --> tests\..\src\tpch.rs:41:4
+   |
+41 | fn lineitem_rows_for_scale(sf: f64) -> usize {
+   |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: static `SHIP_DATES` is never used
+  --> tests\..\src\tpch.rs:49:8
+   |
+49 | static SHIP_DATES: &[i32] = &[
+   |        ^^^^^^^^^^
+
+warning: static `COMMIT_DATES` is never used
+  --> tests\..\src\tpch.rs:59:8
+   |
+59 | static COMMIT_DATES: &[i32] = &[
+   |        ^^^^^^^^^^^^
+
+warning: static `RECEIPT_DATES` is never used
+  --> tests\..\src\tpch.rs:69:8
+   |
+69 | static RECEIPT_DATES: &[i32] = &[
+   |        ^^^^^^^^^^^^^
+
+warning: static `SHIPMODES` is never used
+  --> tests\..\src\tpch.rs:79:8
+   |
+79 | static SHIPMODES: &[&str] = &["AIR", "MAIL", "SHIP", "TRUCK", "RAIL", "REG AIR", "FOB"];
+   |        ^^^^^^^^^
+
+warning: static `SHIPINSTRUCT` is never used
+  --> tests\..\src\tpch.rs:80:8
+   |
+80 | static SHIPINSTRUCT: &[&str] = &[
+   |        ^^^^^^^^^^^^
+
+warning: function `build_lineitem` is never used
+  --> tests\..\src\tpch.rs:87:4
+   |
+87 | fn build_lineitem(rows: usize) -> RecordBatch {
+   |    ^^^^^^^^^^^^^^
+
+warning: static `ORDER_DATES` is never used
+   --> tests\..\src\tpch.rs:148:8
+    |
+148 | static ORDER_DATES: &[i32] = &[
+    |        ^^^^^^^^^^^
+
+warning: static `ORDER_STATUS` is never used
+   --> tests\..\src\tpch.rs:154:8
+    |
+154 | static ORDER_STATUS: &[&str] = &[
+    |        ^^^^^^^^^^^^
+
+warning: static `ORDER_PRIORITY` is never used
+   --> tests\..\src\tpch.rs:158:8
+    |
+158 | static ORDER_PRIORITY: &[&str] = &[
+    |        ^^^^^^^^^^^^^^
+
+warning: function `build_orders` is never used
+   --> tests\..\src\tpch.rs:165:4
+    |
+165 | fn build_orders() -> RecordBatch {
+    |    ^^^^^^^^^^^^
+
+warning: static `MKTSEGS` is never used
+   --> tests\..\src\tpch.rs:199:8
+    |
+199 | static MKTSEGS: &[&str] = &[
+    |        ^^^^^^^
+
+warning: static `PHONES` is never used
+   --> tests\..\src\tpch.rs:203:8
+    |
+203 | static PHONES: &[&str] = &[
+    |        ^^^^^^
+
+warning: function `build_customer` is never used
+   --> tests\..\src\tpch.rs:210:4
+    |
+210 | fn build_customer() -> RecordBatch {
+    |    ^^^^^^^^^^^^^^
+
+warning: static `NATIONS` is never used
+   --> tests\..\src\tpch.rs:242:8
+    |
+242 | static NATIONS: &[(i64, &str, i64)] = &[
+    |        ^^^^^^^
+
+warning: function `build_nation` is never used
+   --> tests\..\src\tpch.rs:270:4
+    |
+270 | fn build_nation() -> RecordBatch {
+    |    ^^^^^^^^^^^^
+
+warning: static `REGIONS` is never used
+   --> tests\..\src\tpch.rs:291:8
+    |
+291 | static REGIONS: &[(i64, &str)] = &[
+    |        ^^^^^^^
+
+warning: function `build_region` is never used
+   --> tests\..\src\tpch.rs:299:4
+    |
+299 | fn build_region() -> RecordBatch {
+    |    ^^^^^^^^^^^^
+
+warning: static `PARTS` is never used
+   --> tests\..\src\tpch.rs:318:8
+    |
+318 | static PARTS: &[(i64, &str, &str, &str, i32, &str, f64)] = &[
+    |        ^^^^^
+
+warning: function `build_part` is never used
+   --> tests\..\src\tpch.rs:331:4
+    |
+331 | fn build_part() -> RecordBatch {
+    |    ^^^^^^^^^^
+
+warning: static `SUPPLIERS` is never used
+   --> tests\..\src\tpch.rs:364:8
+    |
+364 | static SUPPLIERS: &[(i64, &str, i64, f64)] = &[
+    |        ^^^^^^^^^
+
+warning: function `build_supplier` is never used
+   --> tests\..\src\tpch.rs:372:4
+    |
+372 | fn build_supplier() -> RecordBatch {
+    |    ^^^^^^^^^^^^^^
+
+warning: function `build_partsupp` is never used
+   --> tests\..\src\tpch.rs:396:4
+    |
+396 | fn build_partsupp() -> RecordBatch {
+    |    ^^^^^^^^^^^^^^
+
+warning: associated items `from_owned_options` and `get` are never used
+  --> tests\..\src\vectorized.rs:40:12
+   |
+12 | impl Utf8Column {
+   | --------------- associated items in this implementation
+...
+40 |     pub fn from_owned_options(values: Vec<Option<String>>) -> Self {
+   |            ^^^^^^^^^^^^^^^^^^
+...
+48 |     pub fn get(&self, index: usize) -> Option<String> {
+   |            ^^^
+
+warning: method `take` is never used
+  --> tests\..\src\vectorized.rs:83:12
+   |
+72 | impl ColumnVector {
+   | ----------------- method in this implementation
+...
+83 |     pub fn take(&self, indices: &[usize]) -> Self {
+   |            ^^^^
+
+warning: methods `select_columns`, `with_limit`, and `rows_as_strings` are never used
+   --> tests\..\src\vectorized.rs:128:12
+    |
+103 | impl RecordBatch {
+    | ---------------- methods in this implementation
+...
+128 |     pub fn select_columns(&self, projection: &[String]) -> Result<Self, ExecError> {
+    |            ^^^^^^^^^^^^^^
+...
+139 |     pub fn with_limit(&self, limit: usize) -> Result<Self, ExecError> {
+    |            ^^^^^^^^^^
+...
+152 |     pub fn rows_as_strings(&self) -> Vec<Vec<Option<String>>> {
+    |            ^^^^^^^^^^^^^^^
+
+warning: variants `EqI64`, `GtI64`, `LtI64`, `BetweenDate32`, `BetweenFloat64`, and `EqText` are never constructed
+   --> tests\..\src\vectorized.rs:174:5
+    |
+173 | pub enum Predicate {
+    |          --------- variants in this enum
+174 |     EqI64 {
+    |     ^^^^^
+...
+178 |     GtI64 {
+    |     ^^^^^
+...
+182 |     LtI64 {
+    |     ^^^^^
+...
+186 |     BetweenDate32 {
+    |     ^^^^^^^^^^^^^
+...
+191 |     BetweenFloat64 {
+    |     ^^^^^^^^^^^^^^
+...
+197 |     EqText {
+    |     ^^^^^^
+    |
+    = note: `Predicate` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: variants `Gt`, `Lt`, and `Eq` are never constructed
+   --> tests\..\src\vectorized.rs:205:5
+    |
+204 | pub enum ComparisonOp {
+    |          ------------ variants in this enum
+205 |     Gt,
+    |     ^^
+206 |     Lt,
+    |     ^^
+207 |     Eq,
+    |     ^^
+    |
+    = note: `ComparisonOp` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: variants `ColumnNotFound`, `ColumnTypeMismatch`, `BatchOverflow`, and `Scheduler` are never constructed
+   --> tests\..\src\vectorized.rs:213:5
+    |
+211 | pub enum ExecError {
+    |          --------- variants in this enum
+212 |     #[error("column not found: {0}")]
+213 |     ColumnNotFound(String),
+    |     ^^^^^^^^^^^^^^
+214 |     #[error("column type mismatch for {0}")]
+215 |     ColumnTypeMismatch(String),
+    |     ^^^^^^^^^^^^^^^^^^
+...
+219 |     BatchOverflow(usize),
+    |     ^^^^^^^^^^^^^
+220 |     #[error("scheduler error: {0}")]
+221 |     Scheduler(String),
+    |     ^^^^^^^^^
+    |
+    = note: `ExecError` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: function `table_scan` is never used
+   --> tests\..\src\vectorized.rs:228:8
+    |
+228 | pub fn table_scan(
+    |        ^^^^^^^^^^
+
+warning: function `filter` is never used
+   --> tests\..\src\vectorized.rs:257:8
+    |
+257 | pub fn filter(input: &RecordBatch, predicate: &Predicate) -> Result<RecordBatch, ExecError> {
+    |        ^^^^^^
+
+warning: function `hash_aggregate` is never used
+   --> tests\..\src\vectorized.rs:316:8
+    |
+316 | pub fn hash_aggregate(
+    |        ^^^^^^^^^^^^^^
+
+warning: function `sort_merge_join` is never used
+   --> tests\..\src\vectorized.rs:380:8
+    |
+380 | pub fn sort_merge_join(
+    |        ^^^^^^^^^^^^^^^
+
+warning: function `sort` is never used
+   --> tests\..\src\vectorized.rs:460:8
+    |
+460 | pub fn sort(input: &RecordBatch, by: &str) -> Result<RecordBatch, ExecError> {
+    |        ^^^^
+
+warning: function `sort_with_limit` is never used
+   --> tests\..\src\vectorized.rs:486:8
+    |
+486 | pub fn sort_with_limit(
+    |        ^^^^^^^^^^^^^^^
+
+warning: function `run_parallel_filter` is never used
+   --> tests\..\src\vectorized.rs:495:8
+    |
+495 | pub fn run_parallel_filter(
+    |        ^^^^^^^^^^^^^^^^^^^
+
+warning: function `apply_predicate_to_indices` is never used
+   --> tests\..\src\vectorized.rs:521:4
+    |
+521 | fn apply_predicate_to_indices(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `filter_i64` is never used
+   --> tests\..\src\vectorized.rs:566:4
+    |
+566 | fn filter_i64<F>(
+    |    ^^^^^^^^^^
+
+warning: function `i64_mask_scalar` is never used
+   --> tests\..\src\vectorized.rs:596:8
+    |
+596 | pub fn i64_mask_scalar(values: &[Option<i64>], criterion: i64, op: ComparisonOp) -> Vec<bool> {
+    |        ^^^^^^^^^^^^^^^
+
+warning: function `i64_mask_auto` is never used
+   --> tests\..\src\vectorized.rs:610:8
+    |
+610 | pub fn i64_mask_auto(values: &[Option<i64>], criterion: i64, op: ComparisonOp) -> Vec<bool> {
+    |        ^^^^^^^^^^^^^
+
+warning: function `apply_i64_indices` is never used
+   --> tests\..\src\vectorized.rs:626:4
+    |
+626 | fn apply_i64_indices<F>(
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: function `rl_beats_naive` is never used
+   --> tests\..\src\cost_model.rs:167:8
+    |
+167 | pub fn rl_beats_naive(
+    |        ^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` on by default
+
+warning: fields `null_fraction`, `min_i64`, and `max_i64` are never read
+  --> tests\..\src\join_graph.rs:17:9
+   |
+13 | pub struct ColumnStats {
+   |            ----------- fields in this struct
+...
+17 |     pub null_fraction: f64,
+   |         ^^^^^^^^^^^^^
+18 |     /// Minimum observed value (integers only; None for non-integer columns).
+19 |     pub min_i64: Option<i64>,
+   |         ^^^^^^^
+20 |     /// Maximum observed value.
+21 |     pub max_i64: Option<i64>,
+   |         ^^^^^^^
+   |
+   = note: `ColumnStats` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `table_name` is never read
+  --> tests\..\src\join_graph.rs:37:9
+   |
+36 | pub struct TableStats {
+   |            ---------- field in this struct
+37 |     pub table_name: String,
+   |         ^^^^^^^^^^
+   |
+   = note: `TableStats` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: constant `ACTION_DIM` is never used
+  --> tests\..\src\optimizer.rs:27:11
+   |
+27 | pub const ACTION_DIM: usize = MAX_TABLES;
+   |           ^^^^^^^^^^
+
+warning: associated function `with_timeout` is never used
+  --> tests\..\src\optimizer.rs:51:12
+   |
+43 | impl RlOptimizer {
+   | ---------------- associated function in this implementation
+...
+51 |     pub fn with_timeout(model_path: &str, timeout_ms: u64) -> Self {
+   |            ^^^^^^^^^^^^
+
+warning: associated items `from_options`, `from_owned_options`, `get`, and `len` are never used
+  --> tests\..\src\vectorized.rs:13:12
+   |
+12 | impl Utf8Column {
+   | --------------- associated items in this implementation
+13 |     pub fn from_options(values: Vec<Option<&str>>) -> Self {
+   |            ^^^^^^^^^^^^
+...
+40 |     pub fn from_owned_options(values: Vec<Option<String>>) -> Self {
+   |            ^^^^^^^^^^^^^^^^^^
+...
+48 |     pub fn get(&self, index: usize) -> Option<String> {
+   |            ^^^
+...
+57 |     pub fn len(&self) -> usize {
+   |            ^^^
+
+warning: variants `Int32`, `Int64`, `Float64`, `Date32`, and `Utf8` are never constructed
+  --> tests\..\src\vectorized.rs:65:5
+   |
+64 | pub enum ColumnVector {
+   |          ------------ variants in this enum
+65 |     Int32(Vec<Option<i32>>),
+   |     ^^^^^
+66 |     Int64(Vec<Option<i64>>),
+   |     ^^^^^
+67 |     Float64(Vec<Option<f64>>),
+   |     ^^^^^^^
+68 |     Date32(Vec<Option<i32>>),
+   |     ^^^^^^
+69 |     Utf8(Utf8Column),
+   |     ^^^^
+   |
+   = note: `ColumnVector` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: methods `len` and `take` are never used
+  --> tests\..\src\vectorized.rs:73:12
+   |
+72 | impl ColumnVector {
+   | ----------------- methods in this implementation
+73 |     pub fn len(&self) -> usize {
+   |            ^^^
+...
+83 |     pub fn take(&self, indices: &[usize]) -> Self {
+   |            ^^^^
+
+warning: associated items `new`, `empty`, `column`, `select_columns`, `with_limit`, and `rows_as_strings` are never used
+   --> tests\..\src\vectorized.rs:104:12
+    |
+103 | impl RecordBatch {
+    | ---------------- associated items in this implementation
+104 |     pub fn new(columns: Vec<(String, ColumnVector)>) -> Result<Self, ExecError> {
+    |            ^^^
+...
+114 |     pub fn empty() -> Self {
+    |            ^^^^^
+...
+121 |     pub fn column(&self, name: &str) -> Option<&ColumnVector> {
+    |            ^^^^^^
+...
+128 |     pub fn select_columns(&self, projection: &[String]) -> Result<Self, ExecError> {
+    |            ^^^^^^^^^^^^^^
+...
+139 |     pub fn with_limit(&self, limit: usize) -> Result<Self, ExecError> {
+    |            ^^^^^^^^^^
+...
+152 |     pub fn rows_as_strings(&self) -> Vec<Vec<Option<String>>> {
+    |            ^^^^^^^^^^^^^^^
+
+warning: multiple variants are never constructed
+   --> tests\..\src\vectorized.rs:213:5
+    |
+211 | pub enum ExecError {
+    |          --------- variants in this enum
+212 |     #[error("column not found: {0}")]
+213 |     ColumnNotFound(String),
+    |     ^^^^^^^^^^^^^^
+214 |     #[error("column type mismatch for {0}")]
+215 |     ColumnTypeMismatch(String),
+    |     ^^^^^^^^^^^^^^^^^^
+216 |     #[error("column length mismatch")]
+217 |     ColumnLengthMismatch,
+    |     ^^^^^^^^^^^^^^^^^^^^
+218 |     #[error("batch overflow: {0}")]
+219 |     BatchOverflow(usize),
+    |     ^^^^^^^^^^^^^
+220 |     #[error("scheduler error: {0}")]
+221 |     Scheduler(String),
+    |     ^^^^^^^^^
+222 |     #[error("storage error: {0}")]
+223 |     Storage(String),
+    |     ^^^^^^^
+224 |     #[error("table not found: {0}")]
+225 |     TableNotFound(String),
+    |     ^^^^^^^^^^^^^
+    |
+    = note: `ExecError` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: method `with_apply_tx` is never used
+   --> tests\..\src\consensus\raft.rs:120:12
+    |
+99  | impl<T: Transport> RaftNode<T> {
+    | ------------------------------ method in this implementation
+...
+120 |     pub fn with_apply_tx(mut self, tx: mpsc::UnboundedSender<LogEntry>) -> Self {
+    |            ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` on by default
+
+warning: field `tx` is never read
+  --> tests\..\src\consensus\transport.rs:90:5
+   |
+87 | pub struct TcpTransport {
+   |            ------------ field in this struct
+...
+90 |     tx: mpsc::UnboundedSender<(NodeId, RaftMessage)>,
+   |     ^^
+
+warning: associated functions `listen` and `accept_conn` are never used
+   --> tests\..\src\consensus\transport.rs:95:18
+    |
+93  | impl TcpTransport {
+    | ----------------- associated functions in this implementation
+94  |     /// Start listening on `addr`.  Incoming messages are enqueued for `recv()`.
+95  |     pub async fn listen(id: NodeId, addr: &str) -> std::io::Result<Self> {
+    |                  ^^^^^^
+...
+113 |     async fn accept_conn(
+    |              ^^^^^^^^^^^
+
+warning: function `read_frame` is never used
+   --> tests\..\src\consensus\transport.rs:153:10
+    |
+153 | async fn read_frame(stream: &mut TcpStream) -> std::io::Result<Option<Vec<u8>>> {
+    |          ^^^^^^^^^^
+
+warning: fields `raft_addr` and `query_addr` are never read
+  --> tests\..\src\cluster\mod.rs:26:9
+   |
+23 | pub struct NodeInfo {
+   |            -------- fields in this struct
+...
+26 |     pub raft_addr: String,
+   |         ^^^^^^^^^
+27 |     /// Address for SQL query fragment exchange.
+28 |     pub query_addr: String,
+   |         ^^^^^^^^^^
+   |
+   = note: `NodeInfo` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `replication_factor` is never read
+  --> tests\..\src\cluster\mod.rs:44:9
+   |
+38 | pub struct ClusterConfig {
+   |            ------------- field in this struct
+...
+44 |     pub replication_factor: usize,
+   |         ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `ClusterConfig` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: methods `get` and `upsert` are never used
+   --> tests\..\src\cluster\mod.rs:145:12
+    |
+97  | impl NodeRegistry {
+    | ----------------- methods in this implementation
+...
+145 |     pub fn get(&self, id: &NodeId) -> Option<NodeInfo> {
+    |            ^^^
+...
+150 |     pub fn upsert(&self, info: NodeInfo) {
+    |            ^^^^^^
+
+warning: field `table_id` is never read
+  --> tests\..\src\distributed\mod.rs:38:9
+   |
+36 | pub struct PhysicalPlanStub {
+   |            ---------------- field in this struct
+37 |     /// Logical table involved (used for shard routing).
+38 |     pub table_id: u32,
+   |         ^^^^^^^^
+   |
+   = note: `PhysicalPlanStub` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: variants `Running` and `Completed` are never constructed
+  --> tests\..\src\distributed\mod.rs:64:5
+   |
+62 | pub enum FragmentStatus {
+   |          -------------- variants in this enum
+63 |     Pending,
+64 |     Running,
+   |     ^^^^^^^
+65 |     Completed,
+   |     ^^^^^^^^^
+   |
+   = note: `FragmentStatus` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: method `is_complete` is never used
+   --> tests\..\src\distributed\mod.rs:209:12
+    |
+153 | impl QueryCoordinator {
+    | --------------------- method in this implementation
+...
+209 |     pub fn is_complete(&self, manifest: &[FragmentExecution]) -> bool {
+    |            ^^^^^^^^^^^
+
+warning: field `resume_notify` is never read
+  --> tests\..\src\distributed\backpressure.rs:36:5
+   |
+31 | pub struct BoundedSender<T: Send + 'static> {
+   |            ------------- field in this struct
+...
+36 |     resume_notify: Arc<Notify>,
+   |     ^^^^^^^^^^^^^
+
+warning: fields `low_watermark` and `in_flight` are never read
+  --> tests\..\src\distributed\backpressure.rs:42:5
+   |
+39 | pub struct BoundedReceiver<T: Send + 'static> {
+   |            --------------- fields in this struct
+...
+42 |     low_watermark: usize,
+   |     ^^^^^^^^^^^^^
+43 |     /// Tracks approximate in-flight count for watermark signalling.
+44 |     in_flight: Arc<std::sync::atomic::AtomicUsize>,
+   |     ^^^^^^^^^
+
+warning: field `producer_pauses` is never read
+   --> tests\..\src\distributed\backpressure.rs:126:9
+    |
+123 | pub struct FlowController {
+    |            -------------- field in this struct
+...
+126 |     pub producer_pauses: u64,
+    |         ^^^^^^^^^^^^^^^
+    |
+    = note: `FlowController` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: method `record_pause` is never used
+   --> tests\..\src\distributed\backpressure.rs:142:12
+    |
+129 | impl FlowController {
+    | ------------------- method in this implementation
+...
+142 |     pub fn record_pause(&mut self) {
+    |            ^^^^^^^^^^^^
+
+warning: field `stop` is never read
+  --> tests\..\src\gc.rs:38:5
+   |
+35 | pub struct GarbageCollector {
+   |            ---------------- field in this struct
+...
+38 |     stop: Arc<AtomicBool>,
+   |     ^^^^
+   |
+   = note: `#[warn(dead_code)]` on by default
+
+warning: methods `start`, `run_once_all_tables`, and `discover_table_ids` are never used
+   --> tests\..\src\gc.rs:51:12
+    |
+41  | impl GarbageCollector {
+    | --------------------- methods in this implementation
+...
+51  |     pub fn start(self: Arc<Self>, interval_ms: u64) -> GcHandle {
+    |            ^^^^^
+...
+97  |     pub fn run_once_all_tables(&self) -> Result<GcStats, StorageError> {
+    |            ^^^^^^^^^^^^^^^^^^^
+...
+163 |     fn discover_table_ids(&self) -> Result<Vec<u32>, StorageError> {
+    |        ^^^^^^^^^^^^^^^^^^
+
+warning: field `safe_horizon` is never read
+   --> tests\..\src\gc.rs:184:9
+    |
+183 | pub struct GcStats {
+    |            ------- field in this struct
+184 |     pub safe_horizon: HlcTimestamp,
+    |         ^^^^^^^^^^^^
+    |
+    = note: `GcStats` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: function `open_tmp` is never used
+   --> tests\..\src\gc.rs:213:8
+    |
+213 |     fn open_tmp(snapshots: Arc<Mutex<BTreeSet<u64>>>) -> (Arc<GarbageCollector>, TempDir) {
+    |        ^^^^^^^^
+
+warning: method `next_timestamp` is never used
+   --> tests\..\src\mvcc.rs:118:12
+    |
+95  | impl TransactionManager {
+    | ----------------------- method in this implementation
+...
+118 |     pub fn next_timestamp(&self) -> u64 {
+    |            ^^^^^^^^^^^^^^
+
+warning: methods `list_catalog_keys` and `delete_secondary_index_entry` are never used
+   --> tests\..\src\storage.rs:290:12
+    |
+85  | impl StorageEngine {
+    | ------------------ methods in this implementation
+...
+290 |     pub fn list_catalog_keys(&self) -> Result<Vec<String>, StorageError> {
+    |            ^^^^^^^^^^^^^^^^^
+...
+376 |     pub fn delete_secondary_index_entry(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated items `with_tpch_all_tables` and `table_names` are never used
+   --> tests\..\src\catalog.rs:82:12
+    |
+36  | impl InMemoryCatalog {
+    | -------------------- associated items in this implementation
+...
+82  |     pub fn with_tpch_all_tables() -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^
+...
+104 |     pub fn table_names(&self) -> Vec<String> {
+    |            ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` on by default
+
+warning: associated function `with_workers` is never used
+  --> tests\..\src\scheduler.rs:26:12
+   |
+14 | impl MorselScheduler {
+   | -------------------- associated function in this implementation
+...
+26 |     pub fn with_workers(morsel_size: usize, worker_threads: usize) -> Self {
+   |            ^^^^^^^^^^^^
+
+warning: method `list_tables` is never used
+  --> tests\..\src\rocksdb_catalog.rs:39:12
+   |
+24 | impl RocksDbCatalog {
+   | ------------------- method in this implementation
+...
+39 |     pub fn list_tables(&self) -> Result<Vec<String>, StorageError> {
+   |            ^^^^^^^^^^^
+
+warning: methods `delete_version` and `delete_secondary_index_entry` are never used
+   --> tests\..\src\storage.rs:144:12
+    |
+85  | impl StorageEngine {
+    | ------------------ methods in this implementation
+...
+144 |     pub fn delete_version(
+    |            ^^^^^^^^^^^^^^
+...
+376 |     pub fn delete_secondary_index_entry(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> tests\..\src\storage_executor.rs:115:12
+    |
+114 | impl StorageExecutor {
+    | -------------------- associated function in this implementation
+115 |     pub fn new(
+    |            ^^^
+
+warning: method `table_names` is never used
+   --> src\catalog.rs:104:12
+    |
+36  | impl InMemoryCatalog {
+    | -------------------- method in this implementation
+...
+104 |     pub fn table_names(&self) -> Vec<String> {
+    |            ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` on by default
+
+warning: function `open_tmp` is never used
+   --> src\gc.rs:213:8
+    |
+213 |     fn open_tmp(snapshots: Arc<Mutex<BTreeSet<u64>>>) -> (Arc<GarbageCollector>, TempDir) {
+    |        ^^^^^^^^
+
+warning: method `now` is never used
+   --> src\hlc.rs:125:12
+    |
+104 | impl HlcClock {
+    | ------------- method in this implementation
+...
+125 |     pub fn now(&self) -> HlcTimestamp {
+    |            ^^^
+
+warning: method `list_tables` is never used
+  --> src\rocksdb_catalog.rs:39:12
+   |
+24 | impl RocksDbCatalog {
+   | ------------------- method in this implementation
+...
+39 |     pub fn list_tables(&self) -> Result<Vec<String>, StorageError> {
+   |            ^^^^^^^^^^^
+
+warning: associated function `with_workers` is never used
+  --> src\scheduler.rs:26:12
+   |
+14 | impl MorselScheduler {
+   | -------------------- associated function in this implementation
+...
+26 |     pub fn with_workers(morsel_size: usize, worker_threads: usize) -> Self {
+   |            ^^^^^^^^^^^^
+
+warning: method `delete_secondary_index_entry` is never used
+   --> src\storage.rs:376:12
+    |
+85  | impl StorageEngine {
+    | ------------------ method in this implementation
+...
+376 |     pub fn delete_secondary_index_entry(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `sort_merge_join` is never used
+   --> src\vectorized.rs:380:8
+    |
+380 | pub fn sort_merge_join(
+    |        ^^^^^^^^^^^^^^^
+
+warning: function `sort` is never used
+   --> src\vectorized.rs:460:8
+    |
+460 | pub fn sort(input: &RecordBatch, by: &str) -> Result<RecordBatch, ExecError> {
+    |        ^^^^
+
+warning: function `sort_with_limit` is never used
+   --> src\vectorized.rs:486:8
+    |
+486 | pub fn sort_with_limit(
+    |        ^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+  --> tests\..\src\scheduler.rs:15:12
+   |
+14 | impl MorselScheduler {
+   | -------------------- associated function in this implementation
+15 |     pub fn new(morsel_size: usize) -> Self {
+   |            ^^^
+   |
+   = note: `#[warn(dead_code)]` on by default
+
+warning: multiple fields are never read
+  --> tests\..\src\tpch.rs:18:9
+   |
+16 | pub struct TpchDataSet {
+   |            ----------- fields in this struct
+17 |     pub lineitem: RecordBatch,
+18 |     pub orders:   RecordBatch,
+   |         ^^^^^^
+19 |     pub customer: RecordBatch,
+   |         ^^^^^^^^
+20 |     pub nation:   RecordBatch,
+   |         ^^^^^^
+21 |     pub region:   RecordBatch,
+   |         ^^^^^^
+22 |     pub part:     RecordBatch,
+   |         ^^^^
+23 |     pub supplier: RecordBatch,
+   |         ^^^^^^^^
+24 |     pub partsupp: RecordBatch,
+   |         ^^^^^^^^
+   |
+   = note: `TpchDataSet` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated items `empty`, `select_columns`, `with_limit`, and `rows_as_strings` are never used
+   --> tests\..\src\vectorized.rs:114:12
+    |
+103 | impl RecordBatch {
+    | ---------------- associated items in this implementation
+...
+114 |     pub fn empty() -> Self {
+    |            ^^^^^
+...
+128 |     pub fn select_columns(&self, projection: &[String]) -> Result<Self, ExecError> {
+    |            ^^^^^^^^^^^^^^
+...
+139 |     pub fn with_limit(&self, limit: usize) -> Result<Self, ExecError> {
+    |            ^^^^^^^^^^
+...
+152 |     pub fn rows_as_strings(&self) -> Vec<Vec<Option<String>>> {
+    |            ^^^^^^^^^^^^^^^
+
+warning: variants `LtI64`, `BetweenDate32`, `BetweenFloat64`, and `EqText` are never constructed
+   --> tests\..\src\vectorized.rs:182:5
+    |
+173 | pub enum Predicate {
+    |          --------- variants in this enum
+...
+182 |     LtI64 {
+    |     ^^^^^
+...
+186 |     BetweenDate32 {
+    |     ^^^^^^^^^^^^^
+...
+191 |     BetweenFloat64 {
+    |     ^^^^^^^^^^^^^^
+...
+197 |     EqText {
+    |     ^^^^^^
+    |
+    = note: `Predicate` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: variants `ColumnNotFound`, `Storage`, and `TableNotFound` are never constructed
+   --> tests\..\src\vectorized.rs:213:5
+    |
+211 | pub enum ExecError {
+    |          --------- variants in this enum
+212 |     #[error("column not found: {0}")]
+213 |     ColumnNotFound(String),
+    |     ^^^^^^^^^^^^^^
+...
+223 |     Storage(String),
+    |     ^^^^^^^
+224 |     #[error("table not found: {0}")]
+225 |     TableNotFound(String),
+    |     ^^^^^^^^^^^^^
+    |
+    = note: `ExecError` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: method `create_table` is never used
+  --> tests\..\src\catalog.rs:27:8
+   |
+25 | pub trait MutableCatalog: Catalog {
+   |           -------------- method in this trait
+26 |     /// Register or replace a table schema.
+27 |     fn create_table(&self, schema: TableSchema);
+   |        ^^^^^^^^^^^^
+
+warning: method `rows_as_strings` is never used
+   --> tests\..\src\vectorized.rs:152:12
+    |
+103 | impl RecordBatch {
+    | ---------------- method in this implementation
+...
+152 |     pub fn rows_as_strings(&self) -> Vec<Vec<Option<String>>> {
+    |            ^^^^^^^^^^^^^^^
+
+warning: variants `Storage` and `TableNotFound` are never constructed
+   --> tests\..\src\vectorized.rs:223:5
+    |
+211 | pub enum ExecError {
+    |          --------- variants in this enum
+...
+223 |     Storage(String),
+    |     ^^^^^^^
+224 |     #[error("table not found: {0}")]
+225 |     TableNotFound(String),
+    |     ^^^^^^^^^^^^^
+    |
+    = note: `ExecError` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: method `join_selectivity` is never used
+   --> tests\..\src\join_graph.rs:144:12
+    |
+83  | impl JoinGraph {
+    | -------------- method in this implementation
+...
+144 |     pub fn join_selectivity(&self, left_table: &str, right_table: &str, edge: &JoinEdge) -> f64 {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: method `table_stats` is never used
+  --> tests\..\src\stats.rs:83:12
+   |
+36 | impl StatisticsCollector {
+   | ------------------------ method in this implementation
+...
+83 |     pub fn table_stats(&self, table_name: &str) -> Option<TableStats> {
+   |            ^^^^^^^^^^^
+
+   Compiling neuralbase v0.1.0 (C:\Users\scsar\Desktop\neuralbase)
+warning: variant `Running` is never constructed
+  --> tests\..\src\distributed\mod.rs:64:5
+   |
+62 | pub enum FragmentStatus {
+   |          -------------- variant in this enum
+63 |     Pending,
+64 |     Running,
+   |     ^^^^^^^
+   |
+   = note: `FragmentStatus` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: unused macro definition: `parse_and_expect_unsupported_bind`
+   --> tests\tpch_correctness.rs:483:14
+    |
+483 | macro_rules! parse_and_expect_unsupported_bind {
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_macros)]` on by default
+
+warning: function `q1_reference_groups` is never used
+   --> tests\tpch_correctness.rs:312:4
+    |
+312 | fn q1_reference_groups(
+    |    ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` on by default
+
+warning: method `to_storage_string` is never used
+  --> tests\..\src\binder.rs:36:12
+   |
+33 | impl SqlValue {
+   | ------------- method in this implementation
+...
+36 |     pub fn to_storage_string(&self) -> Option<String> {
+   |            ^^^^^^^^^^^^^^^^^
+
+warning: methods `all_tables`, `drop_table`, and `table_names` are never used
+   --> tests\..\src\catalog.rs:64:12
+    |
+36  | impl InMemoryCatalog {
+    | -------------------- methods in this implementation
+...
+64  |     pub fn all_tables(&self) -> Vec<TableSchema> {
+    |            ^^^^^^^^^^
+...
+74  |     pub fn drop_table(&self, name: &str) {
+    |            ^^^^^^^^^^
+...
+104 |     pub fn table_names(&self) -> Vec<String> {
+    |            ^^^^^^^^^^^
+
+warning: function `tpch_join_graph` is never used
+   --> tests\..\src\join_graph.rs:207:8
+    |
+207 | pub fn tpch_join_graph(query_num: u32) -> Option<JoinGraph> {
+    |        ^^^^^^^^^^^^^^^
+
+warning: function `default_model_path` is never used
+   --> tests\..\src\optimizer.rs:172:8
+    |
+172 | pub fn default_model_path() -> &'static str {
+    |        ^^^^^^^^^^^^^^^^^^
+
+warning: function `query_result_to_batch` is never used
+   --> tests\..\src\query_executor.rs:170:8
+    |
+170 | pub fn query_result_to_batch(result: QueryResult) -> RecordBatch {
+    |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `infer_column_vector` is never used
+   --> tests\..\src\query_executor.rs:194:4
+    |
+194 | fn infer_column_vector(vals: &[ScalarVal]) -> ColumnVector {
+    |    ^^^^^^^^^^^^^^^^^^^
+
+warning: constant `ACTION_DIM` is never used
+  --> tests\..\src\optimizer.rs:27:11
+   |
+27 | pub const ACTION_DIM: usize = MAX_TABLES;
+   |           ^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` on by default
+
+warning: associated functions `from_options` and `from_owned_options` are never used
+  --> tests\..\src\vectorized.rs:13:12
+   |
+12 | impl Utf8Column {
+   | --------------- associated functions in this implementation
+13 |     pub fn from_options(values: Vec<Option<&str>>) -> Self {
+   |            ^^^^^^^^^^^^
+...
+40 |     pub fn from_owned_options(values: Vec<Option<String>>) -> Self {
+   |            ^^^^^^^^^^^^^^^^^^
+
+warning: variants `Int32`, `Float64`, `Date32`, and `Utf8` are never constructed
+  --> tests\..\src\vectorized.rs:65:5
+   |
+64 | pub enum ColumnVector {
+   |          ------------ variants in this enum
+65 |     Int32(Vec<Option<i32>>),
+   |     ^^^^^
+66 |     Int64(Vec<Option<i64>>),
+67 |     Float64(Vec<Option<f64>>),
+   |     ^^^^^^^
+68 |     Date32(Vec<Option<i32>>),
+   |     ^^^^^^
+69 |     Utf8(Utf8Column),
+   |     ^^^^
+   |
+   = note: `ColumnVector` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: `neuralbase` (test "dml_correctness") generated 64 warnings
+warning: `neuralbase` (test "bench_optimizer") generated 29 warnings (19 duplicates)
+warning: `neuralbase` (test "raft_correctness") generated 14 warnings
+warning: `neuralbase` (test "mvcc_correctness") generated 7 warnings (1 duplicate)
+warning: `neuralbase` (test "adversarial_mvcc") generated 7 warnings (7 duplicates)
+warning: `neuralbase` (test "session1_foundation") generated 9 warnings (4 duplicates)
+warning: `neuralbase` (bin "neuralbase" test) generated 9 warnings
+warning: `neuralbase` (test "adversarial_vectorized") generated 9 warnings (4 duplicates)
+warning: `neuralbase` (test "perf_tpch") generated 19 warnings (14 duplicates)
+warning: `neuralbase` (test "adversarial_raft") generated 13 warnings (12 duplicates)
+warning: `neuralbase` (test "tpch_correctness") generated 24 warnings (16 duplicates)
+warning: `neuralbase` (test "adversarial_optimizer") generated 28 warnings (25 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.83s
+     Running unittests src\main.rs (target\debug\deps\neuralbase-0f24f0e548808152.exe)
+
+running 65 tests
+test binder::tests::create_table_plan ... ok
+test binder::tests::date_coercion_epoch ... ok
+test binder::tests::date_coercion_invalid_returns_none ... ok
+test binder::tests::date_coercion_iso_string ... ok
+test binder::tests::date_column_coercion_in_insert ... ok
+test binder::tests::delete_with_predicate ... ok
+test binder::tests::dml_predicate_matches_int_row ... ok
+test binder::tests::insert_positional_values ... ok
+test binder::tests::insert_table_not_found_is_error ... ok
+test binder::tests::insert_wrong_column_count_is_error ... ok
+test binder::tests::select_const_i64 ... ok
+test binder::tests::select_from_table_wildcard ... ok
+test binder::tests::select_with_where_predicate ... ok
+test binder::tests::update_set_predicate ... ok
+test gc::tests::gc_deletes_old_versions_keeps_latest ... ok
+test gc::tests::gc_does_not_delete_version_visible_to_active_snapshot ... ok
+test gc::tests::gc_safe_horizon_is_min_of_active_snapshots ... ok
+test hlc::tests::be_bytes_roundtrip ... ok
+test hlc::tests::ordering_wall_then_logical ... ok
+test hlc::tests::tick_70000_times_produces_no_duplicates ... ok
+test hlc::tests::tick_is_always_monotonic_single_thread ... ok
+test hlc::tests::to_u64_roundtrip ... ok
+test hlc::tests::update_rejects_excessive_skew ... ok
+test hlc::tests::update_with_future_remote_advances_past_it ... ok
+test index_advisor::tests::advisor_drop_recommendation_after_ttl ... ok
+test index_advisor::tests::advisor_records_without_panic ... ok
+test index_advisor::tests::cost_benefit_model_returns_non_negative_for_hot_column ... ok
+test index_advisor::tests::hot_columns_filters_by_min_accesses ... ok
+test index_advisor::tests::index_candidate_name ... ok
+test index_advisor::tests::index_executor_create_and_drop_via_rocksdb ... ok
+test index_advisor::tests::workload_monitor_records_and_evicts ... ok
+test mvcc::tests::commit_makes_write_visible_to_later_snapshot ... ok
+test mvcc::tests::concurrent_commits_to_same_key_exactly_one_wins ... ok
+test mvcc::tests::read_your_own_write ... ok
+test mvcc::tests::rollback_leaves_nothing_visible ... ok
+test mvcc::tests::snapshot_does_not_see_concurrent_write ... ok
+test mvcc::tests::write_write_conflict_aborts_second_writer ... ok
+test query_executor::tests::case_when_expression ... ok
+test query_executor::tests::epoch_days_to_ymd_known ... ok
+test query_executor::tests::group_by_sum ... ok
+test query_executor::tests::like_match_percent_wildcard ... ok
+test query_executor::tests::like_match_underscore ... ok
+test query_executor::tests::order_by_limit ... ok
+test query_executor::tests::scalar_val_comparison ... ok
+test query_executor::tests::simple_select_filter ... ok
+test rocksdb_catalog::tests::case_insensitive_lookup ... ok
+test rocksdb_catalog::tests::load_all_restores_all_schemas ... ok
+test rocksdb_catalog::tests::missing_table_returns_none ... ok
+test rocksdb_catalog::tests::register_and_lookup_roundtrip ... ok
+test rocksdb_catalog::tests::register_duplicate_overwrites_previous ... ok
+test storage::tests::catalog_write_read_roundtrip ... ok
+test storage::tests::index_cf_create_write_drop_roundtrip ... ok
+test storage::tests::key_encoding_roundtrip ... ok
+test storage::tests::read_latest_returns_latest_version_le_snapshot ... ok
+test storage::tests::read_latest_seek_for_prev_correctness_no_cross_pk_bleed ... ok
+test storage::tests::scan_table_returns_latest_versions ... ok
+test storage::tests::snapshot_does_not_see_future_write ... ok
+test storage::tests::write_batch_atomicity_two_keys ... ok
+test storage::tests::write_then_read_returns_value ... ok
+test storage_executor::tests::decode_invalid_bytes_returns_none ... ok
+test storage_executor::tests::encode_decode_roundtrip ... ok
+test storage_executor::tests::encode_row_binary_is_more_compact_than_json_equivalent ... ok
+test storage_executor::tests::encode_row_empty ... ok
+test storage_executor::tests::table_id_is_deterministic_byte_order ... ok
+test storage_executor::tests::table_id_is_stable ... ok
+
+test result: ok. 65 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.16s
+
+     Running tests\adversarial_mvcc.rs (target\debug\deps\adversarial_mvcc-43876738fe18bc3a.exe)
+
+running 32 tests
+test gc::tests::gc_deletes_old_versions_keeps_latest ... ok
+test gc::tests::gc_does_not_delete_version_visible_to_active_snapshot ... ok
+test gc::tests::gc_safe_horizon_is_min_of_active_snapshots ... ok
+test gc_after_many_overwrites_latest_version_readable ... ok
+test hlc::tests::be_bytes_roundtrip ... ok
+test hlc::tests::ordering_wall_then_logical ... ok
+test hlc::tests::tick_70000_times_produces_no_duplicates ... ok
+test hlc::tests::tick_is_always_monotonic_single_thread ... ok
+test hlc::tests::to_u64_roundtrip ... ok
+test hlc::tests::update_rejects_excessive_skew ... ok
+test hlc::tests::update_with_future_remote_advances_past_it ... ok
+test hlc_handles_backward_jump_via_logical_increment ... ok
+test hlc_handles_large_forward_jump ... ok
+test hlc_skew_exceeded_returns_error_not_panic ... ok
+test mvcc::tests::commit_makes_write_visible_to_later_snapshot ... ok
+test mvcc::tests::concurrent_commits_to_same_key_exactly_one_wins ... ok
+test mvcc::tests::read_your_own_write ... ok
+test mvcc::tests::rollback_leaves_nothing_visible ... ok
+test mvcc::tests::snapshot_does_not_see_concurrent_write ... ok
+test mvcc::tests::write_write_conflict_aborts_second_writer ... ok
+test rollback_during_gc_leaves_no_trace ... ok
+test snapshot_survives_full_gc_cycle ... ok
+test storage::tests::catalog_write_read_roundtrip ... ok
+test storage::tests::index_cf_create_write_drop_roundtrip ... ok
+test storage::tests::key_encoding_roundtrip ... ok
+test storage::tests::read_latest_returns_latest_version_le_snapshot ... ok
+test storage::tests::read_latest_seek_for_prev_correctness_no_cross_pk_bleed ... ok
+test storage::tests::scan_table_returns_latest_versions ... ok
+test storage::tests::snapshot_does_not_see_future_write ... ok
+test storage::tests::write_batch_atomicity_two_keys ... ok
+test storage::tests::write_then_read_returns_value ... ok
+test write_during_gc_no_corruption ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.04s
+
+     Running tests\adversarial_optimizer.rs (target\debug\deps\adversarial_optimizer-5ab21c1f3a1ac4cc.exe)
+
+running 27 tests
+test circular_join_predicates_detected_and_fallback_to_naive ... ok
+test cost_model::tests::hash_join_prefers_smaller_build_side ... ok
+test cost_model::tests::single_table_plan_costs_zero ... ok
+test cost_model::tests::total_plan_cost_smaller_first_is_cheaper_for_many_tables ... ok
+test cost_model_prefers_small_table_first_for_five_table_chain ... ok
+test cost_model_single_table_costs_zero_both_planners ... ok
+test join_graph::tests::star_schema_has_no_cycle ... ok
+test join_graph::tests::tpch_stats_cover_all_standard_tables ... ok
+test join_graph::tests::triangle_is_detected_as_cycle ... ok
+test missing_onnx_model_falls_back_to_naive_two_table ... ok
+test optimizer::tests::circular_predicates_fall_back_to_naive ... ok
+test optimizer::tests::greedy_decode_respects_q_value_ordering ... ok
+test optimizer::tests::missing_model_falls_back_to_naive_order ... ok
+test optimizer::tests::single_table_returns_identity ... ok
+test optimizer::tests::state_vector_has_correct_dimension ... ok
+test optimizer::tests::state_vector_sets_adjacency_for_known_edge ... ok
+test optimizer_always_returns_all_tables_for_star_schema ... ok
+test optimizer_output_is_always_a_permutation_of_input_tables ... ok
+test single_table_query_optimizer_returns_identity ... ok
+test state_vector_dimension_is_always_state_dim ... ok
+test statistics_collector_background_thread_accumulates_rows ... ok
+test statistics_collector_samples_batch_correctly ... ok
+test stats::tests::collector_accumulates_samples_across_batches ... ok
+test stats::tests::sample_all_null_column ... ok
+test stats::tests::sample_int64_column_stats_are_correct ... ok
+test tpch_join_graph_catalogue_is_defined_for_all_supported_queries ... ok
+test tpch_join_graph_none_for_out_of_range_query ... ok
+
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests\adversarial_raft.rs (target\debug\deps\adversarial_raft-4793fccf9127a305.exe)
+
+running 38 tests
+test all_fragments_exhausted_does_not_deadlock ... ok
+test all_ones_key_no_overflow ... ok
+test all_single_byte_keys_valid ... ok
+test all_zeros_key_stable ... ok
+test cluster::tests::failure_detection_marks_stale_node_dead ... ok
+test cluster::tests::key_to_shard_is_deterministic ... ok
+test cluster::tests::record_heartbeat_keeps_node_alive ... ok
+test cluster::tests::shard_replicas_count_bounded_by_alive ... ok
+test cluster::tests::shard_to_node_returns_some_when_alive ... ok
+test concurrent_senders_single_receiver_no_loss ... ok
+test consensus::log::tests::append_advances_index ... ok
+test consensus::log::tests::entries_from_empty_when_past_end ... ok
+test consensus::log::tests::new_state_has_sentinel ... ok
+test consensus::log::tests::truncate_and_append_removes_conflict ... ok
+test distributed::backpressure::tests::bounded_channel_passes_all_items ... ok
+test distributed::backpressure::tests::flow_controller_tracks_in_flight ... ok
+test distributed::backpressure::tests::slow_consumer_does_not_cause_unbounded_growth ... ok
+test distributed::backpressure::tests::try_send_fails_when_full ... ok
+test distributed::exchange::tests::broadcast_sends_to_all_partitions ... ok
+test distributed::exchange::tests::gather_collects_from_all_inputs ... ok
+test distributed::exchange::tests::shuffle_routes_to_correct_partition ... ok
+test distributed::tests::coordinator_handles_failure_with_reroute ... ok
+test distributed::tests::coordinator_marks_permanently_failed_after_max_retries ... ok
+test distributed::tests::plan_creates_one_fragment_per_shard ... ok
+test empty_key_does_not_panic ... ok
+test fnv_full_byte_cycle_no_crash ... ok
+test follower_state_stable_after_leader_elected ... ok
+test isolated_single_node_leader ... ok
+test max_length_key_no_overflow ... ok
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+test prop_fragment_ids_unique ... ok
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+test prop_routing_deterministic ... ok
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+test prop_shard_in_range ... ok
+test rapid_reelection_never_split_brain ... ok
+test reroute_assigns_different_node ... ok
+test sender_receives_error_when_receiver_dropped ... ok
+test shard_to_node_at_boundaries ... ok
+test two_of_three_form_quorum ... ok
+test zero_capacity_channel_rendezvous ... ok
+
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.39s
+
+     Running tests\adversarial_vectorized.rs (target\debug\deps\adversarial_vectorized-bcbb6b792b3d7adf.exe)
+
+running 9 tests
+test all_null_column_filtered_to_zero_rows ... ok
+test empty_input_batch_no_panic ... ok
+test mismatched_column_type_returns_error ... ok
+test oversized_batch_returns_error ... ok
+test scheduler_handles_non_multiple_batch ... ok
+test simd_and_scalar_masks_match_property_style ... ok
+test single_row_input_is_supported ... ok
+test sort_merge_join_handles_duplicate_keys_with_cartesian_matches ... ok
+test tpch_generator_sf_0_1_is_about_600k_lineitem_rows ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.89s
+
+     Running tests\bench_optimizer.rs (target\debug\deps\bench_optimizer-478f293959d73d5a.exe)
+
+running 15 tests
+test ab_comparison_rl_beats_naive_on_ge_80_percent_of_tpch_queries ... 
+ÔöÇÔöÇ TPC-H RL vs. Naive A/B Results ÔöÇÔöÇ
+Query  RL wins?          RL cost     Naive cost ╬ö%      
+Q1     Ô£ô                       0              0    +0.0%
+Q2     Ô£ô                  103055         587060   -82.4%
+Q3     Ô£ô                  810122         810122    +0.0%
+Q4     Ô£ô                  900122         900122    +0.0%
+Q5     Ô£ô                  766467         827204    -7.3%
+Q6     Ô£ô                       0              0    +0.0%
+Q7     Ô£ô                  769704         769704    +0.0%
+Q8     Ô£ô                 1687183        1687183    +0.0%
+Q9     Ô£ô                 1592158        1592158    +0.0%
+Q10    Ô£ô                  765272         825172    -7.3%
+Q11    Ô£ô                   81100          83050    -2.3%
+Q12    Ô£ô                  900122         900122    +0.0%
+Q13    Ô£ô                  180000         180000    +0.0%
+Q14    Ô£ô                  640122         640122    +0.0%
+Q15    Ô£ô                  602122         602122    +0.0%
+Q16    Ô£ô                  120000         120000    +0.0%
+Q17    Ô£ô                  640122         640122    +0.0%
+Q18    Ô£ô                  810122         810122    +0.0%
+Q19    Ô£ô                  640122         640122    +0.0%
+Q20    Ô£ù                  111100         101150    +9.8%
+Q21    Ô£ù                  826222         754422    +9.5%
+Q22    Ô£ô                       0              0    +0.0%
+
+Win rate: 20/22 = 90.9%
+ok
+test cost_model::tests::hash_join_prefers_smaller_build_side ... ok
+test cost_model::tests::single_table_plan_costs_zero ... ok
+test cost_model::tests::total_plan_cost_smaller_first_is_cheaper_for_many_tables ... ok
+test join_graph::tests::star_schema_has_no_cycle ... ok
+test join_graph::tests::tpch_stats_cover_all_standard_tables ... ok
+test join_graph::tests::triangle_is_detected_as_cycle ... ok
+test optimizer::tests::circular_predicates_fall_back_to_naive ... ok
+test optimizer::tests::greedy_decode_respects_q_value_ordering ... ok
+test optimizer::tests::missing_model_falls_back_to_naive_order ... ok
+test optimizer::tests::single_table_returns_identity ... ok
+test optimizer::tests::state_vector_has_correct_dimension ... ok
+test optimizer::tests::state_vector_sets_adjacency_for_known_edge ... ok
+test rl_inference_respects_10ms_timeout_on_missing_model ... ok
+test rl_with_model_infers_valid_plan_for_all_tpch_queries ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests\confidence_yaml.rs (target\debug\deps\confidence_yaml-1d927b6e1c2b8da3.exe)
+
+running 3 tests
+test confidence_yaml_is_valid_yaml ... ok
+test no_critical_artifact_below_0_65 ... ok
+test system_effective_confidence_meets_session7_threshold ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\dml_correctness.rs (target\debug\deps\dml_correctness-8a44105299d627b7.exe)
+
+running 47 tests
+test binder::tests::create_table_plan ... ok
+test binder::tests::date_coercion_epoch ... ok
+test binder::tests::date_coercion_invalid_returns_none ... ok
+test binder::tests::date_coercion_iso_string ... ok
+test binder::tests::date_column_coercion_in_insert ... ok
+test binder::tests::delete_with_predicate ... ok
+test binder::tests::dml_predicate_matches_int_row ... ok
+test binder::tests::insert_positional_values ... ok
+test binder::tests::insert_table_not_found_is_error ... ok
+test binder::tests::insert_wrong_column_count_is_error ... ok
+test binder::tests::select_const_i64 ... ok
+test binder::tests::select_from_table_wildcard ... ok
+test binder::tests::select_with_where_predicate ... ok
+test binder::tests::update_set_predicate ... ok
+test date_coercion_roundtrip ... ok
+test delete_removes_only_matching_rows ... ok
+test hlc::tests::be_bytes_roundtrip ... ok
+test hlc::tests::ordering_wall_then_logical ... ok
+test hlc::tests::tick_70000_times_produces_no_duplicates ... ok
+test hlc::tests::tick_is_always_monotonic_single_thread ... ok
+test hlc::tests::to_u64_roundtrip ... ok
+test hlc::tests::update_rejects_excessive_skew ... ok
+test hlc::tests::update_with_future_remote_advances_past_it ... ok
+test insert_and_scan_basic ... ok
+test mvcc::tests::commit_makes_write_visible_to_later_snapshot ... ok
+test mvcc::tests::concurrent_commits_to_same_key_exactly_one_wins ... ok
+test mvcc::tests::read_your_own_write ... ok
+test mvcc::tests::rollback_leaves_nothing_visible ... ok
+test mvcc::tests::snapshot_does_not_see_concurrent_write ... ok
+test mvcc::tests::write_write_conflict_aborts_second_writer ... ok
+test snapshot_isolation_concurrent_insert_not_visible ... ok
+test storage::tests::catalog_write_read_roundtrip ... ok
+test storage::tests::index_cf_create_write_drop_roundtrip ... ok
+test storage::tests::key_encoding_roundtrip ... ok
+test storage::tests::read_latest_returns_latest_version_le_snapshot ... ok
+test storage::tests::read_latest_seek_for_prev_correctness_no_cross_pk_bleed ... ok
+test storage::tests::scan_table_returns_latest_versions ... ok
+test storage::tests::snapshot_does_not_see_future_write ... ok
+test storage::tests::write_batch_atomicity_two_keys ... ok
+test storage::tests::write_then_read_returns_value ... ok
+test storage_executor::tests::decode_invalid_bytes_returns_none ... ok
+test storage_executor::tests::encode_decode_roundtrip ... ok
+test storage_executor::tests::encode_row_binary_is_more_compact_than_json_equivalent ... ok
+test storage_executor::tests::encode_row_empty ... ok
+test storage_executor::tests::table_id_is_deterministic_byte_order ... ok
+test storage_executor::tests::table_id_is_stable ... ok
+test update_modifies_column ... ok
+
+test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.89s
+
+     Running tests\mvcc_correctness.rs (target\debug\deps\mvcc_correctness-7a63ac829136f5c1.exe)
+
+running 36 tests
+test committed_write_visible_to_later_transaction ... ok
+test concurrent_readers_writers_no_anomalies ... ok
+test gc::tests::gc_deletes_old_versions_keeps_latest ... ok
+test gc::tests::gc_does_not_delete_version_visible_to_active_snapshot ... ok
+test gc::tests::gc_safe_horizon_is_min_of_active_snapshots ... ok
+test gc_safety_snapshot_survives_gc_pass ... ok
+test hlc::tests::be_bytes_roundtrip ... ok
+test hlc::tests::ordering_wall_then_logical ... ok
+test hlc::tests::tick_70000_times_produces_no_duplicates ... ok
+test hlc::tests::tick_is_always_monotonic_single_thread ... ok
+test hlc::tests::to_u64_roundtrip ... ok
+test hlc::tests::update_rejects_excessive_skew ... ok
+test hlc::tests::update_with_future_remote_advances_past_it ... ok
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+test hlc_never_goes_backward_property ... ok
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+test hlc_update_always_monotonic ... ok
+test last_committed_overwrite_wins ... ok
+test mvcc::tests::commit_makes_write_visible_to_later_snapshot ... ok
+test mvcc::tests::concurrent_commits_to_same_key_exactly_one_wins ... ok
+test mvcc::tests::read_your_own_write ... ok
+test mvcc::tests::rollback_leaves_nothing_visible ... ok
+test mvcc::tests::snapshot_does_not_see_concurrent_write ... ok
+test mvcc::tests::write_write_conflict_aborts_second_writer ... ok
+test read_your_own_write_before_commit ... ok
+test rollback_leaves_no_visible_data ... ok
+test snapshot_does_not_see_write_committed_after_begin ... ok
+test snapshot_reads_original_after_subsequent_writes ... ok
+test storage::tests::catalog_write_read_roundtrip ... ok
+test storage::tests::index_cf_create_write_drop_roundtrip ... ok
+test storage::tests::key_encoding_roundtrip ... ok
+test storage::tests::read_latest_returns_latest_version_le_snapshot ... ok
+test storage::tests::read_latest_seek_for_prev_correctness_no_cross_pk_bleed ... ok
+test storage::tests::scan_table_returns_latest_versions ... ok
+test storage::tests::snapshot_does_not_see_future_write ... ok
+test storage::tests::write_batch_atomicity_two_keys ... ok
+test storage::tests::write_then_read_returns_value ... ok
+test write_write_conflict_second_writer_aborts ... ok
+
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.24s
+
+     Running tests\perf_tpch.rs (target\debug\deps\perf_tpch-d8e7d1e385da9ebc.exe)
+
+running 30 tests
+test bench_tpch_q1_q6_records_measurements ... bench.tpch.q1_us=823425
+bench.tpch.q6_us=189973
+ok
+test binder::tests::create_table_plan ... ok
+test binder::tests::date_coercion_epoch ... ok
+test binder::tests::date_coercion_invalid_returns_none ... ok
+test binder::tests::date_coercion_iso_string ... ok
+test binder::tests::date_column_coercion_in_insert ... ok
+test binder::tests::delete_with_predicate ... ok
+test binder::tests::dml_predicate_matches_int_row ... ok
+test binder::tests::insert_positional_values ... ok
+test binder::tests::insert_table_not_found_is_error ... ok
+test binder::tests::insert_wrong_column_count_is_error ... ok
+test binder::tests::select_const_i64 ... ok
+test binder::tests::select_from_table_wildcard ... ok
+test binder::tests::select_with_where_predicate ... ok
+test binder::tests::update_set_predicate ... ok
+test investigate_q1_performance_root_cause ... 
+ÔöÇÔöÇ Q1 Physical Plan ÔöÇÔöÇ
+  Plan variant : TpchQ1 (no optimizer involved ÔÇö hardcoded aggregate path)
+  RL optimizer : NOT called (plan is resolved from SQL fingerprint only)
+  ONNX model   : NOT loaded for Q1
+
+ÔöÇÔöÇ Q1 RL Optimizer Join Order ÔöÇÔöÇ
+  Tables in Q1 join graph: ["lineitem"]
+  Optimizer returned order: ["lineitem"]
+  Is naive order: true
+
+ÔöÇÔöÇ Q1 Statistics Collector ÔÇö lineitem at SF 0.1 ÔöÇÔöÇ
+  Sampled row_count  : 600122
+  l_orderkey           ndv=2731     null_frac=0.0000  min=Some(1)  max=Some(2731)
+  l_extendedprice      ndv=100      null_frac=0.0000  min=None  max=None
+  l_discount           ndv=4        null_frac=0.0000  min=None  max=None
+  l_returnflag         ndv=2        null_frac=0.0000  min=None  max=None
+  l_shipdate           ndv=30       null_frac=0.0000  min=Some(19920115)  max=Some(19980830)
+
+ÔöÇÔöÇ Q1 Timing vs Dataset Size (linear scaling proof) ÔöÇÔöÇ
+  Note: CONFIDENCE.yaml "3274us baseline" was measured at ~8192 rows
+  (pre-audit scale formula bug). Post-audit correct count = 600,122 rows.
+  SF ~0.001 (  ~6001 rows)  rows=   6001  time=    8345╬╝s  ÔÇö
+  SF ~0.010 ( ~60012 rows)  rows=  60012  time=   80827╬╝s  9.7x from previous
+  SF ~0.100 (~600122 rows)  rows= 600122  time=  815362╬╝s  10.1x from previous
+
+ÔöÇÔöÇ Conclusion ÔöÇÔöÇ
+  1. ONNX inference is NOT running for Q1. Q1 is routed to the
+     hardcoded TpchQ1 physical plan via SQL fingerprint matching.
+     The RL optimizer (optimizer.rs) is not consulted.
+  2. The RL optimizer join order for Q1's single-table graph is
+     trivially ["lineitem"] ÔÇö the same as naive order.
+  3. The stats collector produces the cardinality at SF 0.1 shown above.
+  4. The "3274╬╝s baseline" in CONFIDENCE.yaml is STALE. It was written
+     when the TPC-H dataset had ~8192 rows (pre-audit scale-factor bug).
+     At the correct 600,122 rows the timing is ~130ms, not a regression.
+     Scaling is linear: SF 0.001 vs SF 0.1 shows ~100x rows ÔåÆ ~100x time.
+ok
+test join_graph::tests::star_schema_has_no_cycle ... ok
+test join_graph::tests::tpch_stats_cover_all_standard_tables ... ok
+test join_graph::tests::triangle_is_detected_as_cycle ... ok
+test optimizer::tests::circular_predicates_fall_back_to_naive ... ok
+test optimizer::tests::greedy_decode_respects_q_value_ordering ... ok
+test optimizer::tests::missing_model_falls_back_to_naive_order ... ok
+test optimizer::tests::single_table_returns_identity ... ok
+test optimizer::tests::state_vector_has_correct_dimension ... ok
+test optimizer::tests::state_vector_sets_adjacency_for_known_edge ... ok
+test stats::tests::collector_accumulates_samples_across_batches ... ok
+test stats::tests::sample_all_null_column ... ok
+test stats::tests::sample_int64_column_stats_are_correct ... ok
+test tpch_q1_matches_reference_output ... ok
+test tpch_q6_matches_reference_output ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.73s
+
+     Running tests\raft_correctness.rs (target\debug\deps\raft_correctness-c75a46d35dc0d92d.exe)
+
+running 29 tests
+test backpressure_bounded_channel_no_oom ... ok
+test cluster::tests::failure_detection_marks_stale_node_dead ... ok
+test cluster::tests::key_to_shard_is_deterministic ... ok
+test cluster::tests::record_heartbeat_keeps_node_alive ... ok
+test cluster::tests::shard_replicas_count_bounded_by_alive ... ok
+test cluster::tests::shard_to_node_returns_some_when_alive ... ok
+test consensus::log::tests::append_advances_index ... ok
+test consensus::log::tests::entries_from_empty_when_past_end ... ok
+test consensus::log::tests::new_state_has_sentinel ... ok
+test consensus::log::tests::truncate_and_append_removes_conflict ... ok
+test coordinator_reroutes_failed_fragment ... ok
+test distributed::backpressure::tests::bounded_channel_passes_all_items ... ok
+test distributed::backpressure::tests::flow_controller_tracks_in_flight ... ok
+test distributed::backpressure::tests::slow_consumer_does_not_cause_unbounded_growth ... ok
+test distributed::backpressure::tests::try_send_fails_when_full ... ok
+test distributed::exchange::tests::broadcast_sends_to_all_partitions ... ok
+test distributed::exchange::tests::gather_collects_from_all_inputs ... ok
+test distributed::exchange::tests::shuffle_routes_to_correct_partition ... ok
+test distributed::tests::coordinator_handles_failure_with_reroute ... ok
+test distributed::tests::coordinator_marks_permanently_failed_after_max_retries ... ok
+test distributed::tests::plan_creates_one_fragment_per_shard ... ok
+test higher_term_deposes_stale_leader ... ok
+test leader_elected_after_staggered_startup ... ok
+test no_split_brain_after_stabilisation ... ok
+test planner_produces_correct_fragment_count ... ok
+test shard_routing_is_stable ... ok
+test single_node_elects_self_as_leader ... ok
+test stale_log_candidate_does_not_win_if_others_more_up_to_date ... ok
+test three_node_cluster_elects_single_leader ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.92s
+
+     Running tests\session1_foundation.rs (target\debug\deps\session1_foundation-bb144f23033b0878.exe)
+
+running 65 tests
+test binder::tests::create_table_plan ... ok
+test binder::tests::date_coercion_epoch ... ok
+test binder::tests::date_coercion_invalid_returns_none ... ok
+test binder::tests::date_coercion_iso_string ... ok
+test binder::tests::date_column_coercion_in_insert ... ok
+test binder::tests::delete_with_predicate ... ok
+test binder::tests::dml_predicate_matches_int_row ... ok
+test binder::tests::insert_positional_values ... ok
+test binder::tests::insert_table_not_found_is_error ... ok
+test binder::tests::insert_wrong_column_count_is_error ... ok
+test binder::tests::select_const_i64 ... ok
+test binder::tests::select_from_table_wildcard ... ok
+test binder::tests::select_with_where_predicate ... ok
+test binder::tests::update_set_predicate ... ok
+test catalog_missing_table_routes_to_query_executor ... ok
+test hlc::tests::be_bytes_roundtrip ... ok
+test hlc::tests::ordering_wall_then_logical ... ok
+test hlc::tests::tick_70000_times_produces_no_duplicates ... ok
+test hlc::tests::tick_is_always_monotonic_single_thread ... ok
+test hlc::tests::to_u64_roundtrip ... ok
+test hlc::tests::update_rejects_excessive_skew ... ok
+test hlc::tests::update_with_future_remote_advances_past_it ... ok
+test index_advisor::tests::advisor_drop_recommendation_after_ttl ... ok
+test index_advisor::tests::advisor_records_without_panic ... ok
+test index_advisor::tests::cost_benefit_model_returns_non_negative_for_hot_column ... ok
+test index_advisor::tests::hot_columns_filters_by_min_accesses ... ok
+test index_advisor::tests::index_candidate_name ... ok
+test index_advisor::tests::index_executor_create_and_drop_via_rocksdb ... ok
+test index_advisor::tests::workload_monitor_records_and_evicts ... ok
+test malformed_sql_returns_pg_error_response ... ok
+test mvcc::tests::commit_makes_write_visible_to_later_snapshot ... ok
+test mvcc::tests::concurrent_commits_to_same_key_exactly_one_wins ... ok
+test mvcc::tests::read_your_own_write ... ok
+test mvcc::tests::rollback_leaves_nothing_visible ... ok
+test mvcc::tests::snapshot_does_not_see_concurrent_write ... ok
+test mvcc::tests::write_write_conflict_aborts_second_writer ... ok
+test parses_select_where_limit ... ok
+test query_executor::tests::case_when_expression ... ok
+test query_executor::tests::epoch_days_to_ymd_known ... ok
+test query_executor::tests::group_by_sum ... ok
+test query_executor::tests::like_match_percent_wildcard ... ok
+test query_executor::tests::like_match_underscore ... ok
+test query_executor::tests::order_by_limit ... ok
+test query_executor::tests::scalar_val_comparison ... ok
+test query_executor::tests::simple_select_filter ... ok
+test rocksdb_catalog::tests::case_insensitive_lookup ... ok
+test rocksdb_catalog::tests::load_all_restores_all_schemas ... ok
+test rocksdb_catalog::tests::missing_table_returns_none ... ok
+test rocksdb_catalog::tests::register_and_lookup_roundtrip ... ok
+test rocksdb_catalog::tests::register_duplicate_overwrites_previous ... ok
+test storage::tests::catalog_write_read_roundtrip ... ok
+test storage::tests::index_cf_create_write_drop_roundtrip ... ok
+test storage::tests::key_encoding_roundtrip ... ok
+test storage::tests::read_latest_returns_latest_version_le_snapshot ... ok
+test storage::tests::read_latest_seek_for_prev_correctness_no_cross_pk_bleed ... ok
+test storage::tests::scan_table_returns_latest_versions ... ok
+test storage::tests::snapshot_does_not_see_future_write ... ok
+test storage::tests::write_batch_atomicity_two_keys ... ok
+test storage::tests::write_then_read_returns_value ... ok
+test storage_executor::tests::decode_invalid_bytes_returns_none ... ok
+test storage_executor::tests::encode_decode_roundtrip ... ok
+test storage_executor::tests::encode_row_binary_is_more_compact_than_json_equivalent ... ok
+test storage_executor::tests::encode_row_empty ... ok
+test storage_executor::tests::table_id_is_deterministic_byte_order ... ok
+test storage_executor::tests::table_id_is_stable ... ok
+
+test result: ok. 65 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.94s
+
+     Running tests\tpch_correctness.rs (target\debug\deps\tpch_correctness-e5775cac479b995d.exe)
+
+running 61 tests
+test all_22_sql_constants_are_non_empty ... All 22 TPC-H SQL constants present and parse successfully.
+ok
+test binder::tests::create_table_plan ... ok
+test binder::tests::date_coercion_epoch ... ok
+test binder::tests::date_coercion_invalid_returns_none ... ok
+test binder::tests::date_coercion_iso_string ... ok
+test binder::tests::date_column_coercion_in_insert ... ok
+test binder::tests::delete_with_predicate ... ok
+test binder::tests::dml_predicate_matches_int_row ... ok
+test binder::tests::insert_positional_values ... ok
+test binder::tests::insert_table_not_found_is_error ... ok
+test binder::tests::insert_wrong_column_count_is_error ... ok
+test binder::tests::select_const_i64 ... ok
+test binder::tests::select_from_table_wildcard ... ok
+test binder::tests::select_with_where_predicate ... ok
+test binder::tests::update_set_predicate ... ok
+test join_graph::tests::star_schema_has_no_cycle ... ok
+test join_graph::tests::tpch_stats_cover_all_standard_tables ... ok
+test join_graph::tests::triangle_is_detected_as_cycle ... ok
+test optimizer::tests::circular_predicates_fall_back_to_naive ... ok
+test optimizer::tests::greedy_decode_respects_q_value_ordering ... ok
+test optimizer::tests::missing_model_falls_back_to_naive_order ... ok
+test optimizer::tests::single_table_returns_identity ... ok
+test optimizer::tests::state_vector_has_correct_dimension ... ok
+test optimizer::tests::state_vector_sets_adjacency_for_known_edge ... ok

@@ -1,0 +1,2 @@
+   Compiling neuralbase v0.1.0 (C:\Users\scsar\Desktop\neuralbase)
+    Finished `release` profile [optimized] target(s) in 6.78s

@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.84.1
+          components: rustfmt, clippy
+
+      - name: Run tests
+        run: make test
+
+      - name: Run lint
+        run: make lint
+
+      - name: Check confidence artifacts
+        run: make confidence
+
+      - name: Run benchmarks
+        run: make bench
+
+      - name: Run adversarial tests
+        run: make adversarial

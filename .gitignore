@@ -1,0 +1,29 @@
+# Rust build output
+target/
+**/*.rs.bk
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+optimizer/training/__pycache__/
+venv/
+.venv/
+
+# Secrets / environment
+.env
+
+# Test / RocksDB artifacts
+*.db
+*.sst
+tmp_*/
+test_db*/
+
+# TLS private keys (public certs *.crt are tracked)
+certs/*.key
+certs/*.pem
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini

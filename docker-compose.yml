@@ -1,0 +1,120 @@
+# SPDX-License-Identifier: Apache-2.0
+# 3-node NeuralBase cluster for local development and integration testing.
+#
+# Usage:
+#   docker compose up -d --wait
+#   psql -h 127.0.0.1 -p 5432 -U anon -c "SELECT 1"
+#   docker compose down
+#
+# make cluster-test builds the image and runs raft_correctness test suite.
+
+version: "3.9"
+
+x-neuralbase-common: &neuralbase-common
+  image: neuralbase:latest
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  environment:
+    NEURALBASE_TLS_CERT: /certs/server.crt
+    NEURALBASE_TLS_KEY: /certs/server.key
+  volumes:
+    - ./certs:/certs:ro
+  healthcheck:
+    # Verify the SQL listener is accepting TCP connections.
+    test: ["CMD-SHELL", "timeout 2 bash -c 'echo > /dev/tcp/127.0.0.1/5432'"]
+    interval: 5s
+    timeout: 3s
+    retries: 10
+    start_period: 10s
+
+services:
+  node1:
+    <<: *neuralbase-common
+    container_name: neuralbase-node1
+    environment:
+      NODE_ID: "node1"
+      LISTEN_ADDR: "0.0.0.0:5432"
+      RAFT_ADDR: "0.0.0.0:7001"
+      PEERS: "node2,node3"
+      METRICS_PORT: "9090"
+    ports:
+      - "5432:5432"   # SQL (primary — clients connect here)
+      - "7001:7001"   # Raft RPC
+      - "8001:8001"   # Query fragment exchange
+      - "9090:9090"   # Prometheus metrics
+
+  node2:
+    <<: *neuralbase-common
+    container_name: neuralbase-node2
+    environment:
+      NODE_ID: "node2"
+      LISTEN_ADDR: "0.0.0.0:5432"
+      RAFT_ADDR: "0.0.0.0:7001"
+      PEERS: "node1,node3"
+      METRICS_PORT: "9090"
+    ports:
+      - "5433:5432"   # SQL (secondary access)
+      - "7002:7001"   # Raft RPC
+      - "8002:8001"   # Query fragment exchange
+      - "9091:9090"   # Prometheus metrics
+
+  node3:
+    <<: *neuralbase-common
+    container_name: neuralbase-node3
+    environment:
+      NODE_ID: "node3"
+      LISTEN_ADDR: "0.0.0.0:5432"
+      RAFT_ADDR: "0.0.0.0:7001"
+      PEERS: "node1,node2"
+      METRICS_PORT: "9090"
+    ports:
+      - "5434:5432"   # SQL (tertiary access)
+      - "7003:7001"   # Raft RPC
+      - "8003:8001"   # Query fragment exchange
+      - "9092:9090"   # Prometheus metrics
+
+  # ── Observability stack ────────────────────────────────────────────────
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    container_name: neuralbase-jaeger
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC receiver
+      - "4318:4318"    # OTLP HTTP receiver
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: neuralbase-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+    ports:
+      - "9093:9090"    # Prometheus UI / API (9090-9092 used by nodes)
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: neuralbase-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "neuralbase"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"    # Grafana UI
+    depends_on:
+      - prometheus
+
+volumes:
+  grafana_data:

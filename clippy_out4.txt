@@ -1,0 +1,13 @@
+    Checking neuralbase v0.1.0 (C:\Users\scsar\Desktop\neuralbase)
+error: useless use of `vec!`
+   --> tests\raft_correctness.rs:232:15
+    |
+232 |     let ids = vec!["a", "b", "c"];
+    |               ^^^^^^^^^^^^^^^^^^^ help: you can use an array directly: `["a", "b", "c"]`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#useless_vec
+    = note: `-D clippy::useless-vec` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::useless_vec)]`
+System.Management.Automation.RemoteException
+error: could not compile `neuralbase` (test "raft_correctness") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...

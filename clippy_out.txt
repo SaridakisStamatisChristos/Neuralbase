@@ -1,0 +1,63 @@
+    Checking neuralbase v0.1.0 (C:\Users\scsar\Desktop\neuralbase)
+error: this expression creates a reference which is immediately dereferenced by the compiler
+  --> tests\perf_tpch.rs:32:44
+   |
+32 |     let out = execute_physical_plan(&plan, &dataset, &scheduler, None).expect("q1 execute");
+   |                                            ^^^^^^^^ help: change this to: `dataset`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_borrow
+   = note: `-D clippy::needless-borrow` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::needless_borrow)]`
+System.Management.Automation.RemoteException
+error: the loop variable `idx` is used to index `vals`
+  --> tests\perf_tpch.rs:42:20
+   |
+42 |         for idx in 0..out.row_count {
+   |                    ^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+   = note: `-D clippy::needless-range-loop` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::needless_range_loop)]`
+help: consider using an iterator and enumerate()
+   |
+42 |         for (idx, <item>) in vals.iter().enumerate().take(out.row_count) {
+   |             ~~~~~~~~~~~~~    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+System.Management.Automation.RemoteException
+error: the loop variable `idx` is used to index `vals`
+  --> tests\perf_tpch.rs:54:20
+   |
+54 |         for idx in 0..reference.row_count {
+   |                    ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+   |
+54 |         for (idx, <item>) in vals.iter().enumerate().take(reference.row_count) {
+   |             ~~~~~~~~~~~~~    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+System.Management.Automation.RemoteException
+error: this expression creates a reference which is immediately dereferenced by the compiler
+  --> tests\perf_tpch.rs:80:44
+   |
+80 |     let out = execute_physical_plan(&plan, &dataset, &scheduler, None).expect("q6 execute");
+   |                                            ^^^^^^^^ help: change this to: `dataset`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_borrow
+System.Management.Automation.RemoteException
+error: this expression creates a reference which is immediately dereferenced by the compiler
+   --> tests\perf_tpch.rs:108:45
+    |
+108 |     let _ = execute_physical_plan(&q1_plan, &dataset, &scheduler, None).expect("q1 execute");
+    |                                             ^^^^^^^^ help: change this to: `dataset`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_borrow
+System.Management.Automation.RemoteException
+error: this expression creates a reference which is immediately dereferenced by the compiler
+   --> tests\perf_tpch.rs:112:45
+    |
+112 |     let _ = execute_physical_plan(&q6_plan, &dataset, &scheduler, None).expect("q6 execute");
+    |                                             ^^^^^^^^ help: change this to: `dataset`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_borrow
+System.Management.Automation.RemoteException
+error: could not compile `neuralbase` (test "perf_tpch") due to 6 previous errors
+warning: build failed, waiting for other jobs to finish...
