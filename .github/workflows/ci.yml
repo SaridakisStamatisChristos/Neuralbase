@@ -17,6 +17,11 @@ jobs:
           toolchain: 1.84.1
           components: rustfmt, clippy
 
+      - name: Install libclang
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y llvm-dev libclang-dev clang
+
       - name: Run tests
         run: make test
 
