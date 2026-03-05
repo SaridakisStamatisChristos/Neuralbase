@@ -2,31 +2,37 @@
 // Consensus module — Raft consensus engine for NeuralBase.
 //
 // Sub-modules:
-//   log       — persistent log (PersistentState, LogEntry)
+//   log       — persistent log (PersistentState, RaftPersistenceStore)
 //   raft      — state machine (RaftNode, RaftRole, RaftShared)
 //   rpc       — wire message types
 //   transport — Transport trait + ChannelTransport + TcpTransport
 //
-// CONFIDENCE: raw=0.84 effective=0.72
-// [HUMAN REVIEW REQUIRED] — see REVIEW_REQUIRED.md §Raft
-
-// Session 5 — not yet wired into query execution path. Suppress dead_code.
+// Session 13 additions:
+//   - InstallSnapshot RPC support (rpc.rs + raft.rs)
+//   - RaftPersistenceStore trait + MemPersistenceStore (log.rs)
+//   - Membership changes via tagged ClientCommand (raft.rs)
+//
+// CONFIDENCE: raw=0.76 effective=0.68
+// [HUMAN REVIEW REQUIRED] — see REVIEW_REQUIRED.md §Session13
 
 pub mod log;
 pub mod raft;
 pub mod rpc;
 pub mod transport;
 
-// Re-exports: used by integration tests and future query-execution wiring.
-// The binary itself does not yet call these directly — suppress until wired up.
+// Re-exports used by integration tests and future query-execution wiring.
 #[allow(unused_imports)]
-pub use raft::{RaftNode, RaftRole, RaftShared};
+pub use log::{MemPersistenceStore, PersistentState, RaftPersistenceStore};
 #[allow(unused_imports)]
-pub use raft::RaftTaskHandle;
+pub use raft::{
+    encode_compact_log, encode_leader_transfer, encode_membership_change, ClientCommand, RaftNode,
+    RaftRole, RaftShared, RaftTaskHandle, APPLY_CHANNEL_CAPACITY, COMPACT_LOG_TAG,
+    LEADER_TRANSFER_TAG, MEMBERSHIP_CHANGE_TAG,
+};
 #[allow(unused_imports)]
 pub use rpc::{
-    AppendEntriesArgs, AppendEntriesReply, LogEntry, NodeId, RaftMessage, RequestVoteArgs,
-    RequestVoteReply,
+    AppendEntriesArgs, AppendEntriesReply, InstallSnapshotArgs, InstallSnapshotReply, LogEntry,
+    MembershipChange, NodeId, RaftMessage, RequestVoteArgs, RequestVoteReply,
 };
 #[allow(unused_imports)]
 pub use transport::{ChannelBus, ChannelTransport, Transport};

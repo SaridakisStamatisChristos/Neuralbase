@@ -62,7 +62,9 @@ use std::time::{Duration, Instant};
 
 const EXEC_TEST_SF: f64 = 0.001;
 const PG16_CONTAINER: &str = "neuralbase-pg16-ref";
-const PG16_PORT: u16 = 55432;
+// Port 55432 falls in a Hyper-V reserved range on Windows (55379-55478).
+// 15432 is outside all reserved ranges and conventionally used for PG mirrors.
+const PG16_PORT: u16 = 15432;
 const NUMERIC_TOLERANCE: f64 = 0.01;
 
 fn tpch_sf01_dataset() -> &'static tpch::TpchDataSet {
@@ -122,7 +124,7 @@ fn ensure_pg16_container_running() {
                 "-e",
                 "POSTGRES_DB=tpch",
                 "-p",
-                "55432:5432",
+                "15432:5432",
                 "postgres:16-alpine",
             ])
             .status()
@@ -146,7 +148,7 @@ fn pg16_client() -> Client {
     let mut last_err = None;
     for _ in 0..30 {
         match Client::connect(
-            "host=127.0.0.1 port=55432 user=postgres password=postgres dbname=tpch",
+            "host=127.0.0.1 port=15432 user=postgres password=postgres dbname=tpch",
             NoTls,
         ) {
             Ok(client) => return client,

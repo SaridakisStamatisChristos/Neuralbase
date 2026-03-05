@@ -102,7 +102,10 @@
 - Rogue node injection: a network adversary on the Raft port can inject `AppendEntries` or
   `RequestVote` RPC messages and potentially disrupt the cluster.
 - Log compaction (`GcHandle` in `src/gc.rs`) is not replicated; a compaction on one node
-  can diverge snapshots. This is a known limitation tracked in `REVIEW_REQUIRED.md`.
+  can diverge snapshots. Tracked in `REVIEW_REQUIRED.md`.
+- RemoveNode of current leader requires LeaderTransfer first. Use
+  `admin transfer-leadership <target>` then `RemoveNode`. This is enforced by the
+  implementation — RemoveNode returns error if called directly on leader.
 
 **Mitigations**:
 - `handle_failure()` and retry logic limit blast radius of partial failures

@@ -434,11 +434,11 @@ mod tests {
         let state = RlOptimizer::build_rl_state(&present, &joined);
         let expected_pos = 1.0f32 / MAX_TABLES as f32;
         assert!(
-            (state[0 * MAX_TABLES + 0] - expected_pos).abs() < 1e-6,
+            (state[0] - expected_pos).abs() < 1e-6,
             "diagonal A[0,0] should be {} after joining at pos 0",
             expected_pos
         );
         // orders not yet joined → diagonal still 0
-        assert_eq!(state[1 * MAX_TABLES + 1], 0.0);
+        assert_eq!(state[MAX_TABLES + 1], 0.0);
     }
 }

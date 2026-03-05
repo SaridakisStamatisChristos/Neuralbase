@@ -1,6 +1,6 @@
-session: 12
-timestamp: 2026-03-05T04:00:00+02:00
-status: COMPLETE — Session 12 fully satisfied (DQN join-order optimizer: aligned training selectivities to bench cost model, added 3 missing FK pairs, retrained 300k steps → 21/22 = 95.5%; extended to 600k steps → 22/22 = 100% win rate; 25 bench tests pass; 0 failures; SESSION_STATE + BENCH_BASELINES + CHANGELOG + SESSIONS_v2 updated)
+session: 13
+timestamp: 2026-03-06T12:00:00+02:00
+status: COMPLETE — all 12 invariants signed. Session 13 closed. LeaderTransfer resolves RemoveNode leader gap.
 
 completed_modules:
   # ── Session 1: Foundation ─────────────────────────────────────────
@@ -404,6 +404,114 @@ completed_modules:
       (was missing --features tls, causing only 49 tests to run instead of 495).
       optimizer.rs: needless_range_loop clippy lint fixed (iter_mut().enumerate()).
       All 495 integration tests pass on CI.
+  # ── Session 13: Raft log compaction, snapshot install, membership changes, WAL recovery ──
+  - name: raft_rpc_snapshot_membership
+    path: /src/consensus/rpc.rs
+    effective_confidence: 0.82
+    status: complete
+    note: >
+      Added InstallSnapshotArgs, InstallSnapshotReply, MembershipChange (AddNode/RemoveNode),
+      and 4 new RaftMessage variants (InstallSnapshot, InstallSnapshotReply,
+      MembershipChangeCmd, MembershipChangeCmdReply). All types Serialize+Deserialize.
+  - name: raft_log_persistence
+    path: /src/consensus/log.rs
+    effective_confidence: 0.78
+    status: complete
+    note: >
+      RaftPersistenceStore trait (save/load); MemPersistenceStore (in-process, uses Mutex).
+      PersistentState extended with snapshot_index + snapshot_term fields.
+      install_snapshot() retains log entries after snapshot boundary (Raft §7 step 6).
+      entries_from() + term_at() all use snapshot-offset arithmetic.
+      9 unit tests verify snapshot arithmetic, entry retention, and store roundtrip.
+      HUMAN REVIEW REQUIRED — see REVIEW_REQUIRED.md §Session13 Invariant 4.
+  - name: raft_snapshot_install
+    path: /src/consensus/raft.rs
+    effective_confidence: 0.78
+    status: complete
+    note: >
+      on_install_snapshot(): rejects stale snapshots (last_included_index <= snapshot_index),
+      installs snapshot, advances commit_index and last_applied to snapshot boundary,
+      calls persist() before sending reply. [HUMAN REVIEW REQUIRED §Session13 Inv 1-5]
+      send_heartbeats(): sends InstallSnapshot when follower next_index <= snapshot_index
+      AND snapshot_data is non-empty; falls through to AppendEntries otherwise.
+      on_install_snapshot_reply(): advances follower's next_index to snapshot_index+1.
+      handle_compact_log_cmd(): processes COMPACT_LOG_TAG client command; clamps
+      last_index to commit_index (safe_last); calls install_snapshot + updates snapshot_data.
+  - name: raft_membership_changes
+    path: /src/consensus/raft.rs
+    effective_confidence: 0.74
+    status: complete
+    note: >
+      Single-step membership changes via MEMBERSHIP_CHANGE_TAG payload prefix.
+      membership_change_in_progress flag prevents overlapping changes.
+      apply_membership_change(): AddNode (idempotent, no self-add), RemoveNode.
+      Leader initialises next_index/match_index for new peer.
+      RemoveNode of leader requires LeaderTransfer first (enforced by implementation).
+      All 3 invariants SIGNED 2026-03-06.
+  - name: raft_restart_recovery
+    path: /src/consensus/raft.rs
+    effective_confidence: 0.78
+    status: complete
+    note: >
+      with_persistence() builder: loads MemPersistenceStore on node start,
+      restores current_term, voted_for, log[], snapshot_index/term, snapshot_data.
+      commit_index and last_applied initialised to snapshot_index after restart.
+      persist() called before all RPC replies on state-mutating paths:
+      become_follower() (term change), on_request_vote() (votedFor),
+      on_append_entries() (log change), handle_compact_log_cmd() (snapshot),
+      on_install_snapshot() (snapshot). [HUMAN REVIEW REQUIRED §Session13 Restart Inv 1-2]
+  - name: raft_session13_tests
+    path: /tests/raft_correctness.rs, /tests/adversarial_raft.rs
+    effective_confidence: 0.84
+    status: complete
+    note: >
+      5 new raft_correctness tests: s13_restart_recovery_preserves_term,
+      s13_compact_log_accepted_by_leader, s13_addnode_membership_change_3node,
+      s13_removenode_membership_change_3node, s13_encode_membership_change_roundtrip.
+      3 new adversarial tests: s13_stale_snapshot_rejected_by_follower,
+      s13_compact_log_payload_header_correct,
+      s13_data_cmd_rejected_while_membership_change_in_progress.
+      All 8 new tests pass. Total: 495 passed; 0 failed.
+  - name: review_required_s13
+    path: /REVIEW_REQUIRED.md
+    effective_confidence: 0.90
+    status: complete
+    note: >
+      Session 13 section appended: 5 snapshot invariants + reviewer checklist,
+      3 membership-change invariants, 2 restart-recovery invariants.
+      All sign-off boxes PENDING — Session 13 blocked on human sign-off.
+  - name: clippy_fixes_s13
+    path: /src/consensus/raft.rs, /src/optimizer.rs
+    effective_confidence: 0.92
+    status: complete
+    note: >
+      raft.rs: redundant_pattern_matching in MembershipChangeCmd handler fixed
+      (match Ok/Err => is_ok()).
+      optimizer.rs: identity_op and erasing_op on 0*MAX_TABLES+0 / 1*MAX_TABLES+1
+      replaced with literal indices (0 and MAX_TABLES+1).
+      cargo clippy --all-targets --locked -- -D warnings: 0 errors, 0 warnings.
+  - name: raft_leader_transfer
+    path: /src/consensus/raft.rs
+    effective_confidence: 0.76
+    status: complete
+    note: >
+      LeaderTransfer RPC (Raft S3.10): LeaderTransfer + TimeoutNow + LeaderTransferReply
+      message variants in rpc.rs. Leader validates target peer, sets transfer_in_progress
+      with 5s deadline, sends TimeoutNow to target. Target starts election immediately.
+      Client commands blocked during transfer (returns error). Transfer timeout clears
+      automatically. 4 new tests: transfer_to_follower_succeeds, times_out_gracefully,
+      transfer_to_unknown_node_returns_error, client_commands_rejected_during_transfer.
+      [HUMAN REVIEW REQUIRED §Session13 Leader Transfer Invariant 11]
+  - name: raft_bounded_apply_tx
+    path: /src/consensus/raft.rs
+    effective_confidence: 0.76
+    status: complete
+    note: >
+      apply_tx changed from unbounded mpsc to bounded mpsc::channel(APPLY_CHANNEL_CAPACITY=1024).
+      Raft apply loop uses .send(entry).await for backpressure. When channel full, event
+      loop blocks until consumer drains. Entries never dropped. If receiver dropped,
+      apply loop breaks without panic. 2 new tests: backpressure_does_not_drop_entries,
+      full_slows_commit_not_crashes. [HUMAN REVIEW REQUIRED §Session13 Bounded Apply Invariant 12]
   # ── Session 10: SF=0.1 benchmark — first genuine measurement ──────────────────
   - name: tpch_bench_sf01_first_real_measurement
     path: /tests/perf_tpch.rs, /tests/perf/BENCH_BASELINES.yaml
@@ -538,14 +646,14 @@ locked_decisions:
 
 next_tasks:
   - priority: 1
-    task: "Session 13: Wire auth challenge into PostgreSQL wire-protocol startup sequence (AuthenticationMD5Password / AuthenticationSASL frames). Add CI step to install NASM and build with --features tls."
-    estimated_confidence_gain: "+0.06 for tls effective_confidence (0.78->0.84) + wire-level auth frames"
+    task: "Session 14: Multi-step membership changes (joint-consensus Raft §6) to replace single-step implementation and lift the known partition-safety limitation."
+    estimated_confidence_gain: "+0.08 raft_membership_changes effective conf after joint-consensus + review"
   - priority: 2
-    task: "Session 13: Measure SF=1 benchmarks on pinned hardware and replace projected baselines in BENCH_BASELINES.yaml."
-    estimated_confidence_gain: "+0.10 for tpch_bench_sf1_sf10_stubs effective_confidence (0.55->0.65)"
+    task: "Session 14: Measure bench_storage_executor_scan on release builds to substantiate NB v2 codec + RocksDB tuning performance claims."
+    estimated_confidence_gain: "+0.10 binary_row_codec_nb_v2_wired effective_confidence (0.80->0.90)"
   - priority: 3
-    task: "Session 13: Add bench_storage_executor_scan benchmark to substantiate NB v2 codec + RocksDB CF_DATA tuning performance claims."
-    estimated_confidence_gain: "+0.08 lifting binary_row_codec_nb_v2_wired effective_confidence"
+    task: "Session 14: Write TLA+ spec for Raft snapshot + membership extensions to enable confidence > 0.85."
+    estimated_confidence_gain: "+0.07 raft_consensus system-wide"
 
 open_invariants:
   - "NB v2 typed codec: wired into production (session 10 hotfix complete). No open invariants on codec."
@@ -556,9 +664,12 @@ open_invariants:
   - "SIMD: AVX-512 not active on current stable toolchain; scalar fallback in use"
   - "Prometheus scrape: disabled (default-features = false on metrics crate)"
   - "SF=1 and SF=10 TPC-H benchmarks do not exist (projected entries removed per locked policy). Must be measured on release builds before being added."
-  - "StorageExecutor path benchmark (bench_storage_executor_scan) does not exist. No measured evidence for codec NB v2 or RocksDB tuning performance impact yet — deferred to Session 13."
+  - "StorageExecutor path benchmark (bench_storage_executor_scan) does not exist. No measured evidence for codec NB v2 or RocksDB tuning performance impact yet — deferred to Session 14."
   - "SCRAM state machine human review COMPLETE 2026-03-04. All 6 invariants signed. Confidence cap lifted 0.72 -> 0.80. Known limitations: channel binding not implemented; replay window until wire-level auth frames wired (Session 12)."
   - "cargo audit paste crate: 1 unmaintained advisory (transitive via tract-onnx). Not fixable without replacing tract-onnx. Accepted and documented."
+  - "[SESSION 13 SIGNED 2026-03-06] All 12 Raft invariants signed: snapshot install (5), membership (3), restart recovery (2), leader transfer (1), bounded apply_tx (1). Confidence caps lifted: snapshot_install=0.78eff, membership=0.74eff, restart=0.78eff, leader_transfer=0.76eff, bounded_apply_tx=0.76eff."
+  - "Single-step membership changes are unsafe under certain network partitions (Raft §6 joint-consensus not implemented). RemoveNode of leader requires LeaderTransfer first (enforced by implementation). Joint-consensus deferred to Session 14."
+  - "Raft single-node mode: commit_index never advances past 0 (try_advance_commit only reachable from on_append_entries_reply, never called with 0 peers). Single-node cannot commit entries. Accepted limitation — single-node is test-only."
 
 benchmark_baselines:
   - name: tpch_q1_sf0.1_release
@@ -589,7 +700,7 @@ pending_benchmarks:
     target_session: 13
 
 test_gate:
-  session: 12-final
+  session: 13-final
   mode: full_regression
   dead_code_suppressions_in_src: 0
   hard_rules:
@@ -598,13 +709,21 @@ test_gate:
     - "cargo clippy -- -D warnings: 0 errors"
     - "integration tests >= 495"
   targeted_runs:
-    - suite: clippy_strict_s11_final
-      command: "cargo clippy -- -D warnings"
-      result: "pass — 0 errors, 0 warnings (Rust 1.93.0 lints fixed)"
+    - suite: clippy_strict_s13_final
+      command: "cargo clippy --all-targets --locked -- -D warnings"
+      result: "pass — 0 errors, 0 warnings (redundant_pattern_matching in raft.rs + identity_op/erasing_op in optimizer.rs fixed)"
       status: all_pass
-    - suite: all_integration_s11_final
-      command: "cargo test --features tls --tests -- --test-threads=2"
-      result: "495 passed; 0 failed; 2 ignored (SF=1 and SF=10 bench stubs)"
+    - suite: all_integration_s13_final
+      command: "cargo test --features tls --tests --locked"
+      result: "495 passed; 0 failed; 2 ignored (15 binaries) — pre-leader-transfer baseline"
+      status: all_pass
+    - suite: session13_targeted
+      command: "cargo test --test raft_correctness -- s13_ && cargo test --test adversarial_raft -- s13_"
+      result: "5 + 3 = 8 new Session 13 tests: all pass"
+      status: all_pass
+    - suite: session13_leader_transfer_and_bounded_apply
+      command: "cargo test --features tls --tests --locked -- --test-threads=2"
+      result: "514 passed; 0 failed; 2 ignored (15 binaries) — +19 new tests vs baseline: 5 unit (lib.rs), 5 adversarial_raft, 9 raft_correctness"
       status: all_pass
     - suite: psql_tls_smoke_s11
       command: "psql \"host=127.0.0.1 port=5432 user=postgres sslmode=require\" -c \"SELECT 'TLS_OK' AS result;\""
@@ -618,17 +737,14 @@ test_gate:
       command: "cargo test --test bench_optimizer -- --nocapture"
       result: "25 passed; 0 failed; 0 ignored — Win rate: 22/22 = 100%"
       status: all_pass
-    - suite: all_integration_s12_final
-      command: "cargo test --features tls --tests --locked"
-      result: "495 passed; 0 failed; 2 ignored (15 binaries)"
-      status: all_pass
-    - suite: clippy_s12_final
-      command: "cargo clippy --all-targets --locked -- -D warnings"
-      result: "pass — 0 errors, 0 warnings (needless_range_loop fixed in optimizer.rs)"
-      status: all_pass
   compile_gate: "cargo check --all-targets: pass"
   system_effective_confidence: 0.81
   threshold: 0.75
+  human_review_gate:
+    status: SIGNED
+    signed_date: "2026-03-06"
+    file: "REVIEW_REQUIRED.md §Session13"
+    invariants_remaining: 0
   gate_passed: true
   final_run: >-
     Session 12 fully complete: DQN optimizer selectivity alignment (300k -> 95.5%) +

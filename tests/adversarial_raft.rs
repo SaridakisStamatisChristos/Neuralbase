@@ -453,3 +453,310 @@ async fn follower_state_stable_after_leader_elected() {
     }
     assert_eq!(candidates, 0, "no nodes should be stuck in Candidate after heartbeats");
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// Session 13 adversarial tests — snapshot install invariants, compaction
+// boundary clamping, and membership-change concurrency rejection.
+// ══════════════════════════════════════════════════════════════════════════
+
+// [S13-A] A stale InstallSnapshot (last_included_index <= current snapshot_index)
+// must be silently rejected.  The node's last_applied must not advance.
+#[tokio::test]
+async fn s13_stale_snapshot_rejected_by_follower() {
+    use neuralbase::consensus::{InstallSnapshotArgs, RaftMessage, Transport};
+
+    let bus = ChannelTransport::new_bus();
+    let follower_transport = Arc::new(
+        ChannelTransport::register("s13_follower".into(), Arc::clone(&bus)).await,
+    );
+    let spy_transport = Arc::new(
+        ChannelTransport::register("s13_spy".into(), Arc::clone(&bus)).await,
+    );
+
+    // Node has "s13_spy" as a peer; can't form quorum alone so stays in
+    // Candidate/Follower.  Give it a long timeout so it doesn't immediately
+    // fire its election before we send the rogue snapshot.
+    let mut node = RaftNode::new(
+        "s13_follower".into(),
+        vec!["s13_spy".into()],
+        Arc::clone(&follower_transport),
+    );
+    node.set_election_timeout_ms(500);
+    let (_cmd_tx, shared, _handle) = node.spawn();
+
+    // Let the node initialize.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Send a snapshot whose last_included_index=0 equals the initial
+    // snapshot_index=0: this must be rejected as stale.
+    spy_transport
+        .send(
+            &"s13_follower".to_string(),
+            RaftMessage::InstallSnapshot(InstallSnapshotArgs {
+                term: 1,
+                leader_id: "s13_spy".into(),
+                last_included_index: 0, // stale: 0 <= snapshot_index=0
+                last_included_term: 0,
+                data: Arc::new(b"rogue_snapshot".to_vec()),
+                done: true,
+            }),
+        )
+        .await;
+    // Drop spy_transport immediately after sending so its inbox Receiver is
+    // closed.  Any subsequent follower → "s13_spy" messages (e.g. RequestVote
+    // if the election timer fires under CI load) are now silently discarded
+    // rather than buffering in the mpsc channel without a consumer.
+    drop(spy_transport);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // A stale snapshot must not advance last_applied.
+    let s = shared.lock().await;
+    assert_eq!(
+        s.last_applied, 0,
+        "stale snapshot must not advance last_applied (got {})",
+        s.last_applied
+    );
+}
+
+// [S13-B] encode_compact_log produces the correct 10-byte header; the
+// last_index and snapshot data round-trip without loss.
+#[test]
+fn s13_compact_log_payload_header_correct() {
+    use neuralbase::consensus::{encode_compact_log, COMPACT_LOG_TAG};
+
+    let snap_data = b"state_machine_bytes_v1";
+    let payload = encode_compact_log(9_999_u64, snap_data);
+
+    assert!(
+        payload.starts_with(COMPACT_LOG_TAG),
+        "payload must start with COMPACT_LOG_TAG (got {:?})",
+        &payload[..2]
+    );
+    let encoded_idx =
+        u64::from_be_bytes(payload[2..10].try_into().expect("must be 8 bytes"));
+    assert_eq!(encoded_idx, 9_999, "last_index must round-trip as big-endian u64");
+    assert_eq!(
+        &payload[10..],
+        snap_data,
+        "snapshot data must follow the 10-byte header with no corruption"
+    );
+}
+
+// [S13-C] While a membership change is in progress (uncommitted), a regular
+// data command to the same leader must be rejected with an error.
+// We exploit the fact that single-node commit_index never advances past 0,
+// so the AddNode entry is never applied and the flag stays set.
+#[tokio::test]
+async fn s13_data_cmd_rejected_while_membership_change_in_progress() {
+    use neuralbase::consensus::{encode_membership_change, ClientCommand, MembershipChange};
+    use tokio::sync::oneshot;
+
+    let bus = ChannelTransport::new_bus();
+    let transport = Arc::new(
+        ChannelTransport::register("s13_mc_solo".into(), Arc::clone(&bus)).await,
+    );
+    let mut node = RaftNode::new("s13_mc_solo".into(), vec![], transport);
+    node.set_election_timeout_ms(30);
+    let (cmd_tx, shared, _handle) = node.spawn();
+
+    let elected = wait_for_leader(&[shared], Duration::from_millis(500)).await;
+    assert!(elected, "single node must self-elect");
+
+    // Submit AddNode — sets membership_change_in_progress = true.
+    // In single-node mode commit_index never advances, so the flag stays set.
+    let (tx1, rx1) = oneshot::channel::<Result<u64, String>>();
+    cmd_tx
+        .send(ClientCommand {
+            payload: encode_membership_change(&MembershipChange::AddNode(
+                "extra_node".to_string(),
+            )),
+            reply: tx1,
+        })
+        .await
+        .expect("channel must be open");
+    let r1 = tokio::time::timeout(Duration::from_millis(500), rx1)
+        .await
+        .expect("AddNode reply within 500ms")
+        .expect("channel not dropped");
+    assert!(r1.is_ok(), "AddNode must be accepted by leader: {:?}", r1);
+
+    // Immediately submit a regular data command — must be rejected.
+    let (tx2, rx2) = oneshot::channel::<Result<u64, String>>();
+    cmd_tx
+        .send(ClientCommand {
+            payload: b"regular_payload".to_vec(),
+            reply: tx2,
+        })
+        .await
+        .expect("channel must still be open");
+    let r2 = tokio::time::timeout(Duration::from_millis(500), rx2)
+        .await
+        .expect("data cmd reply within 500ms")
+        .expect("channel not dropped");
+    assert!(
+        r2.is_err(),
+        "data command must be rejected while membership change is in progress"
+    );
+}
+
+// ── Session 13: bounded apply_tx tests ─────────────────────────────────────
+
+// [S13-D] Bounded apply channel does not drop entries under backpressure.
+// Fill the channel past capacity, then drain.  Every committed entry must arrive.
+#[tokio::test]
+async fn s13_apply_tx_backpressure_does_not_drop_entries() {
+    use neuralbase::consensus::ClientCommand;
+    use tokio::sync::oneshot;
+
+    let bus = ChannelTransport::new_bus();
+    let ids = ["bp1_a", "bp1_b", "bp1_c"];
+    let mut shareds = vec![];
+    let mut cmd_txs = vec![];
+    let mut _handles = vec![];
+
+    // Attach a small bounded apply channel (capacity 4) to each node.
+    let mut apply_rxs = vec![];
+    for &id in &ids {
+        let peers: Vec<String> =
+            ids.iter().filter(|&&p| p != id).map(|s| s.to_string()).collect();
+        let transport =
+            Arc::new(ChannelTransport::register(id.into(), Arc::clone(&bus)).await);
+        let mut node = RaftNode::new(id.into(), peers, transport);
+        node.set_election_timeout_ms(80);
+        let (atx, arx) = tokio::sync::mpsc::channel(4);
+        let node = node.with_apply_tx(atx);
+        let (cmd_tx, shared, handle) = node.spawn();
+        shareds.push(shared);
+        cmd_txs.push(cmd_tx);
+        _handles.push(handle);
+        apply_rxs.push(arx);
+    }
+
+    let elected = wait_for_leader(&shareds, Duration::from_millis(2_000)).await;
+    assert!(elected, "3-node cluster must elect a leader");
+    // Let the leader stabilize.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut leader_idx = 0usize;
+    for (i, s) in shareds.iter().enumerate() {
+        if s.lock().await.role == RaftRole::Leader {
+            leader_idx = i;
+            break;
+        }
+    }
+
+    let count = 20u32;
+
+    // Spawn producer + drain from the leader's apply channel concurrently.
+    let cmd_tx = cmd_txs[leader_idx].clone();
+    let mut apply_rx = std::mem::replace(
+        &mut apply_rxs[leader_idx],
+        tokio::sync::mpsc::channel(1).1, // placeholder
+    );
+    let producer = tokio::spawn(async move {
+        for i in 0..count {
+            let (tx, rx) = oneshot::channel::<Result<u64, String>>();
+            if cmd_tx
+                .send(ClientCommand {
+                    payload: format!("entry_{i}").into_bytes(),
+                    reply: tx,
+                })
+                .await
+                .is_err()
+            {
+                break;
+            }
+            let _ = rx.await;
+        }
+    });
+
+    let consumer = tokio::spawn(async move {
+        let mut received = 0u32;
+        let drain_deadline = tokio::time::Instant::now() + Duration::from_millis(10_000);
+        while received < count {
+            let entry = tokio::time::timeout_at(drain_deadline, apply_rx.recv()).await;
+            match entry {
+                Ok(Some(_)) => received += 1,
+                Ok(None) | Err(_) => break,
+            }
+        }
+        received
+    });
+
+    let (_, received) = tokio::join!(producer, consumer);
+    let received = received.expect("consumer task must not panic");
+    assert_eq!(received, count, "all {count} entries must be delivered, got {received}");
+}
+
+// [S13-E] Bounded apply channel does not panic or crash when full — it slows
+// the commit path instead.
+#[tokio::test]
+async fn s13_apply_tx_full_slows_commit_not_crashes() {
+    use neuralbase::consensus::ClientCommand;
+    use tokio::sync::oneshot;
+
+    let bus = ChannelTransport::new_bus();
+    let ids = ["bp2_a", "bp2_b", "bp2_c"];
+    let mut shareds = vec![];
+    let mut cmd_txs = vec![];
+    let mut handles = vec![];
+
+    // Capacity 2: even a few commits will saturate the channel on the leader.
+    let mut apply_rxs = vec![];
+    for &id in &ids {
+        let peers: Vec<String> =
+            ids.iter().filter(|&&p| p != id).map(|s| s.to_string()).collect();
+        let transport =
+            Arc::new(ChannelTransport::register(id.into(), Arc::clone(&bus)).await);
+        let mut node = RaftNode::new(id.into(), peers, transport);
+        node.set_election_timeout_ms(40);
+        let (atx, arx) = tokio::sync::mpsc::channel(2);
+        let node = node.with_apply_tx(atx);
+        let (cmd_tx, shared, handle) = node.spawn();
+        shareds.push(shared);
+        cmd_txs.push(cmd_tx);
+        handles.push(handle);
+        apply_rxs.push(arx);
+    }
+
+    let elected = wait_for_leader(&shareds, Duration::from_millis(1_000)).await;
+    assert!(elected, "3-node cluster must elect a leader");
+
+    let mut leader_idx = 0usize;
+    for (i, s) in shareds.iter().enumerate() {
+        if s.lock().await.role == RaftRole::Leader {
+            leader_idx = i;
+            break;
+        }
+    }
+
+    // Submit 5 entries without draining the apply channel.
+    for i in 0u32..5 {
+        let (tx, _rx) = oneshot::channel::<Result<u64, String>>();
+        let _ = cmd_txs[leader_idx]
+            .send(ClientCommand {
+                payload: format!("bp2_{i}").into_bytes(),
+                reply: tx,
+            })
+            .await;
+    }
+
+    // Wait a bit for the channel to fill.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Drop the leader's receiver — simulates executor shutdown.
+    // This unblocks the Raft apply loop's .send().await (returns Err).
+    drop(apply_rxs.remove(leader_idx));
+
+    // The node must not panic.  Give it time to process the broken channel.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Verify the node is still alive (event loop didn't panic).
+    // The shared state may or may not have been updated depending on timing,
+    // but the critical assertion is that we reach here without a panic.
+
+    // Clean shutdown — no panics.
+    for h in handles {
+        h.shutdown().await;
+    }
+}

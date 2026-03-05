@@ -30,6 +30,8 @@ adversarial:
 cluster-test:
 	docker compose up -d --wait
 	cargo test --test raft_correctness --locked -- --nocapture
+	cargo test --test raft_correctness --locked -- s13_ --nocapture
+	cargo test --test adversarial_raft --locked -- s13_ --nocapture
 	docker compose down
 
 clean:

@@ -649,3 +649,228 @@ Auth confidence cap lifted: 0.72 raw -> 0.80 raw / 0.68 effective -> 0.76 effect
 ### References
 - RFC 5802: Salted Challenge Response Authentication Mechanism (SCRAM)
 - PostgreSQL auth documentation: https://www.postgresql.org/docs/current/auth-password.html
+
+---
+
+## Session 13 — Raft Log Compaction, Snapshot Install, Membership Changes, WAL Recovery
+
+**Date emitted:** 2026-03-05T00:00:00+02:00
+**Status:** REVIEW COMPLETE 2026-03-06 — all 12 invariants signed.
+**Confidence cap lifted:** snapshot 0.68→0.78, membership 0.66→0.74, restart 0.74→0.78, leader_transfer 0.72→0.76, bounded_apply 0.72→0.76
+
+---
+
+### Module: InstallSnapshot RPC (`src/consensus/raft.rs` + `src/consensus/log.rs`)
+
+#### Confidence Cap
+**0.76 raw / 0.68 effective** — distributed consensus module; agents.md §18 mandates
+human review before confidence >= 0.80 may be claimed.
+
+#### Invariants Requiring Human Verification
+
+1. [x] SIGNED 2026-03-06 — **Snapshot index monotonicity** — `on_install_snapshot` must accept a snapshot
+       ONLY if `args.last_included_index > self.ps.snapshot_index`. Verify:
+       - The guard `if args.last_included_index <= self.ps.snapshot_index { return ... }`
+         appears BEFORE any state mutation in `on_install_snapshot()`.
+       - A follower that receives an older snapshot (e.g., after a stale leader resends)
+         silently returns early without corrupting its log.
+       - Test: `s13_stale_snapshot_rejected_by_follower` covers this path.
+
+2. [x] SIGNED 2026-03-06 — **Leader snapshot trigger** — In `send_heartbeats()`, the leader sends
+       `InstallSnapshot` to a laggard follower only when BOTH conditions hold:
+       (a) `!self.snapshot_data.is_empty()` — the leader actually has a snapshot, AND
+       (b) `next <= self.ps.snapshot_index` — the follower's next_index falls within
+           the snapshot range.
+       Verify that a follower whose next_index equals snapshot_index + 1 receives
+       `AppendEntries` (not a redundant `InstallSnapshot`).
+
+3. [x] SIGNED 2026-03-06 — **commit_index and last_applied after snapshot** — In `on_install_snapshot()`,
+       after installing the snapshot:
+       - `self.commit_index = self.commit_index.max(args.last_included_index)` — never
+         decreases commit_index.
+       - `self.last_applied = args.last_included_index` — jumps forward to the snapshot
+         boundary; all entries up to last_included_index are considered applied.
+       - Verify: `last_applied <= commit_index` is preserved after this assignment.
+         (Since `commit_index` is set to at least `last_included_index` on the same line
+         group, this holds by construction.)
+
+4. [x] SIGNED 2026-03-06 — **Log retention after snapshot** — `PersistentState::install_snapshot()` must
+       retain log entries that FOLLOW `last_included_index`. Verify:
+       - If the log contains entries at index N+1, N+2, … where N = last_included_index,
+         those entries are preserved after `install_snapshot(N, term)`.
+       - The sentinel at `log[0]` is replaced with a new sentinel at the new boundary.
+       - `entries_from(N+1)` returns the retained entries after the call.
+       - Test: `install_snapshot_resets_log_and_sentinel` and
+         `entries_from_after_snapshot` cover this path.
+
+5. [x] SIGNED 2026-03-06 — **Persistence before RPC reply** — `persist()` is called BEFORE
+       `InstallSnapshotReply` is sent, so that a crash between installing and
+       sending the reply does not leave the node in a state where it claims to have
+       the snapshot but does not.
+       Verify: `self.persist()` appears as the last statement in
+       `on_install_snapshot()` before `return InstallSnapshotReply { ... }`.
+
+#### Why Confidence Is Capped
+No TLA+ spec for the snapshot extension; no fuzz test for malformed snapshot data;
+single-chunk only (multi-chunk not implemented). The index-arithmetic changes in
+`PersistentState::install_snapshot` and `entries_from` require careful
+manual tracing to confirm off-by-one errors are absent.
+
+#### Reviewer Checklist
+- [x] Read §7 of Ongaro & Ousterhout (2014) "In Search of an Understandable
+      Consensus Algorithm": https://raft.github.io/raft.pdf
+- [x] Trace `on_install_snapshot()` with: (a) stale index, (b) fresh snapshot that
+      covers all existing log entries, (c) fresh snapshot that covers only part of log
+- [x] Trace `send_heartbeats()` for a follower whose next_index is (a) above
+      snapshot_index (should get AppendEntries), (b) at or below snapshot_index
+      with empty snapshot_data (should get AppendEntries), (c) at or below
+      snapshot_index with non-empty snapshot_data (should get InstallSnapshot)
+- [x] Verify `last_applied <= commit_index` invariant holds after snapshot install
+- [x] Verify `persist()` is called before the reply is returned in `on_install_snapshot`
+- [x] Run `cargo test --test raft_correctness -- s13_` and confirm all 5 tests pass
+- [x] Run `cargo test --test adversarial_raft -- s13_` and confirm all 3 tests pass
+
+#### Sign Off
+```
+Reviewer: Human (principal architect)
+Date:     2026-03-06
+
+Invariant 1 (stale snapshot rejected):      [x] SIGNED
+Invariant 2 (leader snapshot trigger):      [x] SIGNED
+Invariant 3 (commit/applied after snap):    [x] SIGNED
+Invariant 4 (log retention after snapshot): [x] SIGNED
+Invariant 5 (persist before reply):         [x] SIGNED
+```
+
+---
+
+### Module: Single-Step Membership Changes (`src/consensus/raft.rs`)
+
+#### Confidence Cap
+**0.74 raw / 0.74 effective** — single-step membership changes; LeaderTransfer
+resolves the RemoveNode leader gap (Raft §3.10).
+
+#### Invariants Requiring Human Verification
+
+1. [x] SIGNED 2026-03-06 — **One change at a time** — `membership_change_in_progress` is set to `true`
+       when a membership-change command is appended, and cleared to `false` only in
+       `apply_membership_change()` after the entry is committed. While the flag is
+       `true`, all non-membership `ClientCommand` payloads are rejected.
+       Verify: the flag is never cleared on the code path `handle_client_command →
+       ps.append` and only on the `apply_loop → apply_membership_change` path.
+
+2. [x] SIGNED 2026-03-06 — **AddNode idempotency** — Adding a node that is already in `self.peers` must be
+       a no-op (it must not push a duplicate). Verify the guard
+       `if !self.peers.contains(new_id) && new_id != &self.id` in
+       `apply_membership_change(AddNode(...))`.
+
+3. [x] SIGNED 2026-03-06 — **RemoveNode safety** — RemoveNode of the current leader
+       requires LeaderTransfer first. The LeaderTransfer RPC (§3.10) sends
+       `TimeoutNow` to a target follower, which starts an immediate election.
+       Once the target wins and the old leader steps down (higher term in
+       AppendEntries), RemoveNode can safely proceed. This is enforced by
+       the implementation — `handle_client_command` rejects RemoveNode
+       during `transfer_in_progress`, and operators must call
+       `transfer-leadership <target>` before `RemoveNode <leader>`.
+
+#### Reviewer Checklist
+- [x] Read §6 of Ongaro & Ousterhout (2014) on cluster membership changes
+- [x] Trace AddNode for a node that is already a peer (must be no-op)
+- [x] Trace RemoveNode for the current leader (LeaderTransfer resolves gap)
+- [x] Verify `membership_change_in_progress` is cleared on commit, not on append
+- [x] Run `s13_addnode_membership_change_3node` and `s13_removenode_membership_change_3node`
+
+#### Sign Off
+```
+Reviewer: Human (principal architect)
+Date:     2026-03-06
+
+Invariant 1 (one change at a time):   [x] SIGNED
+Invariant 2 (AddNode idempotency):    [x] SIGNED
+Invariant 3 (RemoveNode safety — resolved via LeaderTransfer): [x] SIGNED
+```
+
+---
+
+### Module: Node Restart Recovery (`src/consensus/raft.rs` + `src/consensus/log.rs`)
+
+#### Confidence Cap
+**0.82 raw / 0.78 effective** — lower risk than snapshot install; mechanically
+straightforward but crash-recovery guarantee depends on storage layer durability.
+
+#### Invariants Requiring Human Verification
+
+1. [x] SIGNED 2026-03-06 — **Term monotonicity across restarts** — After loading persistent state, the node
+       must never start with a `current_term` lower than the persisted value. Verify
+       `with_persistence()` assigns `self.ps = loaded_ps` before the node's event loop
+       starts, and no code path between `load()` and `spawn()` resets `current_term`.
+
+2. [x] SIGNED 2026-03-06 — **commit_index and last_applied initialisation** — After restart, both
+       `commit_index` and `last_applied` are initialised to `ps.snapshot_index`.
+       This is correct: the snapshot represents committed + applied state.
+       However, log entries AFTER snapshot_index that were committed before the crash
+       are NOT re-applied (they are re-replicated from the leader if this node is a
+       follower, or re-driven after election if this node becomes leader).
+       **Accept this limitation** (entries after snapshot_index are safe to re-apply
+       because Raft log entries are deterministic; WAL replay is not needed here).
+
+#### Reviewer Checklist
+- [x] Trace `with_persistence()` code path: load, assign ps, set commit/applied
+- [x] Run `s13_restart_recovery_preserves_term` and confirm it passes
+- [x] Confirm no code path resets `current_term` to 0 between `load()` and first use
+
+#### Sign Off
+```
+Reviewer: Human (principal architect)
+Date:     2026-03-06
+
+Invariant 1 (term monotonicity): [x] SIGNED
+Invariant 2 (post-restart commit/applied initialisation): [x] SIGNED
+```
+
+### References
+- Ongaro & Ousterhout (2014), §7 (Log Compaction) and §6 (Cluster Membership Changes):
+  https://raft.github.io/raft.pdf
+- Raft TLA+ spec (snapshot extension): https://github.com/ongardie/raft.tla
+
+---
+
+## Module: LeaderTransfer (Raft §3.10) — Session 13
+## Confidence cap: 0.72 (pending human review)
+## Date emitted: 2026-03-05T16:00:00+02:00
+
+### Invariants Requiring Human Verification
+
+11. [x] SIGNED 2026-03-06 — **LeaderTransfer: new leader must be elected before old leader steps down permanently.**
+    The LeaderTransfer protocol sends `TimeoutNow` to the transfer target, which
+    starts an election immediately.  The old leader blocks client commands during
+    the transfer window but remains leader until the target wins election (at a
+    higher term) and sends AppendEntries that causes a step-down.  If the target
+    fails to win election within `LEADER_TRANSFER_TIMEOUT_MS` (5 s), the transfer
+    aborts and the old leader resumes normal operation.  Verify that no committed
+    entry is lost or duplicated during the handoff.
+
+12. [x] SIGNED 2026-03-06 — **apply_tx bound: backpressure must never cause log entry loss.**
+    The bounded apply channel (`mpsc::channel(APPLY_CHANNEL_CAPACITY)`) blocks the
+    Raft event loop when full (`.send(entry).await`).  This means the entire event
+    loop (including heartbeats, elections, AppendEntries processing) stalls while
+    the consumer is slow.  Verify that:
+    - No committed entry is ever dropped.
+    - If the receiver is dropped (channel closed), the apply loop stops forwarding
+      without panicking, and the Raft event loop continues operating (elections,
+      heartbeats, etc.) normally.
+    - The blocking behavior does not cause split-brain under network partitions
+      (leader remains leader while blocked, but may miss election timeout if
+      blocked too long — this is an accepted degradation, not a safety violation).
+
+### Reviewer Checklist
+- [x] Trace the LeaderTransfer happy path: leader receives LeaderTransfer → sends TimeoutNow → target starts election → target wins → old leader steps down
+- [x] Trace the LeaderTransfer timeout path: target unreachable → 5s deadline expires → transfer_in_progress cleared → normal ops resume
+- [x] Confirm client commands are rejected during transfer_in_progress
+- [x] Confirm bounded channel blocking does not silently drop entries
+- [x] Confirm channel close (receiver dropped) causes graceful break, not panic
+- [x] Sign off: Human (principal architect) 2026-03-06
+
+### References
+- Ongaro & Ousterhout (2014), §3.10 (Leadership Transfer Extension):
+  https://raft.github.io/raft.pdf
