@@ -88,8 +88,8 @@ fn sel_features() -> &'static [[f32; MAX_TABLES]; MAX_TABLES] {
     SEL_FEAT.get_or_init(|| {
         let default_feat = (-(DEFAULT_SEL.log10()) / LOG_NORM).clamp(0.0, 1.0) as f32;
         let mut m = [[default_feat; MAX_TABLES]; MAX_TABLES];
-        for i in 0..MAX_TABLES {
-            m[i][i] = 0.0; // diagonal reserved for join-position feature
+        for (i, row) in m.iter_mut().enumerate() {
+            row[i] = 0.0; // diagonal reserved for join-position feature
         }
         for &(a, b, sel) in TPCH_FK_SEL {
             let feat = (-(sel.log10()) / LOG_NORM).clamp(0.0, 1.0) as f32;
