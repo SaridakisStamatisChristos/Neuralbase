@@ -1,0 +1,119 @@
+# SPDX-License-Identifier: Apache-2.0
+# NeuralBase StatefulSet — 3-node cluster with persistent RocksDB volumes.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: neuralbase
+  labels:
+    app.kubernetes.io/name: neuralbase
+    app.kubernetes.io/component: database
+spec:
+  serviceName: neuralbase-headless
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: neuralbase
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: neuralbase
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      terminationGracePeriodSeconds: 45
+      containers:
+        - name: neuralbase
+          image: ghcr.io/neuralbase/neuralbase:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: sql
+              containerPort: 5432
+            - name: raft
+              containerPort: 7001
+            - name: exchange
+              containerPort: 8001
+            - name: metrics
+              containerPort: 9090
+          envFrom:
+            - configMapRef:
+                name: neuralbase-config
+          env:
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: PEERS
+              value: "neuralbase-0.neuralbase-headless,neuralbase-1.neuralbase-headless,neuralbase-2.neuralbase-headless"
+            - name: NEURALBASE_TLS_CERT
+              value: "/tls/server.crt"
+            - name: NEURALBASE_TLS_KEY
+              value: "/tls/server.key"
+            - name: NEURALBASE_USERS_FILE
+              value: "/config/users.json"
+          volumeMounts:
+            - name: data
+              mountPath: /data/neuralbase
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            - name: users
+              mountPath: /config
+              readOnly: true
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+          # Readiness: returns 200 once Raft leader elected + storage ready.
+          readinessProbe:
+            tcpSocket:
+              port: sql
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # Liveness: TCP check on SQL port.
+          livenessProbe:
+            tcpSocket:
+              port: sql
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 5
+          # Startup: allow up to 60s for RocksDB cold open.
+          startupProbe:
+            tcpSocket:
+              port: sql
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 12
+          lifecycle:
+            preStop:
+              exec:
+                # Graceful shutdown: trigger LeaderTransfer if this pod is
+                # the Raft leader, then allow drain_timeout for in-flight
+                # queries before SIGTERM arrives.
+                command:
+                  - "/bin/sh"
+                  - "-c"
+                  - "sleep 5"
+      volumes:
+        - name: tls
+          secret:
+            secretName: neuralbase-tls
+        - name: users
+          secret:
+            secretName: neuralbase-users
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi

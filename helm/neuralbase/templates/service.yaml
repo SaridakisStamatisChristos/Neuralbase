@@ -1,0 +1,47 @@
+# Headless Service for StatefulSet peer discovery (Raft).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "neuralbase.fullname" . }}-headless
+  labels:
+    {{- include "neuralbase.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    {{- include "neuralbase.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: sql
+      port: 5432
+      targetPort: sql
+    - name: raft
+      port: 7001
+      targetPort: raft
+    - name: exchange
+      port: 8001
+      targetPort: exchange
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+---
+# External-facing Service for SQL clients.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "neuralbase.fullname" . }}
+  labels:
+    {{- include "neuralbase.labels" . | nindent 4 }}
+  {{- if .Values.metrics.enabled }}
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: {{ .Values.config.metricsPort | quote }}
+    prometheus.io/path: "/metrics"
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "neuralbase.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: sql
+      port: {{ .Values.service.port }}
+      targetPort: sql

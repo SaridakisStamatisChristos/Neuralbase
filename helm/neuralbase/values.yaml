@@ -1,0 +1,89 @@
+# NeuralBase Helm values — configurable deployment parameters.
+# Override with: helm install neuralbase ./helm/neuralbase -f custom-values.yaml
+
+replicaCount: 3
+
+image:
+  repository: ghcr.io/neuralbase/neuralbase
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+
+# Resource requests and limits per pod.
+resources:
+  requests:
+    cpu: "500m"
+    memory: "512Mi"
+  limits:
+    cpu: "2"
+    memory: "2Gi"
+
+# Persistent storage for RocksDB data directory.
+storage:
+  size: 10Gi
+  storageClassName: ""
+
+# NeuralBase configuration (injected as env vars via ConfigMap).
+config:
+  listenAddr: "0.0.0.0:5432"
+  raftAddr: "0.0.0.0:7001"
+  metricsPort: "9090"
+  maxConnections: "500"
+  maxConnectionsPerIp: "100"
+  maxConnectionsPerUser: "50"
+  authRequired: "true"
+  dbPath: "/data/neuralbase"
+
+# TLS configuration.
+tls:
+  enabled: false
+  # Name of existing Secret containing server.crt and server.key.
+  existingSecret: ""
+  certPath: "/tls/server.crt"
+  keyPath: "/tls/server.key"
+
+# User authentication.
+auth:
+  # Name of existing Secret containing users.json.
+  existingSecret: ""
+
+# Service configuration.
+service:
+  type: LoadBalancer
+  port: 5432
+
+# Prometheus metrics.
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: false
+
+# Pod disruption budget — minAvailable=2 ensures Raft quorum.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+# Horizontal Pod Autoscaler.
+autoscaling:
+  enabled: false
+  minReplicas: 3
+  maxReplicas: 9
+  targetCPUUtilizationPercentage: 70
+
+# Graceful shutdown.
+terminationGracePeriodSeconds: 45
+
+# Probes.
+startupProbe:
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  failureThreshold: 12
+livenessProbe:
+  initialDelaySeconds: 15
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 5
+readinessProbe:
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: 2
+  failureThreshold: 3

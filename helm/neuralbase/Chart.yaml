@@ -1,0 +1,17 @@
+apiVersion: v2
+name: neuralbase
+description: Self-optimizing distributed SQL query engine
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - database
+  - sql
+  - distributed
+  - raft
+  - rl-optimizer
+maintainers:
+  - name: NeuralBase Team
+home: https://github.com/SaridakisStamatisChristos/Neuralbase
+sources:
+  - https://github.com/SaridakisStamatisChristos/Neuralbase

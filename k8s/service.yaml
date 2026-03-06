@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: Apache-2.0
+# NeuralBase Services — headless for Raft discovery + LoadBalancer for SQL.
+apiVersion: v1
+kind: Service
+metadata:
+  name: neuralbase-headless
+  labels:
+    app.kubernetes.io/name: neuralbase
+    app.kubernetes.io/component: database
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: neuralbase
+  ports:
+    - name: sql
+      port: 5432
+      targetPort: sql
+    - name: raft
+      port: 7001
+      targetPort: raft
+    - name: exchange
+      port: 8001
+      targetPort: exchange
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: neuralbase
+  labels:
+    app.kubernetes.io/name: neuralbase
+    app.kubernetes.io/component: database
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: neuralbase
+  ports:
+    - name: sql
+      port: 5432
+      targetPort: sql
+      protocol: TCP

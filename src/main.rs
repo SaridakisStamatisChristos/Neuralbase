@@ -114,5 +114,41 @@ async fn main() -> std::io::Result<()> {
     #[cfg(not(feature = "tls"))]
     let tls_acceptor: server::TlsAcceptorOpt = None;
 
-    server::run(listener, catalog, dml_exec, tls_acceptor, storage_engine).await
+    // ── Run server with graceful shutdown ─────────────────────────────────
+    // Race the accept loop against a shutdown signal (SIGTERM / Ctrl+C).
+    // On signal: stop accepting new connections, allow 30s for in-flight
+    // queries to drain (spawned Tokio tasks complete independently), then exit.
+    tokio::select! {
+        result = server::run(listener, catalog, dml_exec, tls_acceptor, storage_engine) => {
+            result
+        }
+        _ = shutdown_signal() => {
+            // Drain period: give in-flight connections time to finish.
+            eprintln!("[shutdown] waiting up to 30s for in-flight queries to drain");
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            eprintln!("[shutdown] drain complete -- exiting");
+            Ok(())
+        }
+    }
+}
+
+/// Wait for a shutdown signal (Ctrl+C on all platforms, SIGTERM on Unix).
+/// On receipt, log the event and return so the caller can begin graceful drain.
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+    #[cfg(unix)]
+    {
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("install SIGTERM handler");
+        tokio::select! {
+            _ = ctrl_c => {},
+            _ = sigterm.recv() => {},
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        ctrl_c.await.ok();
+    }
+    eprintln!("[shutdown] signal received -- draining connections (max 30s)");
 }

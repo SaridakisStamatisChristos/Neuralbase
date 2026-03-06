@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+# PodDisruptionBudget — ensures Raft quorum (2 of 3) during rolling updates.
+# minAvailable=2 is NON-NEGOTIABLE: Raft requires majority for leader election.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: neuralbase-pdb
+  labels:
+    app.kubernetes.io/name: neuralbase
+    app.kubernetes.io/component: database
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: neuralbase

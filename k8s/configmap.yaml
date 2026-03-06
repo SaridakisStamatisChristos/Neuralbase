@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+# NeuralBase ConfigMap — cluster-wide configuration.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: neuralbase-config
+  labels:
+    app.kubernetes.io/name: neuralbase
+    app.kubernetes.io/component: database
+data:
+  LISTEN_ADDR: "0.0.0.0:5432"
+  RAFT_ADDR: "0.0.0.0:7001"
+  METRICS_PORT: "9090"
+  NEURALBASE_MAX_CONNECTIONS: "500"
+  NEURALBASE_MAX_CONNECTIONS_PER_IP: "100"
+  NEURALBASE_MAX_CONNECTIONS_PER_USER: "50"
+  NEURALBASE_AUTH_REQUIRED: "true"
+  DB_PATH: "/data/neuralbase"

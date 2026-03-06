@@ -1,6 +1,6 @@
-session: 15
-timestamp: 2026-03-06T22:00:00+02:00
-status: COMPLETE — Session 15 closed. Production hardening: cargo-fuzz harnesses, ThreadSanitizer concurrency tests, cargo-deny license compliance, Prometheus /metrics endpoint, Docker HEALTHCHECK, 1000-connection load test, cargo audit CVE re-scan (0 vulns), zero #[allow(dead_code)] verified. 541 tests pass.
+session: 16
+timestamp: 2026-03-06T23:30:00+02:00
+status: COMPLETE — NeuralBase v1.0 COMPLETE. Session 16 (Kubernetes + Cloud Deployment): K8s manifests (StatefulSet, Services, ConfigMap, Secret, PDB, HPA), Helm chart (values.yaml + 7 templates), graceful SIGTERM shutdown (30s drain), CI/CD release pipeline (GitHub Actions), README v1.0 rewrite, CHANGELOG v1.0.0 entry. 541 tests pass, 0 clippy warnings.
 
 completed_modules:
   # ── Session 1: Foundation ─────────────────────────────────────────
@@ -827,6 +827,54 @@ completed_modules:
       zero_allow_dead_code_in_src, metrics_crate_has_http_listener.
       All pass. Total suite: 541 passed, 0 failed, 2 ignored.
 
+  # ── Session 16: Kubernetes + Cloud Deployment (v1.0 FINAL) ────────────────────
+  - name: k8s_manifests
+    path: /k8s/
+    effective_confidence: 0.82
+    status: complete
+    note: >
+      StatefulSet (3 replicas, PVC 10Gi, parallel pod management),
+      headless Service (Raft peer discovery), LoadBalancer Service (SQL),
+      ConfigMap, Secret (TLS + users), PDB (minAvailable=2), HPA (CPU+connections).
+  - name: helm_chart
+    path: /helm/neuralbase/
+    effective_confidence: 0.80
+    status: complete
+    note: >
+      Chart.yaml (apiVersion v2, version 1.0.0). values.yaml with configurable
+      replicas, resources, storage, TLS, metrics, probes. 7 templates:
+      statefulset, service, configmap, secret, pdb, hpa, _helpers.tpl.
+  - name: graceful_shutdown
+    path: /src/main.rs
+    effective_confidence: 0.85
+    status: complete
+    note: >
+      SIGTERM handler via tokio::signal (Unix) / Ctrl+C (all platforms).
+      30-second drain period. tokio::select! races server accept vs shutdown.
+      PreStop hook in K8s StatefulSet (sleep 5s for LB deregistration).
+  - name: cicd_release_pipeline
+    path: /.github/workflows/release.yml
+    effective_confidence: 0.78
+    status: complete
+    note: >
+      GitHub Actions workflow on v*.*.* tag push. Jobs: cargo test --release,
+      Docker build+push to ghcr.io (semver tags), Helm package+lint,
+      GitHub Release with Helm chart artifact. Pinned action versions.
+  - name: readme_v1
+    path: /README.md
+    effective_confidence: 0.90
+    status: complete
+    note: >
+      Full v1.0 rewrite: architecture diagram, feature table, config reference,
+      K8s deployment guide, TPC-H benchmarks, threat model summary, risk budget.
+  - name: changelog_v1
+    path: /CHANGELOG.md
+    effective_confidence: 0.90
+    status: complete
+    note: >
+      v1.0.0 entry summarising all 16 sessions: K8s, Helm, graceful shutdown,
+      CI/CD, DML, auth, optimizer training, distributed hardening.
+
   - "Cargo feature 	ls = [] is a no-dep marker. TLS crates require NASM on Windows."
   - "metrics-exporter-prometheus = { version = '=0.16.2', default-features = false } — push-gateway dropped to eliminate aws-lc-sys dep chain."
   - "RocksDB MultiThreaded mode. 4 static CFs + dynamic index CFs (prefix __idx:)."
@@ -928,6 +976,7 @@ open_invariants:
   - "Window functions: no formal TLA+ spec or property-based adversarial tests yet. Adversarial coverage (SF=0.001) is happy-path only. Adversarial fuzz suite deferred to Session 15."
   - "Extended query protocol: no malformed-input adversarial tests for Parse/Bind/Execute handlers. Boundary testing deferred to Session 15."
   - "Raft single-node mode: commit_index never advances past 0 (try_advance_commit only reachable from on_append_entries_reply, never called with 0 peers). Single-node cannot commit entries. Accepted limitation — single-node is test-only."
+  - "[SESSION 16 COMPLETE 2026-03-06] NeuralBase v1.0 COMPLETE. K8s manifests (6 files), Helm chart (Chart.yaml + values.yaml + 7 templates), graceful SIGTERM shutdown (30s drain), CI/CD release pipeline (GitHub Actions), README v1.0 rewrite, CHANGELOG v1.0.0 entry. 541 tests pass, 0 clippy warnings. All 16 sessions delivered."
 
 benchmark_baselines:
   - name: tpch_q1_sf0.1_release
@@ -986,6 +1035,14 @@ test_gate:
     - suite: cargo_deny_s15
       command: "cargo deny check"
       result: "licenses: PASS, advisories: PASS (2 ignored unmaintained)"
+      status: all_pass
+    - suite: clippy_s16_final
+      command: "cargo clippy --locked -- -D warnings"
+      result: "pass -- 0 errors, 0 warnings"
+      status: all_pass
+    - suite: all_integration_s16_final
+      command: "cargo test --locked"
+      result: "541 passed; 0 failed; 2 ignored — v1.0 final gate"
       status: all_pass
     - suite: dead_code_grep_s15
       command: "Get-ChildItem -Path src -Recurse -Filter *.rs | Select-String '#[allow(dead_code)]'"

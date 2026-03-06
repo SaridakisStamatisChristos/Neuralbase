@@ -16,7 +16,7 @@ simd = []
 tls = ["dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:rustls-pemfile"]
 
 [dependencies]
-tokio = { version = "1.44.0", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time"] }
+tokio = { version = "1.44.0", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time", "signal"] }
 sqlparser = "=0.46.0"
 thiserror = "1.0.69"
 rayon = "1.10.0"

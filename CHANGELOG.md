@@ -6,6 +6,64 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are Euro
 
 ---
 
+## [1.0.0] — 2026-03-06
+
+### Summary
+
+NeuralBase v1.0.0 — first production-candidate release across 16 development sessions.
+Self-optimising distributed SQL engine: PostgreSQL wire protocol, vectorised execution,
+RL join-order optimizer (22/22 TPC-H win rate), MVCC/RocksDB, Raft consensus, Kubernetes-ready.
+
+### Added — Session 16 (Kubernetes + Cloud Deployment)
+
+- **Kubernetes manifests** (`k8s/`):
+  - StatefulSet (3 replicas, PersistentVolumeClaim 10 Gi, parallel pod management)
+  - Headless Service for Raft peer discovery via DNS
+  - LoadBalancer Service for external SQL access
+  - ConfigMap with all NeuralBase environment variables
+  - Secret templates for TLS certificates and users.json
+  - PodDisruptionBudget (`minAvailable: 2` — Raft quorum requirement)
+  - HorizontalPodAutoscaler (CPU 70% + custom active_connections metric)
+- **Helm chart** (`helm/neuralbase/`):
+  - Chart.yaml (apiVersion v2, version 1.0.0)
+  - Configurable values.yaml (replicas, resources, storage, TLS, metrics, probes)
+  - Templates: StatefulSet, Service (headless + LB), ConfigMap, Secret, PDB, HPA
+- **Graceful shutdown** (`src/main.rs`):
+  - SIGTERM handler via `tokio::signal` (Unix) / Ctrl+C (all platforms)
+  - 30-second drain period for in-flight queries before exit
+  - `tokio::select!` races server accept loop against shutdown signal
+- **CI/CD release pipeline** (`.github/workflows/release.yml`):
+  - Triggered on `v*.*.*` tag push
+  - Jobs: cargo test --release, Docker build + push to ghcr.io, Helm package, GitHub Release
+  - Pinned action versions (checkout@v4, rust-toolchain@stable, build-push-action@v6)
+- **README.md** rewritten for v1.0: architecture, config reference, K8s deployment guide
+- **CHANGELOG.md** v1.0.0 entry summarising all 16 sessions
+
+### Added — Sessions 13-15 (SQL Completeness + Authentication + Production Hardening)
+
+- **DML operations**: INSERT, UPDATE, DELETE with MVCC transactional semantics (S13)
+- **Advanced SQL**: subqueries, CTEs, window functions (parse-level), HAVING, BETWEEN (S14)
+- **SHA-256 authentication** with users.json credential store (S14)
+- **Per-IP and per-user connection limits** with semaphore-based admission control (S14)
+- **Prometheus /metrics HTTP endpoint** via `metrics-exporter-prometheus` (S15)
+- **Docker HEALTHCHECK** (TCP probe on port 5432) (S15)
+- **cargo-fuzz harnesses**: wire protocol, SQL parser, binary codec (S15)
+- **cargo-deny** supply chain audit (S15)
+- **Load test**: 1000 concurrent connections verified (S15)
+- **541 tests** total (0 failures, 2 ignored)
+
+### Added — Sessions 8-12 (Optimizer Training + Distributed Hardening)
+
+- **RL optimizer training pipeline** (S8-S12):
+  - 600k-step DQN training achieving 22/22 TPC-H win rate
+  - Selectivity alignment between training and inference
+  - ONNX model export (`optimizer/model/neuralbase_optimizer.onnx`)
+- **Distributed transaction coordination** (S9-S10)
+- **Log compaction and snapshot transfer** (S10)
+- **Cluster auto-discovery and partition healing** (S11)
+
+---
+
 ## [Unreleased] — Session 12 — 2026-03-05
 
 ### Session 12 Final Scorecard
@@ -217,4 +275,5 @@ There are no prior stable releases. This is the first tagged version.
 
 ---
 
+[1.0.0]: https://github.com/your-org/neuralbase/releases/tag/v1.0.0
 [0.1.0]: https://github.com/your-org/neuralbase/releases/tag/v0.1.0

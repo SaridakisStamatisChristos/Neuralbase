@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "neuralbase.fullname" . }}
+  labels:
+    {{- include "neuralbase.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "neuralbase.fullname" . }}-headless
+  replicas: {{ .Values.replicaCount }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "neuralbase.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "neuralbase.selectorLabels" . | nindent 8 }}
+      {{- if .Values.metrics.enabled }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.config.metricsPort | quote }}
+        prometheus.io/path: "/metrics"
+      {{- end }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: neuralbase
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: sql
+              containerPort: 5432
+            - name: raft
+              containerPort: 7001
+            - name: exchange
+              containerPort: 8001
+            - name: metrics
+              containerPort: 9090
+          envFrom:
+            - configMapRef:
+                name: {{ include "neuralbase.fullname" . }}-config
+          env:
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: PEERS
+              value: "{{ include "neuralbase.fullname" . }}-0.{{ include "neuralbase.fullname" . }}-headless,{{ include "neuralbase.fullname" . }}-1.{{ include "neuralbase.fullname" . }}-headless,{{ include "neuralbase.fullname" . }}-2.{{ include "neuralbase.fullname" . }}-headless"
+          {{- if .Values.tls.enabled }}
+          volumeMounts:
+            - name: tls-certs
+              mountPath: /tls
+              readOnly: true
+            - name: data
+              mountPath: {{ .Values.config.dbPath }}
+          {{- else }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.config.dbPath }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          startupProbe:
+            tcpSocket:
+              port: sql
+            initialDelaySeconds: {{ .Values.startupProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.startupProbe.periodSeconds }}
+            failureThreshold: {{ .Values.startupProbe.failureThreshold }}
+          livenessProbe:
+            tcpSocket:
+              port: sql
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+          readinessProbe:
+            tcpSocket:
+              port: sql
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
+      {{- if .Values.tls.enabled }}
+      volumes:
+        - name: tls-certs
+          secret:
+            secretName: {{ default (printf "%s-tls" (include "neuralbase.fullname" .)) .Values.tls.existingSecret }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.storage.storageClassName }}
+        storageClassName: {{ .Values.storage.storageClassName | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.size }}
