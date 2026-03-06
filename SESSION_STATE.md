@@ -733,11 +733,11 @@ open_invariants:
   - "SIMD: AVX-512 not active on current stable toolchain; scalar fallback in use"
   - "Prometheus scrape: disabled (default-features = false on metrics crate)"
   - "SF=1 and SF=10 TPC-H benchmarks do not exist (projected entries removed per locked policy). Must be measured on release builds before being added."
-  - "StorageExecutor path benchmark (bench_storage_executor_scan) does not exist. No measured evidence for codec NB v2 or RocksDB tuning performance impact yet — deferred to Session 15."
+  - "StorageExecutor path benchmark (bench_storage_executor_scan) does not exist. No measured evidence for codec NB v2 or RocksDB tuning performance impact yet — deferred to Session 14."
   - "SCRAM state machine human review COMPLETE 2026-03-04. All 6 invariants signed. Confidence cap lifted 0.72 -> 0.80. Known limitations: channel binding not implemented; replay window until wire-level auth frames wired (Session 12)."
   - "cargo audit paste crate: 1 unmaintained advisory (transitive via tract-onnx). Not fixable without replacing tract-onnx. Accepted and documented."
   - "[SESSION 13 SIGNED 2026-03-06] All 12 Raft invariants signed: snapshot install (5), membership (3), restart recovery (2), leader transfer (1), bounded apply_tx (1). Confidence caps lifted: snapshot_install=0.78eff, membership=0.74eff, restart=0.78eff, leader_transfer=0.76eff, bounded_apply_tx=0.76eff."
-  - "Single-step membership changes are unsafe under certain network partitions (Raft §6 joint-consensus not implemented). RemoveNode of leader requires LeaderTransfer first (enforced by implementation). Joint-consensus deferred to Session 15."
+  - "Single-step membership changes are unsafe under certain network partitions (Raft §6 joint-consensus not implemented). RemoveNode of leader requires LeaderTransfer first (enforced by implementation). Joint-consensus deferred to Session 14."
   - "Raft single-node mode: commit_index never advances past 0 (try_advance_commit only reachable from on_append_entries_reply, never called with 0 peers). Single-node cannot commit entries. Accepted limitation — single-node is test-only."
 
 benchmark_baselines:
@@ -764,9 +764,9 @@ pending_benchmarks:
       + SELECT via scan_table). PhysicalPlan::TpchQ1/TpchQ6 bypass StorageExecutor
       entirely. Binary codec (NB v2) and RocksDB CF_DATA tuning (bloom filter,
       64 MB block cache, write buffer) only affect the StorageExecutor path.
-      This benchmark must be written and run in Session 15 before any performance
+      This benchmark must be written and run in Session 14 before any performance
       claim about codec or RocksDB tuning can be substantiated.
-    target_session: 15
+    target_session: 14
 
 test_gate:
   session: 14-final
