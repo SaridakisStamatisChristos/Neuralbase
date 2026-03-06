@@ -1,6 +1,6 @@
-session: 13
-timestamp: 2026-03-06T12:00:00+02:00
-status: COMPLETE — all 12 invariants signed. Session 13 closed. LeaderTransfer resolves RemoveNode leader gap.
+session: 14
+timestamp: 2026-03-06T18:00:00+02:00
+status: COMPLETE — Session 14 closed. Connection pooling, prepared statements, advanced SQL (CTE/set-ops/window/EXPLAIN) complete. 538 tests, 0 failed. Commit c6ae0fc.
 
 completed_modules:
   # ── Session 1: Foundation ─────────────────────────────────────────
@@ -512,6 +512,75 @@ completed_modules:
       loop blocks until consumer drains. Entries never dropped. If receiver dropped,
       apply loop breaks without panic. 2 new tests: backpressure_does_not_drop_entries,
       full_slows_commit_not_crashes. [HUMAN REVIEW REQUIRED §Session13 Bounded Apply Invariant 12]
+  # ── Session 14: Connection Pooling, Prepared Statements, Advanced SQL ──────
+  - name: per_user_connection_limit
+    path: /src/server.rs
+    effective_confidence: 0.82
+    status: complete
+    note: >
+      UserConnectionTracker (Arc<Mutex<HashMap<String,usize>>> + max_per_user).
+      UserConnectionGuard RAII drop-decrements on disconnect.
+      NEURALBASE_MAX_CONNECTIONS_PER_USER env var (default 10).
+      Excess connections rejected with ErrorResponse SQLSTATE 53300 before auth.
+      Tested by per_user_connection_limit_rejects_excess (EOF-tolerant reader used).
+  - name: plan_cache_lru
+    path: /src/server.rs
+    effective_confidence: 0.82
+    status: complete
+    note: >
+      PlanCache: manual LRU (HashMap + VecDeque), 500-entry cap.
+      normalize_sql (lowercase + collapse whitespace) as cache key.
+      hit_rate(), stats(), invalidate_all(). DDL (CREATE/DROP/ALTER/INSERT/UPDATE/DELETE)
+      invalidates cache. Shared Arc<Mutex<PlanCache>> across connections.
+      Unit-tested: LRU eviction, hit rate, invalidate_all.
+  - name: extended_query_protocol
+    path: /src/server.rs, /src/protocol.rs
+    effective_confidence: 0.80
+    status: complete
+    note: >
+      P/B/D/E/S/C message handlers in server.rs. Per-connection stmt_cache
+      (HashMap<String,PreparedStatement>) and portal_cache (HashMap<String,BoundPortal>).
+      build_parse_complete, build_bind_complete, build_no_data,
+      build_parameter_description, build_close_complete added to protocol.rs.
+      PreparedStatement: {sql: String} (param_types removed — was dead field).
+  - name: advanced_sql_cte_setop_window_explain
+    path: /src/query_executor.rs, /src/binder.rs
+    effective_confidence: 0.80
+    status: complete
+    note: >
+      CTEs: WITH clause parsed, each CTE injected into QueryCatalog before main query.
+      Set ops: execute_set_op + execute_setexpr for UNION/INTERSECT/EXCEPT (ALL/DISTINCT).
+      Window functions: ROW_NUMBER, RANK, LAG, LEAD via compute_window_values /
+      apply_window_functions with PARTITION BY + ORDER BY sort.
+      EXPLAIN/EXPLAIN ANALYZE: BoundPlan::Explain variant; explain_text_to_batch.
+      resolve_from first_table fix: first FROM table loaded directly without unit-row
+      cross-product (no 1xN budget violation on single-table SELECTs).
+  - name: dead_code_cleanup_s14
+    path: /src/server.rs, /src/query_executor.rs
+    effective_confidence: 0.95
+    status: complete
+    note: >
+      Zero #[allow(dead_code)] suppressions in src/ after cleanup.
+      UserConnectionTracker::count_for deleted (never called).
+      PreparedStatement.param_types removed; let _ = ptypes at insert site.
+      epoch_days_to_ymd moved from production scope into #[cfg(test)] mod tests.
+      cargo clippy --all-targets --tests --locked -- -D warnings: 0 warnings.
+  - name: session14_tests
+    path: /tests/session14_advanced_sql.rs
+    effective_confidence: 0.84
+    status: complete
+    note: >
+      24 new tests: per_user_connection_limit_rejects_excess, cte_basic/chained,
+      union/intersect/except (all/distinct), window functions (row_number, rank,
+      lag, lead, partition_by), explain/explain_analyze, plan_cache (lru,
+      hit_rate, invalidate_all), extended protocol (parse/bind/execute/sync).
+      read_one_message hardened: return type Result<(u8,Vec<u8>)>, 64KB payload
+      cap via checked_sub+and_then guard; all 6 call sites use .expect(context).
+      try_read_one_message + read_msgs_until_close_or_ready helpers added for
+      EOF-tolerant reads (connection-limit test).
+      Window tests use SF=0.001 (~600 rows) to prevent OOM (was SF=0.01 = 60012 rows
+      x ~130MB/test x 5 parallel = ~650MB burst -> system reboot).
+      Total: 538 tests, 0 failed, 0 ignored. Commit: c6ae0fc.
   # ── Session 10: SF=0.1 benchmark — first genuine measurement ──────────────────
   - name: tpch_bench_sf01_first_real_measurement
     path: /tests/perf_tpch.rs, /tests/perf/BENCH_BASELINES.yaml
@@ -646,13 +715,13 @@ locked_decisions:
 
 next_tasks:
   - priority: 1
-    task: "Session 14: Multi-step membership changes (joint-consensus Raft §6) to replace single-step implementation and lift the known partition-safety limitation."
+    task: "Session 15: Multi-step membership changes (joint-consensus Raft §6) to replace single-step implementation and lift the known partition-safety limitation."
     estimated_confidence_gain: "+0.08 raft_membership_changes effective conf after joint-consensus + review"
   - priority: 2
-    task: "Session 14: Measure bench_storage_executor_scan on release builds to substantiate NB v2 codec + RocksDB tuning performance claims."
+    task: "Session 15: Measure bench_storage_executor_scan on release builds to substantiate NB v2 codec + RocksDB tuning performance claims."
     estimated_confidence_gain: "+0.10 binary_row_codec_nb_v2_wired effective_confidence (0.80->0.90)"
   - priority: 3
-    task: "Session 14: Write TLA+ spec for Raft snapshot + membership extensions to enable confidence > 0.85."
+    task: "Session 15: Write TLA+ spec for Raft snapshot + membership extensions to enable confidence > 0.85."
     estimated_confidence_gain: "+0.07 raft_consensus system-wide"
 
 open_invariants:
@@ -664,11 +733,11 @@ open_invariants:
   - "SIMD: AVX-512 not active on current stable toolchain; scalar fallback in use"
   - "Prometheus scrape: disabled (default-features = false on metrics crate)"
   - "SF=1 and SF=10 TPC-H benchmarks do not exist (projected entries removed per locked policy). Must be measured on release builds before being added."
-  - "StorageExecutor path benchmark (bench_storage_executor_scan) does not exist. No measured evidence for codec NB v2 or RocksDB tuning performance impact yet — deferred to Session 14."
+  - "StorageExecutor path benchmark (bench_storage_executor_scan) does not exist. No measured evidence for codec NB v2 or RocksDB tuning performance impact yet — deferred to Session 15."
   - "SCRAM state machine human review COMPLETE 2026-03-04. All 6 invariants signed. Confidence cap lifted 0.72 -> 0.80. Known limitations: channel binding not implemented; replay window until wire-level auth frames wired (Session 12)."
   - "cargo audit paste crate: 1 unmaintained advisory (transitive via tract-onnx). Not fixable without replacing tract-onnx. Accepted and documented."
   - "[SESSION 13 SIGNED 2026-03-06] All 12 Raft invariants signed: snapshot install (5), membership (3), restart recovery (2), leader transfer (1), bounded apply_tx (1). Confidence caps lifted: snapshot_install=0.78eff, membership=0.74eff, restart=0.78eff, leader_transfer=0.76eff, bounded_apply_tx=0.76eff."
-  - "Single-step membership changes are unsafe under certain network partitions (Raft §6 joint-consensus not implemented). RemoveNode of leader requires LeaderTransfer first (enforced by implementation). Joint-consensus deferred to Session 14."
+  - "Single-step membership changes are unsafe under certain network partitions (Raft §6 joint-consensus not implemented). RemoveNode of leader requires LeaderTransfer first (enforced by implementation). Joint-consensus deferred to Session 15."
   - "Raft single-node mode: commit_index never advances past 0 (try_advance_commit only reachable from on_append_entries_reply, never called with 0 peers). Single-node cannot commit entries. Accepted limitation — single-node is test-only."
 
 benchmark_baselines:
@@ -695,31 +764,35 @@ pending_benchmarks:
       + SELECT via scan_table). PhysicalPlan::TpchQ1/TpchQ6 bypass StorageExecutor
       entirely. Binary codec (NB v2) and RocksDB CF_DATA tuning (bloom filter,
       64 MB block cache, write buffer) only affect the StorageExecutor path.
-      This benchmark must be written and run in Session 12 before any performance
+      This benchmark must be written and run in Session 15 before any performance
       claim about codec or RocksDB tuning can be substantiated.
-    target_session: 13
+    target_session: 15
 
 test_gate:
-  session: 13-final
+  session: 14-final
   mode: full_regression
   dead_code_suppressions_in_src: 0
   hard_rules:
     - "zero #[allow(dead_code)] suppressions outside #[cfg(test)] blocks"
     - "ASCII-only in all .ps1 files"
     - "cargo clippy -- -D warnings: 0 errors"
-    - "integration tests >= 495"
+    - "integration tests >= 538"
   targeted_runs:
+    - suite: clippy_strict_s14_final
+      command: "cargo clippy --all-targets --tests --locked -- -D warnings"
+      result: "pass — 0 errors, 0 warnings"
+      status: all_pass
+    - suite: all_integration_s14_final
+      command: "cargo test --features tls --tests --locked"
+      result: "538 passed; 0 failed; 0 ignored (15 binaries)"
+      status: all_pass
+    - suite: session14_targeted
+      command: "cargo test --test session14_advanced_sql"
+      result: "24 new Session 14 tests: all pass"
+      status: all_pass
     - suite: clippy_strict_s13_final
       command: "cargo clippy --all-targets --locked -- -D warnings"
       result: "pass — 0 errors, 0 warnings (redundant_pattern_matching in raft.rs + identity_op/erasing_op in optimizer.rs fixed)"
-      status: all_pass
-    - suite: all_integration_s13_final
-      command: "cargo test --features tls --tests --locked"
-      result: "495 passed; 0 failed; 2 ignored (15 binaries) — pre-leader-transfer baseline"
-      status: all_pass
-    - suite: session13_targeted
-      command: "cargo test --test raft_correctness -- s13_ && cargo test --test adversarial_raft -- s13_"
-      result: "5 + 3 = 8 new Session 13 tests: all pass"
       status: all_pass
     - suite: session13_leader_transfer_and_bounded_apply
       command: "cargo test --features tls --tests --locked -- --test-threads=2"
@@ -738,7 +811,7 @@ test_gate:
       result: "25 passed; 0 failed; 0 ignored — Win rate: 22/22 = 100%"
       status: all_pass
   compile_gate: "cargo check --all-targets: pass"
-  system_effective_confidence: 0.81
+  system_effective_confidence: 0.82
   threshold: 0.75
   human_review_gate:
     status: SIGNED
@@ -747,8 +820,9 @@ test_gate:
     invariants_remaining: 0
   gate_passed: true
   final_run: >-
-    Session 12 fully complete: DQN optimizer selectivity alignment (300k -> 95.5%) +
-    600k training (22/22 = 100% win rate, all 25 bench tests pass) +
-    CI full rewrite (stable toolchain, LIBCLANG_PATH, llvm-18, cargo cache) +
-    Makefile make test fixed (--features tls --tests --locked, 495 tests not 49) +
-    optimizer.rs needless_range_loop clippy fix. All 495 integration tests passing.
+    Session 14 fully complete: per-user connection limit (SQLSTATE 53300), plan cache LRU
+    (500-entry, hit_rate, invalidate_all), extended query protocol (P/B/D/E/S/C),
+    CTE support, UNION/INTERSECT/EXCEPT, window functions (ROW_NUMBER/RANK/LAG/LEAD/
+    PARTITION BY), EXPLAIN/EXPLAIN ANALYZE. resolve_from first_table fix (no unit-row
+    cross-product). Zero #[allow(dead_code)] in src/. read_one_message hardened 64KB cap.
+    Window tests SF 0.01->0.001 (OOM fix). 538 tests, 0 failed. Commit c6ae0fc pushed.
