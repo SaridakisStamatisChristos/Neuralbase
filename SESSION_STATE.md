@@ -1,8 +1,18 @@
-session: 16
-timestamp: 2026-03-06T23:30:00+02:00
-status: COMPLETE — NeuralBase v1.0 COMPLETE. Session 16 (Kubernetes + Cloud Deployment): K8s manifests (StatefulSet, Services, ConfigMap, Secret, PDB, HPA), Helm chart (values.yaml + 7 templates), graceful SIGTERM shutdown (30s drain), CI/CD release pipeline (GitHub Actions), README v1.0 rewrite, CHANGELOG v1.0.0 entry. 541 tests pass, 0 clippy warnings.
+session: 17
+timestamp: 2026-03-06T23:55:00+02:00
+status: COMPLETE — Session 17 (CI compatibility hotfix): pinned metrics from 0.24.1 to 0.24.3 to fix Rust stable E0521 in GitHub Actions, refreshed Cargo.lock, and revalidated `cargo test --features tls --tests --locked` locally. NeuralBase v1.0 remains green on current stable Rust.
 
 completed_modules:
+  # ── Session 17: CI Compatibility Hotfix ──────────────────────────
+  - name: metrics_ci_compatibility_hotfix
+    path: /Cargo.toml, /Cargo.lock
+    effective_confidence: 0.92
+    status: complete
+    note: >
+      metrics 0.24.1 failed on current Rust stable with E0521 inside
+      LocalRecorderGuard due to trait-object raw-pointer lifetime rules.
+      Bumped to 0.24.3, refreshed lockfile only for metrics, and revalidated
+      cargo test --features tls --tests --locked locally.
   # ── Session 1: Foundation ─────────────────────────────────────────
   - name: repo_scaffold
     path: /
@@ -930,28 +940,28 @@ locked_decisions:
     for join expansions, not single-table scans."
 
 next_tasks:
-  # Session 17: post v1.0 research items
+  # Session 18: post v1.0 research items
   - priority: 1
-    task: "Session 17: Write and run bench_storage_executor_scan on release builds to substantiate NB v2 codec + RocksDB tuning claims."
+    task: "Session 18: Write and run bench_storage_executor_scan on release builds to substantiate NB v2 codec + RocksDB tuning claims."
     estimated_confidence_gain: "+0.10 binary_row_codec_nb_v2_wired effective_confidence (0.80->0.90)"
   - priority: 2
-    task: "Session 17: Extended query protocol adversarial tests (malformed Parse/Bind/Execute messages)."
+    task: "Session 18: Extended query protocol adversarial tests (malformed Parse/Bind/Execute messages)."
     estimated_confidence_gain: "+0.05 adversarial confidence on server.rs protocol handlers"
   - priority: 3
-    task: "Session 17: Window function property-based tests (fast-check style) for ROW_NUMBER/RANK/LAG/LEAD."
+    task: "Session 18: Window function property-based tests (fast-check style) for ROW_NUMBER/RANK/LAG/LEAD."
     estimated_confidence_gain: "+0.04 adversarial confidence on query_executor window functions"
 
 future_sessions:
-  # Items deferred from Session 15; targeted at Session 17 (post v1.0 research)
-  - session: 17
+  # Items deferred from Session 15; targeted at Session 18 (post v1.0 research)
+  - session: 18
     task: "Multi-step (joint-consensus) Raft §6 membership changes to replace single-step implementation and lift the known partition-safety limitation."
     estimated_confidence_gain: "+0.08 raft_membership_changes effective conf after joint-consensus + review"
     note: "Deferred from Session 14/15. Raft is functionally closed; this is a correctness hardening research item."
-  - session: 17
+  - session: 18
     task: "Write and run bench_storage_executor_scan on release builds to substantiate NB v2 codec + RocksDB tuning performance claims."
     estimated_confidence_gain: "+0.10 binary_row_codec_nb_v2_wired effective_confidence (0.80->0.90)"
     note: "No measured evidence for StorageExecutor path performance. Must precede any public perf claims."
-  - session: 17
+  - session: 18
     task: "Write TLA+ spec for Raft snapshot + membership extensions to enable confidence > 0.85."
     estimated_confidence_gain: "+0.07 raft_consensus system-wide"
     note: "Research item. Human review signed but formal proof absent. Required before raft_consensus effective_confidence >= 0.85."
@@ -964,6 +974,7 @@ open_invariants:
   - "CI pipeline fully operational as of Session 12: stable toolchain, LIBCLANG_PATH=/usr/lib/llvm-18/lib, llvm-18 deps, cargo cache, 495 tests on `make test --features tls --tests --locked`."
   - "SIMD: AVX-512 not active on current stable toolchain; scalar fallback in use"
   - "metrics-exporter-prometheus http-listener feature ACTIVE. Prometheus scrape on 0.0.0.0:METRICS_PORT/metrics."
+  - "CI hotfix complete 2026-03-06: metrics pinned to 0.24.3 because metrics 0.24.1 fails on current Rust stable with E0521 in LocalRecorderGuard during GitHub Actions builds."
   - "SF=1 and SF=10 TPC-H benchmarks do not exist (projected entries removed per locked policy). Must be measured on release builds before being added."
   - "StorageExecutor path benchmark (bench_storage_executor_scan) does not exist. No measured evidence for codec NB v2 or RocksDB tuning performance impact yet — deferred to Session 17 (post v1.0 research)."
   - "SCRAM state machine human review COMPLETE 2026-03-04. All 6 invariants signed. Confidence cap lifted 0.72 -> 0.80. Known limitations: channel binding not implemented; replay window until wire-level auth frames wired (Session 12)."
