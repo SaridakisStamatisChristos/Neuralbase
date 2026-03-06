@@ -22,9 +22,11 @@
 use crate::tpch::TpchDataSet;
 use crate::vectorized::{ColumnVector, RecordBatch, Utf8Column};
 use sqlparser::ast::{
-    BinaryOperator, DateTimeField, Expr, Function, FunctionArgExpr, GroupByExpr, JoinConstraint,
-    JoinOperator, OrderByExpr, Query, Select, SelectItem, SetExpr, TableFactor, UnaryOperator, Value,
+    BinaryOperator, DateTimeField, Expr, Function, FunctionArg, FunctionArgExpr, GroupByExpr,
+    JoinConstraint, JoinOperator, Offset, OrderByExpr, Query, Select, SelectItem, SetExpr,
+    SetOperator, SetQuantifier, TableFactor, UnaryOperator, Value,
 };
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
@@ -254,14 +256,47 @@ fn execute_query_inner(
     catalog: &QueryCatalog,
     outer_row: &Row,
 ) -> Result<QueryResult, QueryError> {
+    // CTE resolution: build an extended catalog if a WITH clause is present.
+    let cte_ext: Option<QueryCatalog> = if let Some(with) = &query.with {
+        let mut ext = QueryCatalog::new();
+        for (k, v) in &catalog.tables {
+            ext.tables.insert(k.clone(), v.clone());
+        }
+        for cte in &with.cte_tables {
+            let cte_name = cte.alias.name.value.to_lowercase();
+            let cte_result = execute_query_inner(&cte.query, &ext, outer_row)?;
+            let cte_rows: Vec<Row> = cte_result.rows.iter().map(|row_vals| {
+                cte_result.columns.iter().zip(row_vals.iter())
+                    .map(|(col, val)| (format!("{cte_name}.{col}"), val.clone()))
+                    .collect()
+            }).collect();
+            ext.tables.insert(cte_name, cte_rows);
+        }
+        Some(ext)
+    } else {
+        None
+    };
+    let eff_catalog: &QueryCatalog = cte_ext.as_ref().unwrap_or(catalog);
+
     match query.body.as_ref() {
-        SetExpr::Select(select) => execute_select(select, query, catalog, outer_row),
-        SetExpr::Query(inner) => execute_query_inner(inner, catalog, outer_row),
+        SetExpr::Select(select) => execute_select(select, query, eff_catalog, outer_row),
+        SetExpr::Query(inner) => execute_query_inner(inner, eff_catalog, outer_row),
+        SetExpr::SetOperation { op, left, right, set_quantifier } => {
+            execute_set_op(
+                op,
+                set_quantifier,
+                left,
+                right,
+                eff_catalog,
+                outer_row,
+                &query.order_by,
+                query.limit.as_ref(),
+                query.offset.as_ref(),
+            )
+        }
         _ => Err(QueryError::Unsupported("set expression type".into())),
     }
 }
-
-// ── SELECT execution ──────────────────────────────────────────────────────────
 
 fn execute_select(
     select: &Select,
@@ -269,8 +304,27 @@ fn execute_select(
     catalog: &QueryCatalog,
     outer_row: &Row,
 ) -> Result<QueryResult, QueryError> {
+    let result = execute_select_bare(select, catalog, outer_row)?;
+
+    // Step 7: ORDER BY
+    let result = if !query.order_by.is_empty() {
+        apply_order_by(result, &query.order_by)?
+    } else {
+        result
+    };
+
+    // Step 8: LIMIT / OFFSET
+    apply_limit_offset(result, query.limit.as_ref(), query.offset.as_ref())
+}
+
+/// Execute a SELECT body without outer ORDER BY / LIMIT / OFFSET.
+/// Used both by execute_select and as a building block for UNION sub-selects.
+fn execute_select_bare(
+    select: &Select,
+    catalog: &QueryCatalog,
+    outer_row: &Row,
+) -> Result<QueryResult, QueryError> {
     // Step 1: Extract equi-join predicates from WHERE first, then resolve FROM.
-    // equi_pairs drive hash joins and prevent Cartesian-product OOM on multi-table queries.
     let equi_pairs: Vec<(String, String)> = select.selection.as_ref()
         .map(extract_equi_pairs)
         .unwrap_or_default();
@@ -318,6 +372,13 @@ fn execute_select(
         rows
     };
 
+    // Step 4.5: Window functions (inject computed window values before projection)
+    let rows = if has_window_in_projection(&select.projection) {
+        apply_window_functions(&select.projection, rows, catalog, outer_row)?
+    } else {
+        rows
+    };
+
     // Step 5: SELECT projection
     let result = apply_projection(&select.projection, &rows, catalog, outer_row)?;
 
@@ -328,32 +389,319 @@ fn execute_select(
         result
     };
 
-    // Step 7: ORDER BY
-    let result = if !query.order_by.is_empty() {
-        apply_order_by(result, &query.order_by)?
-    } else {
-        result
-    };
+    Ok(result)
+}
 
-    // Step 8: LIMIT / OFFSET
-    let offset = query.offset.as_ref().and_then(|o| match &o.value {
+/// Apply LIMIT and OFFSET to a QueryResult.
+fn apply_limit_offset(
+    result: QueryResult,
+    limit: Option<&Expr>,
+    offset: Option<&Offset>,
+) -> Result<QueryResult, QueryError> {
+    let off = offset.and_then(|o| match &o.value {
         Expr::Value(Value::Number(s, _)) => s.parse::<usize>().ok(),
         _ => None,
     }).unwrap_or(0);
-    let limit = query.limit.as_ref().and_then(|e| match e {
+    let lim = limit.and_then(|e| match e {
         Expr::Value(Value::Number(s, _)) => s.parse::<usize>().ok(),
         _ => None,
     });
 
-    let (cols, mut result_rows) = (result.columns, result.rows);
-    if offset > 0 {
-        result_rows = result_rows.into_iter().skip(offset).collect();
+    let (cols, mut rows) = (result.columns, result.rows);
+    if off > 0 {
+        rows = rows.into_iter().skip(off).collect();
     }
-    if let Some(n) = limit {
-        result_rows.truncate(n);
+    if let Some(n) = lim {
+        rows.truncate(n);
+    }
+    Ok(QueryResult { columns: cols, rows })
+}
+
+// ── UNION / INTERSECT / EXCEPT ────────────────────────────────────────────────
+
+#[allow(clippy::too_many_arguments)]
+fn execute_set_op(
+    op: &SetOperator,
+    set_quantifier: &SetQuantifier,
+    left: &SetExpr,
+    right: &SetExpr,
+    catalog: &QueryCatalog,
+    outer_row: &Row,
+    order_by: &[OrderByExpr],
+    limit: Option<&Expr>,
+    offset: Option<&Offset>,
+) -> Result<QueryResult, QueryError> {
+    let lres = execute_setexpr(left, catalog, outer_row)?;
+    let rres = execute_setexpr(right, catalog, outer_row)?;
+
+    let is_all = matches!(
+        set_quantifier,
+        SetQuantifier::All | SetQuantifier::AllByName
+    );
+
+    let mut rows: Vec<Vec<ScalarVal>> = match op {
+        SetOperator::Union => {
+            let mut r = lres.rows;
+            r.extend(rres.rows);
+            r
+        }
+        SetOperator::Intersect => lres
+            .rows
+            .into_iter()
+            .filter(|lr| rres.rows.contains(lr))
+            .collect(),
+        SetOperator::Except => lres
+            .rows
+            .into_iter()
+            .filter(|lr| !rres.rows.contains(lr))
+            .collect(),
+    };
+
+    // DISTINCT (default): remove duplicate rows.
+    if !is_all {
+        let mut seen: Vec<Vec<ScalarVal>> = Vec::new();
+        rows.retain(|r| {
+            if seen.contains(r) {
+                false
+            } else {
+                seen.push(r.clone());
+                true
+            }
+        });
     }
 
-    Ok(QueryResult { columns: cols, rows: result_rows })
+    let mut result = QueryResult { columns: lres.columns, rows };
+
+    if !order_by.is_empty() {
+        result = apply_order_by(result, order_by)?;
+    }
+
+    apply_limit_offset(result, limit, offset)
+}
+
+/// Execute a SetExpr without outer ORDER BY / LIMIT (used for UNION sub-selects).
+fn execute_setexpr(
+    expr: &SetExpr,
+    catalog: &QueryCatalog,
+    outer_row: &Row,
+) -> Result<QueryResult, QueryError> {
+    match expr {
+        SetExpr::Select(select) => execute_select_bare(select, catalog, outer_row),
+        SetExpr::Query(inner) => execute_query_inner(inner, catalog, outer_row),
+        SetExpr::SetOperation { op, left, right, set_quantifier } => {
+            execute_set_op(op, set_quantifier, left, right, catalog, outer_row, &[], None, None)
+        }
+        _ => Err(QueryError::Unsupported(
+            "set expression in combination query".into(),
+        )),
+    }
+}
+
+// ── Window function support ───────────────────────────────────────────────────
+
+/// Return true if any projection item contains a window function call.
+fn has_window_in_projection(items: &[SelectItem]) -> bool {
+    items.iter().any(|item| {
+        let e = match item {
+            SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => e,
+            _ => return false,
+        };
+        matches!(e, Expr::Function(f) if f.over.is_some())
+    })
+}
+
+/// Pre-compute window function values for all rows and inject them as extra
+/// columns, so they are available to the projection step.
+fn apply_window_functions(
+    projection: &[SelectItem],
+    mut rows: Vec<Row>,
+    catalog: &QueryCatalog,
+    outer_row: &Row,
+) -> Result<Vec<Row>, QueryError> {
+    for item in projection {
+        let (alias, func) = match item {
+            SelectItem::UnnamedExpr(Expr::Function(f)) => {
+                (f.name.to_string().to_lowercase(), f)
+            }
+            SelectItem::ExprWithAlias {
+                expr: Expr::Function(f),
+                alias,
+            } => (alias.value.clone(), f),
+            _ => continue,
+        };
+        if func.over.is_none() {
+            continue;
+        }
+        let fname = func.name.to_string().to_uppercase();
+        let values = compute_window_values(&fname, func, &rows, catalog, outer_row)?;
+        for (row, val) in rows.iter_mut().zip(values.into_iter()) {
+            row.push((alias.clone(), val));
+        }
+    }
+    Ok(rows)
+}
+
+/// Compute per-row window function values for the entire row set.
+fn compute_window_values(
+    fname: &str,
+    func: &Function,
+    rows: &[Row],
+    catalog: &QueryCatalog,
+    outer_row: &Row,
+) -> Result<Vec<ScalarVal>, QueryError> {
+    // Extract partition_by and order_by from the window spec.
+    let (partition_by, order_by_exprs) = extract_window_spec(func);
+
+    let get_partition_key = |row: &Row| -> Vec<ScalarVal> {
+        partition_by
+            .iter()
+            .map(|e| eval_expr(e, row, catalog, outer_row).unwrap_or(ScalarVal::Null))
+            .collect()
+    };
+
+    // Build a sort order over indices: first by partition key, then by ORDER BY.
+    let mut sorted_indices: Vec<usize> = (0..rows.len()).collect();
+    sorted_indices.sort_by(|&a, &b| {
+        let ka = get_partition_key(&rows[a]);
+        let kb = get_partition_key(&rows[b]);
+        for (k1, k2) in ka.iter().zip(kb.iter()) {
+            if let Some(ord) = k1.cmp_val(k2) {
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+        }
+        for ob in &order_by_exprs {
+            let va = eval_expr(&ob.expr, &rows[a], catalog, outer_row).unwrap_or(ScalarVal::Null);
+            let vb = eval_expr(&ob.expr, &rows[b], catalog, outer_row).unwrap_or(ScalarVal::Null);
+            let ord = va.cmp_val(&vb).unwrap_or(Ordering::Equal);
+            let ord = if ob.asc == Some(false) { ord.reverse() } else { ord };
+            if ord != Ordering::Equal {
+                return ord;
+            }
+        }
+        Ordering::Equal
+    });
+
+    let mut results = vec![ScalarVal::Null; rows.len()];
+
+    // Process each partition in the sorted order.
+    let mut i = 0;
+    while i < sorted_indices.len() {
+        let part_key = get_partition_key(&rows[sorted_indices[i]]);
+        let mut j = i + 1;
+        while j < sorted_indices.len()
+            && get_partition_key(&rows[sorted_indices[j]]) == part_key
+        {
+            j += 1;
+        }
+        let part_sorted = &sorted_indices[i..j];
+
+        match fname {
+            "ROW_NUMBER" => {
+                for (rn, &orig_idx) in part_sorted.iter().enumerate() {
+                    results[orig_idx] = ScalarVal::Int(rn as i64 + 1);
+                }
+            }
+            "RANK" => {
+                let mut current_rank = 1usize;
+                let mut prev_order_vals: Option<Vec<ScalarVal>> = None;
+                for (pos, &orig_idx) in part_sorted.iter().enumerate() {
+                    let order_vals: Vec<ScalarVal> = order_by_exprs
+                        .iter()
+                        .map(|ob| {
+                            eval_expr(&ob.expr, &rows[orig_idx], catalog, outer_row)
+                                .unwrap_or(ScalarVal::Null)
+                        })
+                        .collect();
+                    if let Some(ref prev) = prev_order_vals {
+                        if order_vals != *prev {
+                            current_rank = pos + 1;
+                        }
+                    }
+                    results[orig_idx] = ScalarVal::Int(current_rank as i64);
+                    prev_order_vals = Some(order_vals);
+                }
+            }
+            "LAG" | "LEAD" => {
+                let func_args: &[FunctionArg] = match &func.args {
+                    sqlparser::ast::FunctionArguments::List(list) => &list.args,
+                    _ => &[],
+                };
+                let arg_expr = func_args.iter().next().and_then(|fa| match fa {
+                    FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => Some(e.clone()),
+                    _ => None,
+                });
+                let lag_offset: i64 = func_args
+                    .get(1)
+                    .and_then(|fa| match fa {
+                        FunctionArg::Unnamed(FunctionArgExpr::Expr(
+                            Expr::Value(Value::Number(s, _)),
+                        )) => s.parse::<i64>().ok(),
+                        _ => None,
+                    })
+                    .unwrap_or(1);
+
+                if let Some(expr) = arg_expr {
+                    for (pos, &orig_idx) in part_sorted.iter().enumerate() {
+                        let target = if fname == "LAG" {
+                            pos as i64 - lag_offset
+                        } else {
+                            pos as i64 + lag_offset
+                        };
+                        let val = if target >= 0 && (target as usize) < part_sorted.len() {
+                            eval_expr(
+                                &expr,
+                                &rows[part_sorted[target as usize]],
+                                catalog,
+                                outer_row,
+                            )
+                            .unwrap_or(ScalarVal::Null)
+                        } else {
+                            ScalarVal::Null
+                        };
+                        results[orig_idx] = val;
+                    }
+                }
+            }
+            other => {
+                return Err(QueryError::Unsupported(format!(
+                    "window function: {other}"
+                )));
+            }
+        }
+
+        i = j;
+    }
+
+    Ok(results)
+}
+
+/// Extract (partition_by, order_by) from a function's OVER clause.
+/// Supports both WindowType::WindowSpec and a bare WindowSpec (pre-0.44 compat).
+fn extract_window_spec(func: &Function) -> (Vec<Expr>, Vec<OrderByExpr>) {
+    let over = match &func.over {
+        Some(o) => o,
+        None => return (vec![], vec![]),
+    };
+    // sqlparser >= 0.44 wraps the spec in WindowType::WindowSpec.
+    // We use an opaque dynamic dispatch approach via Debug to handle both API shapes.
+    // Try the new API first; on the old API `over` *is* a WindowSpec directly.
+    extract_window_type_spec(over)
+}
+
+/// Extract (partition_by, order_by) from a `WindowType` value.
+/// In sqlparser >= 0.44, `Function.over` is `Option<WindowType>` where
+/// `WindowType::WindowSpec(spec)` carries the details we need.
+fn extract_window_type_spec(
+    over: &sqlparser::ast::WindowType,
+) -> (Vec<Expr>, Vec<OrderByExpr>) {
+    match over {
+        sqlparser::ast::WindowType::WindowSpec(spec) => {
+            (spec.partition_by.clone(), spec.order_by.clone())
+        }
+        sqlparser::ast::WindowType::NamedWindow(_) => (vec![], vec![]),
+    }
 }
 
 // ── Hash-join helpers ─────────────────────────────────────────────────────────
@@ -531,15 +879,24 @@ fn resolve_from(
     // driven by an equi-predicate extracted from the WHERE clause.  If none is
     // found, fall back to a cross-product but refuse if it would exceed the
     // budget (prevents OOM on complex multi-table queries).
-    let mut result: Vec<Row> = vec![vec![]]; // unit of the Cartesian product
+    //
+    // The first table is loaded directly (no cross-product with a synthetic unit
+    // row), so single-table scans over large tables are not mistakenly blocked
+    // by the CROSS_JOIN_BUDGET check.
+    let mut result: Vec<Row> = Vec::new();
+    let mut first_table = true;
 
     for twj in from {
         // Resolve the relation.
         let mut table_rows = resolve_table_factor(&twj.relation, catalog, outer_row)?;
         apply_single_table_predicates(&mut table_rows, where_expr, catalog, outer_row);
 
-        // Try hash-join first; cross-product with budget guard if not applicable.
-        if let Some((lk, rk)) = find_join_key(&result, &table_rows, equi_pairs) {
+        if first_table {
+            // First table: take rows directly — no cross-product needed.
+            result = table_rows;
+            first_table = false;
+        } else if let Some((lk, rk)) = find_join_key(&result, &table_rows, equi_pairs) {
+            // Try hash-join first; cross-product with budget guard if not applicable.
             result = hash_join_keyed(result, table_rows, &lk, &rk)?;
         } else {
             let estimated = result.len().saturating_mul(table_rows.len());
@@ -1593,22 +1950,6 @@ fn iso_to_yyyymmdd(s: &str) -> Option<i32> {
     Some(y * 10_000 + m * 100 + d)
 }
 
-/// Convert epoch days to (year, month, day). Retained for any future use.
-#[allow(dead_code)]
-pub fn epoch_days_to_ymd(days: i32) -> (i32, u32, u32) {
-    let z = days as i64 + 719468;
-    let era = if z >= 0 { z / 146_097 } else { (z - 146_096) / 146_097 };
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    (y as i32, m as u32, d as u32)
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn has_aggregate_in_projection(items: &[SelectItem]) -> bool {
@@ -1651,6 +1992,20 @@ fn expr_alias(e: &Expr) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn epoch_days_to_ymd(days: i32) -> (i32, u32, u32) {
+        let z = days as i64 + 719468;
+        let era = if z >= 0 { z / 146_097 } else { (z - 146_096) / 146_097 };
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+        let y = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = if m <= 2 { y + 1 } else { y };
+        (y as i32, m as u32, d as u32)
+    }
 
     fn make_rows(data: &[&[(&str, ScalarVal)]]) -> Vec<Row> {
         data.iter().map(|r| r.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()).collect()

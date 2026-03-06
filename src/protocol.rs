@@ -136,6 +136,37 @@ pub fn build_error_response(message: &str, code: &str) -> Vec<u8> {
     build_typed_message(b'E', &body)
 }
 
+/// ParseComplete — response to 'P' (Parse) in extended protocol.
+pub fn build_parse_complete() -> Vec<u8> {
+    build_typed_message(b'1', &[])
+}
+
+/// BindComplete — response to 'B' (Bind) in extended protocol.
+pub fn build_bind_complete() -> Vec<u8> {
+    build_typed_message(b'2', &[])
+}
+
+/// NoData — sent in response to Describe when there are no result columns.
+pub fn build_no_data() -> Vec<u8> {
+    build_typed_message(b'n', &[])
+}
+
+/// ParameterDescription — sent in response to Describe(statement).
+/// `type_oids` is the list of parameter OIDs (0 = untyped).
+pub fn build_parameter_description(type_oids: &[i32]) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.extend_from_slice(&(type_oids.len() as i16).to_be_bytes());
+    for oid in type_oids {
+        body.extend_from_slice(&oid.to_be_bytes());
+    }
+    build_typed_message(b't', &body)
+}
+
+/// CloseComplete — response to 'C' (Close) in extended protocol.
+pub fn build_close_complete() -> Vec<u8> {
+    build_typed_message(b'3', &[])
+}
+
 pub fn parse_startup_body(buf: &[u8]) -> Result<i32, ProtocolError> {
     if buf.len() < 4 {
         return Err(ProtocolError::InvalidLength(buf.len() as i32));

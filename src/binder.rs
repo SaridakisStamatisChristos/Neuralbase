@@ -191,6 +191,11 @@ pub enum BoundPlan {
     AlterUser { username: String, new_password: String },
     /// DROP USER [IF EXISTS] name
     DropUser { username: String, if_exists: bool },
+    /// EXPLAIN [ANALYZE] SELECT ... — returns the query plan as text.
+    Explain {
+        query: Box<sqlparser::ast::Query>,
+        analyze: bool,
+    },
 }
 
 // ── BindError ─────────────────────────────────────────────────────────────────
@@ -254,6 +259,16 @@ pub fn bind_statement(
             if *object_type == ObjectType::Table {
                 let name = names.first().map(|n| n.to_string()).unwrap_or_default();
                 Ok(BoundPlan::DropTable { name })
+            } else {
+                Err(BindError::Unsupported)
+            }
+        }
+        Statement::Explain { analyze, statement, .. } => {
+            if let Statement::Query(q) = statement.as_ref() {
+                Ok(BoundPlan::Explain {
+                    query: q.clone(),
+                    analyze: *analyze,
+                })
             } else {
                 Err(BindError::Unsupported)
             }

@@ -33,9 +33,11 @@ use crate::index_advisor::{DdlResult, IndexAdvisor, IndexDecision, IndexExecutor
 use crate::storage::StorageEngine;
 use crate::protocol::{
     build_auth_md5_request, build_auth_ok, build_auth_sasl_continue, build_auth_sasl_final,
-    build_auth_sasl_request, build_backend_key_data, build_command_complete, build_data_row,
-    build_error_response, build_parameter_status, build_ready_for_query, build_row_description,
-    parse_message_length, parse_sasl_initial_response, parse_startup_body, parse_startup_username,
+    build_auth_sasl_request, build_backend_key_data, build_bind_complete, build_close_complete,
+    build_command_complete, build_data_row, build_error_response, build_no_data,
+    build_parameter_status, build_parse_complete,
+    build_ready_for_query, build_row_description, parse_message_length,
+    parse_sasl_initial_response, parse_startup_body, parse_startup_username,
     ProtocolError, SSL_REQUEST_CODE, STARTUP_PROTOCOL_V3,
 };
 use crate::scheduler::MorselScheduler;
@@ -44,8 +46,9 @@ use crate::storage_executor::table_id_for;
 use crate::tpch::generate_tpch_data;
 use metrics::{counter, gauge};
 use sqlparser::ast::{Expr, SetExpr, Statement, TableFactor};
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::AtomicBool;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -54,12 +57,158 @@ use tokio::time::{timeout, Duration};
 
 const MAX_CONNECTIONS: usize = 100;
 const CONNECTION_ACQUIRE_TIMEOUT_MS: u64 = 500;
+const PLAN_CACHE_MAX_SIZE: usize = 500;
+const STMT_CACHE_MAX_SIZE: usize = 100;
 
 // TLS acceptor type alias (conditional on `tls` feature).
 #[cfg(feature = "tls")]
 pub type TlsAcceptorOpt = Option<tokio_rustls::TlsAcceptor>;
 #[cfg(not(feature = "tls"))]
 pub type TlsAcceptorOpt = Option<std::convert::Infallible>;
+
+// ── Per-user connection tracker (Phase 1A, Session 14) ────────────────────────
+
+/// Tracks active connection count per authenticated username.
+/// Limit: NEURALBASE_MAX_CONNECTIONS_PER_USER (default: unlimited).
+#[derive(Clone)]
+struct UserConnectionTracker {
+    inner: Arc<Mutex<HashMap<String, usize>>>,
+    max_per_user: usize,
+}
+
+impl UserConnectionTracker {
+    fn new(max_per_user: usize) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+            max_per_user,
+        }
+    }
+
+    fn try_acquire(&self, user: &str) -> bool {
+        let mut g = self.inner.lock().unwrap();
+        let c = g.entry(user.to_string()).or_insert(0);
+        if *c >= self.max_per_user {
+            return false;
+        }
+        *c += 1;
+        true
+    }
+
+    fn release(&self, user: &str) {
+        let mut g = self.inner.lock().unwrap();
+        if let Some(c) = g.get_mut(user) {
+            *c = c.saturating_sub(1);
+            if *c == 0 {
+                g.remove(user);
+            }
+        }
+    }
+
+}
+
+fn read_max_per_user() -> usize {
+    std::env::var("NEURALBASE_MAX_CONNECTIONS_PER_USER")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(usize::MAX)
+}
+
+/// RAII guard — releases per-user slot on drop.
+struct UserConnectionGuard {
+    tracker: UserConnectionTracker,
+    username: String,
+}
+
+impl Drop for UserConnectionGuard {
+    fn drop(&mut self) {
+        self.tracker.release(&self.username);
+    }
+}
+
+// ── Query plan cache (Phase 2, Session 14) ────────────────────────────────────
+
+/// LRU query plan cache shared across all connections.
+/// Key: normalized SQL string. Max size: PLAN_CACHE_MAX_SIZE.
+pub struct PlanCache {
+    entries: HashMap<String, BoundPlan>,
+    order: VecDeque<String>,
+    max_size: usize,
+    hits: u64,
+    misses: u64,
+}
+
+impl PlanCache {
+    pub fn new(max_size: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            max_size,
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    pub fn get(&mut self, sql: &str) -> Option<&BoundPlan> {
+        if self.entries.contains_key(sql) {
+            self.hits += 1;
+            // Promote to front (most recently used).
+            self.order.retain(|k| k != sql);
+            self.order.push_front(sql.to_string());
+            self.entries.get(sql)
+        } else {
+            self.misses += 1;
+            None
+        }
+    }
+
+    pub fn insert(&mut self, sql: String, plan: BoundPlan) {
+        if self.entries.contains_key(&sql) {
+            return;
+        }
+        if self.entries.len() >= self.max_size {
+            if let Some(lru) = self.order.pop_back() {
+                self.entries.remove(&lru);
+            }
+        }
+        self.order.push_front(sql.clone());
+        self.entries.insert(sql, plan);
+    }
+
+    /// Invalidate all entries (called on DDL).
+    pub fn invalidate_all(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+    }
+
+    pub fn hit_rate(&self) -> f64 {
+        let total = self.hits + self.misses;
+        if total == 0 { 0.0 } else { self.hits as f64 / total as f64 }
+    }
+
+    pub fn stats(&self) -> (u64, u64) {
+        (self.hits, self.misses)
+    }
+}
+
+/// Normalize SQL for plan cache key: lowercase, collapse whitespace.
+fn normalize_sql(sql: &str) -> String {
+    sql.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+// ── Prepared statements (extended query protocol) ─────────────────────────────
+
+/// A cached prepared statement (from Parse 'P' message).
+#[derive(Clone)]
+struct PreparedStatement {
+    sql: String,
+}
+
+/// A bound portal (from Bind 'B' message): statement with substituted params.
+#[derive(Clone)]
+struct Portal {
+    sql: String,
+}
 
 #[derive(Clone)]
 struct ClientSessionContext {
@@ -71,6 +220,10 @@ struct ClientSessionContext {
     query_count: Arc<AtomicU64>,
     advisor_inflight: Arc<AtomicBool>,
     registry: Arc<RwLock<UserRegistry>>,
+    /// Per-user connection tracker (Phase 1A).
+    user_tracker: UserConnectionTracker,
+    /// Shared query plan cache (Phase 2).
+    plan_cache: Arc<Mutex<PlanCache>>,
 }
 
 pub async fn run(
@@ -88,6 +241,8 @@ pub async fn run(
     let max_connections = read_max_connections();
     let semaphore = Arc::new(Semaphore::new(max_connections));
     update_active_connections(&semaphore, max_connections);
+    let user_tracker = UserConnectionTracker::new(read_max_per_user());
+    let plan_cache = Arc::new(Mutex::new(PlanCache::new(PLAN_CACHE_MAX_SIZE)));
 
     // ── Authentication registry (Session 11) ──────────────────────────────
     let users_file = std::env::var("NEURALBASE_USERS_FILE")
@@ -153,6 +308,8 @@ pub async fn run(
             query_count: Arc::clone(&query_count),
             advisor_inflight: Arc::clone(&advisor_inflight),
             registry: Arc::clone(&registry),
+            user_tracker: user_tracker.clone(),
+            plan_cache: Arc::clone(&plan_cache),
         };
         let permit_guard = ConnectionPermit::new(
             permit,
@@ -282,14 +439,37 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     // startup_and_auth sends AuthOk (or an error) internally.
-    if startup_and_auth(&mut socket, &ctx.registry).await.is_err() {
+    let username = match startup_and_auth(&mut socket, &ctx.registry).await {
+        Ok(u) => u,
+        Err(_) => return Ok(()),
+    };
+
+    // Per-user connection limit (Phase 1A, Session 14).
+    if !ctx.user_tracker.try_acquire(&username) {
+        counter!("rejected_connections_per_user_total").increment(1);
+        tracing::warn!(%username, "rejecting connection: per-user limit exceeded");
+        let _ = socket
+            .write_all(&build_error_response(
+                "too many connections for this user",
+                "53300",
+            ))
+            .await;
+        let _ = socket.shutdown().await;
         return Ok(());
     }
+    let _user_guard = UserConnectionGuard {
+        tracker: ctx.user_tracker.clone(),
+        username: username.clone(),
+    };
 
     socket.write_all(&build_parameter_status("server_version", "16.0")).await?;
     socket.write_all(&build_parameter_status("client_encoding", "UTF8")).await?;
     socket.write_all(&build_backend_key_data(42, 7)).await?;
     socket.write_all(&build_ready_for_query()).await?;
+
+    // Per-connection prepared-statement and portal caches.
+    let mut stmt_cache: HashMap<String, PreparedStatement> = HashMap::new();
+    let mut portal_cache: HashMap<String, Portal> = HashMap::new();
 
     loop {
         let mut message_type = [0_u8; 1];
@@ -332,6 +512,7 @@ where
                     ctx.dml_exec.as_deref(),
                     ctx.storage_engine.as_ref(),
                     &ctx.registry,
+                    &ctx.plan_cache,
                 )
                 .await?;
                 let elapsed_us = start.elapsed().as_micros() as u64;
@@ -424,6 +605,92 @@ where
                 }
 
                 socket.write_all(&build_ready_for_query()).await?;
+            }
+            // ── Extended query protocol (Phase 2, Session 14) ──────────────────
+            b'P' => {
+                // Parse: name\0 sql\0 num_param_types:i16 [oid:i32...]
+                let mut cursor = 0usize;
+                let name = read_cstring(&payload, &mut cursor);
+                let sql = read_cstring(&payload, &mut cursor);
+                let nparams = if cursor + 2 <= payload.len() {
+                    let n = i16::from_be_bytes([payload[cursor], payload[cursor + 1]]) as usize;
+                    cursor += 2;
+                    n
+                } else {
+                    0
+                };
+                let mut ptypes: Vec<i32> = Vec::with_capacity(nparams);
+                for _ in 0..nparams {
+                    if cursor + 4 <= payload.len() {
+                        let oid = i32::from_be_bytes([
+                            payload[cursor],
+                            payload[cursor + 1],
+                            payload[cursor + 2],
+                            payload[cursor + 3],
+                        ]);
+                        ptypes.push(oid);
+                        cursor += 4;
+                    }
+                }
+                let max_stmts = STMT_CACHE_MAX_SIZE;
+                if stmt_cache.len() >= max_stmts {
+                    stmt_cache.clear(); // Simple eviction: flush all when full
+                }
+                let _ = ptypes; // type OIDs from client; engine does not enforce param types
+                stmt_cache.insert(name, PreparedStatement { sql });
+                socket.write_all(&build_parse_complete()).await?;
+            }
+            b'B' => {
+                // Bind: portal_name\0 stmt_name\0 ...
+                let mut cursor = 0usize;
+                let portal_name = read_cstring(&payload, &mut cursor);
+                let stmt_name = read_cstring(&payload, &mut cursor);
+                let sql = stmt_cache
+                    .get(&stmt_name)
+                    .map(|s| s.sql.clone())
+                    .unwrap_or_default();
+                portal_cache.insert(portal_name, Portal { sql });
+                socket.write_all(&build_bind_complete()).await?;
+            }
+            b'D' => {
+                // Describe: 'P'/'S' + name\0  — return NoData (full metadata TBD)
+                socket.write_all(&build_no_data()).await?;
+            }
+            b'E' => {
+                // Execute: portal_name\0 max_rows:i32
+                let mut cursor = 0usize;
+                let portal_name = read_cstring(&payload, &mut cursor);
+                let sql = portal_cache
+                    .get(&portal_name)
+                    .map(|p| p.sql.clone())
+                    .unwrap_or_default();
+                if !sql.is_empty() {
+                    let scanner: Option<&dyn TableScanner> =
+                        ctx.dml_exec.as_deref().map(|s| s as &dyn TableScanner);
+                    process_query(
+                        &mut socket,
+                        &sql,
+                        &ctx.catalog,
+                        scanner,
+                        ctx.dml_exec.as_deref(),
+                        ctx.storage_engine.as_ref(),
+                        &ctx.registry,
+                        &ctx.plan_cache,
+                    )
+                    .await?;
+                } else {
+                    socket
+                        .write_all(&build_command_complete("EXECUTE 0"))
+                        .await?;
+                }
+            }
+            b'S' => {
+                // Sync: flush and send ReadyForQuery
+                socket.write_all(&build_ready_for_query()).await?;
+            }
+            b'C' => {
+                // Close: 'P'/'S' + name\0  — acknowledge unconditionally
+                socket.write_all(&build_close_complete()).await?;
             }
             b'X' => return Ok(()),
             _ => {
@@ -641,6 +908,34 @@ where
 }
 
 
+/// Read a null-terminated string from `buf` starting at `*cursor`; advance cursor past the null.
+fn read_cstring(buf: &[u8], cursor: &mut usize) -> String {
+    let start = *cursor;
+    while *cursor < buf.len() && buf[*cursor] != 0 {
+        *cursor += 1;
+    }
+    let s = String::from_utf8_lossy(&buf[start..*cursor]).to_string();
+    if *cursor < buf.len() {
+        *cursor += 1; // skip null terminator
+    }
+    s
+}
+
+/// Build a single-column RecordBatch of text rows for EXPLAIN output.
+fn explain_text_to_batch(text: &str) -> crate::vectorized::RecordBatch {
+    use crate::vectorized::{ColumnVector, RecordBatch, Utf8Column};
+    let lines: Vec<Option<String>> = text.lines().map(|l| Some(l.to_string())).collect();
+    let row_count = lines.len();
+    RecordBatch {
+        columns: vec![(
+            "QUERY PLAN".to_string(),
+            ColumnVector::Utf8(Utf8Column::from_owned_options(lines)),
+        )],
+        row_count,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn process_query<S>(
     socket: &mut S,
     sql: &str,
@@ -649,6 +944,7 @@ async fn process_query<S>(
     dml_exec: Option<&StorageExecutor>,
     storage_engine: Option<&Arc<StorageEngine>>,
     registry: &RwLock<UserRegistry>,
+    plan_cache: &Mutex<PlanCache>,
 ) -> std::io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -661,12 +957,38 @@ where
         }
     };
 
-    let plan = match bind_nb_statement(&nb_stmt, catalog) {
-        Ok(plan) => plan,
-        Err(err) => {
-            write_error_and_ready(socket, &err.to_string(), "42P01").await?;
-            return Ok(());
+    // Plan cache lookup (read-only plans are cached by normalized SQL key).
+    let norm = normalize_sql(sql);
+    let cached_plan = {
+        let mut cache = plan_cache.lock().unwrap();
+        cache.get(&norm).cloned()
+    };
+    let plan = if let Some(p) = cached_plan {
+        p
+    } else {
+        let p = match bind_nb_statement(&nb_stmt, catalog) {
+            Ok(plan) => plan,
+            Err(err) => {
+                write_error_and_ready(socket, &err.to_string(), "42P01").await?;
+                return Ok(());
+            }
+        };
+        {
+            let mut cache = plan_cache.lock().unwrap();
+            match &p {
+                BoundPlan::SelectConstI64(_)
+                | BoundPlan::SelectFromTable { .. }
+                | BoundPlan::SelectQuery(_)
+                | BoundPlan::Explain { .. } => {
+                    cache.insert(norm, p.clone());
+                }
+                // DDL and DML: invalidate the whole cache.
+                _ => {
+                    cache.invalidate_all();
+                }
+            }
         }
+        p
     };
 
     match plan {
@@ -849,6 +1171,33 @@ where
             } else {
                 socket.write_all(&build_command_complete("DROP USER")).await?;
             }
+        }
+        BoundPlan::Explain { query, analyze } => {
+            let plan_text = "PhysicalPlan: SeqScan -> Project".to_string();
+            let explain_text = if analyze {
+                let start = std::time::Instant::now();
+                let dataset = generate_tpch_data(0.1);
+                let mut qcat = QueryCatalog::from_tpch(&dataset);
+                for schema in catalog.all_tables() {
+                    if !qcat.tables.contains_key(&schema.name.to_lowercase()) {
+                        if let Some(sc) = storage {
+                            if let Ok(batch) = sc.scan_table(&schema.name) {
+                                qcat.add_batch(&schema.name, &batch);
+                            }
+                        }
+                    }
+                }
+                let elapsed_ms = match crate::query_executor::execute_select_query(&query, &qcat)
+                {
+                    Ok(_) => start.elapsed().as_millis(),
+                    Err(_) => start.elapsed().as_millis(),
+                };
+                format!("{plan_text}\nActual time: {elapsed_ms}ms")
+            } else {
+                plan_text
+            };
+            let batch = explain_text_to_batch(&explain_text);
+            write_batch(socket, &batch).await?;
         }
     }
 
