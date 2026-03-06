@@ -717,7 +717,7 @@ async fn extended_protocol_execute_cached_plan_multiple_times() {
     for i in 0..3 {
         let portal = format!("p{i}");
         client.write_all(&build_bind_message(&portal, "s1")).await.expect("bind");
-        let (bind_tag, _) = read_one_message(&mut client).await.expect("BindComplete");
+        let (_bind_tag, _) = read_one_message(&mut client).await.expect("BindComplete");
 
         client.write_all(&build_execute_message(&portal, 0)).await.expect("execute");
         // Collect until we get a CommandComplete ('C')

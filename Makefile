@@ -34,6 +34,15 @@ cluster-test:
 	cargo test --test adversarial_raft --locked -- s13_ --nocapture
 	docker compose down
 
+fuzz:
+	cargo +nightly fuzz run fuzz_sql_parser -- -max_len=4096 -max_total_time=3600
+	cargo +nightly fuzz run fuzz_wire_protocol -- -max_len=65536 -max_total_time=3600
+	cargo +nightly fuzz run fuzz_codec -- -max_len=65536 -max_total_time=3600
+
+deny:
+	cargo deny check licenses
+	cargo deny check advisories
+
 clean:
 	cargo clean
 	if exist tmp_* rmdir /s /q tmp_* 2>nul

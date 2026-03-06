@@ -59,7 +59,8 @@ COPY --from=builder /app/target/release/neuralbase /app/neuralbase
 ENV LISTEN_ADDR="0.0.0.0:5432" \
     RAFT_ADDR="0.0.0.0:7001" \
     NODE_ID="node1" \
-    PEERS=""
+    PEERS="" \
+    METRICS_PORT="9090"
 
 # SQL wire protocol (PostgreSQL-compatible).
 EXPOSE 5432
@@ -67,5 +68,13 @@ EXPOSE 5432
 EXPOSE 7001
 # Query exchange / fragment shuffling.
 EXPOSE 8001
+# Prometheus metrics scrape endpoint.
+EXPOSE 9090
+
+# HEALTHCHECK: verify the SQL listener is accepting TCP connections.
+# The check writes a zero-length probe to port 5432 and expects the
+# connection to succeed within 2 seconds.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \
+    CMD timeout 2 bash -c 'echo > /dev/tcp/127.0.0.1/5432' || exit 1
 
 ENTRYPOINT ["/app/neuralbase"]

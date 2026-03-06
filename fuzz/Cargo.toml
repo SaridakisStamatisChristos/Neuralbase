@@ -1,0 +1,31 @@
+[package]
+name = "neuralbase-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "=0.4.7"
+
+[dependencies.neuralbase]
+path = ".."
+
+# ── Fuzz targets ──────────────────────────────────────────────────────────
+
+[[bin]]
+name = "fuzz_sql_parser"
+path = "fuzz_targets/fuzz_sql_parser.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_wire_protocol"
+path = "fuzz_targets/fuzz_wire_protocol.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_codec"
+path = "fuzz_targets/fuzz_codec.rs"
+doc = false

@@ -1,34 +1,32 @@
 // SPDX-License-Identifier: Apache-2.0
 // Telemetry bootstrap — metrics + tracing initialisation.
 //
-// Exposes a Prometheus /metrics scrape endpoint on `metrics_port` when
-// the metrics-exporter-prometheus crate is compiled with its http-listener
-// feature (requires enabling the default features in Cargo.toml).
-//
-// Current build: default-features = false → scrape endpoint disabled.
-// To enable a live scrape endpoint, add `features = ["http-listener"]` to
-// the metrics-exporter-prometheus dep and uncomment the PrometheusBuilder
-// block below.
+// Exposes a Prometheus /metrics scrape endpoint on `metrics_port`.
+// Uses `metrics-exporter-prometheus` with the `http-listener` feature.
 //
 // Tracing (tokio-tracing / OpenTelemetry) is not wired in this release;
 // structured logs are emitted via eprintln! in the hot path.
 //
-// CONFIDENCE: raw=0.70 effective=0.68
+// CONFIDENCE: raw=0.78 effective=0.76
 
-/// Initialise metrics recorder.
+use metrics_exporter_prometheus::PrometheusBuilder;
+
+/// Initialise Prometheus metrics recorder and scrape endpoint.
 ///
-/// When the `http-listener` feature is enabled this spawns a background
-/// server on `0.0.0.0:<metrics_port>` exposing `/metrics`.
-/// In the current build this is a no-op.
+/// Spawns a background Hyper server on `0.0.0.0:<metrics_port>`
+/// exposing `/metrics` in Prometheus text exposition format.
 pub fn init(metrics_port: u16) {
-    // Suppress unused-variable warning when feature is off.
-    let _ = metrics_port;
-
-    // Uncomment when http-listener feature is enabled:
-    // use metrics_exporter_prometheus::PrometheusBuilder;
-    // PrometheusBuilder::new()
-    //     .with_http_listener(([0, 0, 0, 0], metrics_port))
-    //     .install()
-    //     .expect("failed to install Prometheus recorder");
-    // eprintln!("[telemetry] Prometheus scrape: http://0.0.0.0:{metrics_port}/metrics");
+    match PrometheusBuilder::new()
+        .with_http_listener(([0, 0, 0, 0], metrics_port))
+        .install()
+    {
+        Ok(()) => {
+            eprintln!("[telemetry] Prometheus scrape: http://0.0.0.0:{metrics_port}/metrics");
+        }
+        Err(e) => {
+            eprintln!("[telemetry] WARNING: failed to install Prometheus recorder: {e}");
+            // Non-fatal: server continues without metrics export.
+            // Most likely cause: port already in use (e.g. two nodes on same host).
+        }
+    }
 }

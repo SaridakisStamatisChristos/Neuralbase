@@ -38,10 +38,10 @@ async-trait = "=0.1.88"
 tracing = "=0.1.41"
 tracing-subscriber = { version = "=0.3.20", features = ["env-filter", "fmt", "json"] }
 metrics = "=0.24.1"
-metrics-exporter-prometheus = { version = "=0.16.2", default-features = false }
+metrics-exporter-prometheus = { version = "=0.16.2", default-features = false, features = ["http-listener"] }
 # TLS deps — active (NASM 3.01 confirmed installed 2026-03-04)
 tokio-rustls  = { version = "=0.26.0", optional = true }
-rustls        = { version = "=0.23.4", default-features = false, features = ["ring", "tls12", "std"], optional = true }
+rustls        = { version = "=0.23.25", default-features = false, features = ["ring", "tls12", "std"], optional = true }
 rcgen         = { version = "=0.13.1", default-features = false, features = ["pem", "ring"], optional = true }
 rustls-pemfile = { version = "=2.1.0", optional = true }
 
