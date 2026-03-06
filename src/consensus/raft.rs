@@ -118,6 +118,7 @@ pub struct ClientCommand {
 pub struct RaftTaskHandle {
     shutdown_tx: Option<oneshot::Sender<()>>,
     join_handle: tokio::task::JoinHandle<()>,
+    transfer_tx: mpsc::Sender<oneshot::Sender<Result<String, String>>>,
 }
 
 impl RaftTaskHandle {
@@ -126,6 +127,26 @@ impl RaftTaskHandle {
             let _ = tx.send(());
         }
         let _ = (&mut self.join_handle).await;
+    }
+
+    /// Request the Raft node to transfer leadership to any healthy peer.
+    /// Returns `Ok(new_leader_id)` on success, `Err(reason)` on failure/timeout.
+    pub async fn request_leader_transfer(&self) -> Result<String, String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.transfer_tx
+            .send(reply_tx)
+            .await
+            .map_err(|_| "raft event loop closed".to_string())?;
+        match tokio::time::timeout(
+            Duration::from_millis(LEADER_TRANSFER_TIMEOUT_MS),
+            reply_rx,
+        )
+        .await
+        {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err("reply channel dropped".to_string()),
+            Err(_) => Err("leader transfer timed out".to_string()),
+        }
     }
 }
 
@@ -303,6 +324,8 @@ impl<T: Transport> RaftNode<T> {
     ) {
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<ClientCommand>(64);
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+        let (transfer_tx, mut transfer_rx) =
+            mpsc::channel::<oneshot::Sender<Result<String, String>>>(1);
         let shared = Arc::new(Mutex::new(RaftShared {
             role: RaftRole::Follower,
             leader_id: None,
@@ -352,6 +375,20 @@ impl<T: Transport> RaftNode<T> {
                     Some(cmd) = cmd_rx.recv() => {
                         let result = self.handle_client_command(cmd.payload);
                         let _ = cmd.reply.send(result);
+                    }
+
+                    // Leader transfer request (from RaftTaskHandle).
+                    Some(reply_tx) = transfer_rx.recv() => {
+                        let result = if self.role != RaftRole::Leader {
+                            Err("not leader".to_string())
+                        } else if self.peers.is_empty() {
+                            Err("no peers available".to_string())
+                        } else {
+                            let target = self.peers[0].clone();
+                            self.on_leader_transfer(&self.id.clone(), target.clone()).await;
+                            Ok(target)
+                        };
+                        let _ = reply_tx.send(result);
                     }
                 }
 
@@ -418,6 +455,7 @@ impl<T: Transport> RaftNode<T> {
             RaftTaskHandle {
                 shutdown_tx: Some(shutdown_tx),
                 join_handle,
+                transfer_tx,
             },
         )
     }

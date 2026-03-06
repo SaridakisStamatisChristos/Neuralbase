@@ -1,4 +1,5 @@
 use neuralbase::catalog::{Catalog, InMemoryCatalog, MutableCatalog};
+use neuralbase::consensus::raft::RaftTaskHandle;
 use neuralbase::gc::GarbageCollector;
 use neuralbase::hlc::HlcClock;
 use neuralbase::mvcc::TransactionManager;
@@ -114,6 +115,11 @@ async fn main() -> std::io::Result<()> {
     #[cfg(not(feature = "tls"))]
     let tls_acceptor: server::TlsAcceptorOpt = None;
 
+    // ── Raft handle (None until cluster mode is wired) ───────────────────
+    // When Raft is started, assign the handle here so the shutdown path
+    // can attempt LeaderTransfer before draining connections.
+    let raft_handle: Option<RaftTaskHandle> = None;
+
     // ── Run server with graceful shutdown ─────────────────────────────────
     // Race the accept loop against a shutdown signal (SIGTERM / Ctrl+C).
     // On signal: stop accepting new connections, allow 30s for in-flight
@@ -123,6 +129,19 @@ async fn main() -> std::io::Result<()> {
             result
         }
         _ = shutdown_signal() => {
+            // ── LeaderTransfer before drain ────────────────────────────
+            if let Some(ref handle) = raft_handle {
+                eprintln!("[shutdown] attempting leader transfer before drain");
+                match handle.request_leader_transfer().await {
+                    Ok(new_leader) => {
+                        eprintln!("[shutdown] leadership transferred to {new_leader}");
+                    }
+                    Err(e) => {
+                        eprintln!("[shutdown] transfer skipped or failed: {e}");
+                    }
+                }
+            }
+
             // Drain period: give in-flight connections time to finish.
             eprintln!("[shutdown] waiting up to 30s for in-flight queries to drain");
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
