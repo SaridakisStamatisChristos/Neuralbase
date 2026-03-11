@@ -18,38 +18,37 @@
 //   Methods:      SCRAM-SHA-256 (primary), MD5 (legacy fallback)
 
 use crate::auth::{
-    IpConnectionTracker, Md5State, ScramServer, StoredCredential, UserRegistry,
-    create_scram_user, read_max_per_ip,
+    create_scram_user, read_max_per_ip, IpConnectionTracker, Md5State, ScramServer,
+    StoredCredential, UserRegistry,
 };
 use crate::binder::{bind_nb_statement, BoundPlan};
 use crate::catalog::{Catalog, InMemoryCatalog, MutableCatalog};
 use crate::execution::{
     batch_to_pg_rows, build_physical_plan, execute_physical_plan, mock_const_batch, TableScanner,
 };
-use crate::query_executor::{query_result_to_batch, QueryCatalog};
-use crate::rocksdb_catalog::RocksDbCatalog;
-use crate::storage_executor::StorageExecutor;
 use crate::index_advisor::{DdlResult, IndexAdvisor, IndexDecision, IndexExecutor, QueryPattern};
-use crate::storage::StorageEngine;
 use crate::protocol::{
     build_auth_md5_request, build_auth_ok, build_auth_sasl_continue, build_auth_sasl_final,
     build_auth_sasl_request, build_backend_key_data, build_bind_complete, build_close_complete,
     build_command_complete, build_data_row, build_error_response, build_no_data,
-    build_parameter_status, build_parse_complete,
-    build_ready_for_query, build_row_description, parse_message_length,
-    parse_sasl_initial_response, parse_startup_body, parse_startup_username,
+    build_parameter_status, build_parse_complete, build_ready_for_query, build_row_description,
+    parse_message_length, parse_sasl_initial_response, parse_startup_body, parse_startup_username,
     ProtocolError, SSL_REQUEST_CODE, STARTUP_PROTOCOL_V3,
 };
+use crate::query_executor::{query_result_to_batch, QueryCatalog};
+use crate::rocksdb_catalog::RocksDbCatalog;
 use crate::scheduler::MorselScheduler;
 use crate::sql::{parse_nb_statement, parse_statement};
+use crate::storage::StorageEngine;
 use crate::storage_executor::table_id_for;
+use crate::storage_executor::StorageExecutor;
 use crate::tpch::generate_tpch_data;
 use metrics::{counter, gauge};
 use sqlparser::ast::{Expr, SetExpr, Statement, TableFactor};
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::AtomicBool;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
@@ -103,7 +102,6 @@ impl UserConnectionTracker {
             }
         }
     }
-
 }
 
 fn read_max_per_user() -> usize {
@@ -183,7 +181,11 @@ impl PlanCache {
 
     pub fn hit_rate(&self) -> f64 {
         let total = self.hits + self.misses;
-        if total == 0 { 0.0 } else { self.hits as f64 / total as f64 }
+        if total == 0 {
+            0.0
+        } else {
+            self.hits as f64 / total as f64
+        }
     }
 
     pub fn stats(&self) -> (u64, u64) {
@@ -193,7 +195,10 @@ impl PlanCache {
 
 /// Normalize SQL for plan cache key: lowercase, collapse whitespace.
 fn normalize_sql(sql: &str) -> String {
-    sql.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    sql.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 // ── Prepared statements (extended query protocol) ─────────────────────────────
@@ -220,6 +225,7 @@ struct ClientSessionContext {
     query_count: Arc<AtomicU64>,
     advisor_inflight: Arc<AtomicBool>,
     registry: Arc<RwLock<UserRegistry>>,
+    users_file: Arc<String>,
     /// Per-user connection tracker (Phase 1A).
     user_tracker: UserConnectionTracker,
     /// Shared query plan cache (Phase 2).
@@ -245,8 +251,8 @@ pub async fn run(
     let plan_cache = Arc::new(Mutex::new(PlanCache::new(PLAN_CACHE_MAX_SIZE)));
 
     // ── Authentication registry (Session 11) ──────────────────────────────
-    let users_file = std::env::var("NEURALBASE_USERS_FILE")
-        .unwrap_or_else(|_| "users.json".to_string());
+    let users_file =
+        std::env::var("NEURALBASE_USERS_FILE").unwrap_or_else(|_| "users.json".to_string());
     let registry = Arc::new(RwLock::new(UserRegistry::load_from_file(&users_file)));
 
     // ── Per-IP connection tracking (Session 11) ───────────────────────────
@@ -308,6 +314,7 @@ pub async fn run(
             query_count: Arc::clone(&query_count),
             advisor_inflight: Arc::clone(&advisor_inflight),
             registry: Arc::clone(&registry),
+            users_file: Arc::new(users_file.clone()),
             user_tracker: user_tracker.clone(),
             plan_cache: Arc::clone(&plan_cache),
         };
@@ -431,10 +438,7 @@ where
     socket.shutdown().await
 }
 
-async fn handle_client_stream<S>(
-    mut socket: S,
-    ctx: ClientSessionContext,
-) -> std::io::Result<()>
+async fn handle_client_stream<S>(mut socket: S, ctx: ClientSessionContext) -> std::io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -462,8 +466,12 @@ where
         username: username.clone(),
     };
 
-    socket.write_all(&build_parameter_status("server_version", "16.0")).await?;
-    socket.write_all(&build_parameter_status("client_encoding", "UTF8")).await?;
+    socket
+        .write_all(&build_parameter_status("server_version", "16.0"))
+        .await?;
+    socket
+        .write_all(&build_parameter_status("client_encoding", "UTF8"))
+        .await?;
     socket.write_all(&build_backend_key_data(42, 7)).await?;
     socket.write_all(&build_ready_for_query()).await?;
 
@@ -512,6 +520,7 @@ where
                     ctx.dml_exec.as_deref(),
                     ctx.storage_engine.as_ref(),
                     &ctx.registry,
+                    &ctx.users_file,
                     &ctx.plan_cache,
                 )
                 .await?;
@@ -526,80 +535,89 @@ where
                         let adv = Arc::clone(&ctx.advisor);
                         let exec = Arc::clone(&ctx.executor);
                         let eng = ctx.storage_engine.clone();
-                        if ctx.advisor_inflight
+                        if ctx
+                            .advisor_inflight
                             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                             .is_ok()
                         {
-                        let inflight_task = Arc::clone(&ctx.advisor_inflight);
-                        tokio::spawn(async move {
-                            let decisions = adv.advise();
+                            let inflight_task = Arc::clone(&ctx.advisor_inflight);
+                            tokio::spawn(async move {
+                                let decisions = adv.advise();
 
-                            if let Some(engine) = eng {
-                                // Sync existing index CFs so advisor tracks their age.
-                                if let Ok(cfs) = engine.list_index_cfs() {
-                                    for cf in cfs {
-                                        adv.register_index(cf);
-                                    }
-                                }
-                                // Apply create/drop decisions as real RocksDB DDL.
-                                let results = exec.apply(&decisions, &engine);
-                                for result in &results {
-                                    match result {
-                                        DdlResult::Created { index_name } => {
-                                            // Newly created index: reset its drop-TTL clock.
-                                            adv.touch_index(index_name);
-                                            tracing::info!(index_name, "index created");
-                                        }
-                                        DdlResult::Dropped { index_name } => {
-                                            tracing::info!(index_name, "index dropped");
-                                        }
-                                        DdlResult::Skipped { index_name, reason } => {
-                                            tracing::debug!(index_name, reason, "index ddl skipped");
-                                        }
-                                        DdlResult::Failed { index_name, error } => {
-                                            tracing::warn!(index_name, error, "index ddl failed");
+                                if let Some(engine) = eng {
+                                    // Sync existing index CFs so advisor tracks their age.
+                                    if let Ok(cfs) = engine.list_index_cfs() {
+                                        for cf in cfs {
+                                            adv.register_index(cf);
                                         }
                                     }
+                                    // Apply create/drop decisions as real RocksDB DDL.
+                                    let results = exec.apply(&decisions, &engine);
+                                    for result in &results {
+                                        match result {
+                                            DdlResult::Created { index_name } => {
+                                                // Newly created index: reset its drop-TTL clock.
+                                                adv.touch_index(index_name);
+                                                tracing::info!(index_name, "index created");
+                                            }
+                                            DdlResult::Dropped { index_name } => {
+                                                tracing::info!(index_name, "index dropped");
+                                            }
+                                            DdlResult::Skipped { index_name, reason } => {
+                                                tracing::debug!(
+                                                    index_name,
+                                                    reason,
+                                                    "index ddl skipped"
+                                                );
+                                            }
+                                            DdlResult::Failed { index_name, error } => {
+                                                tracing::warn!(
+                                                    index_name,
+                                                    error,
+                                                    "index ddl failed"
+                                                );
+                                            }
+                                        }
+                                    }
+                                    tracing::debug!(
+                                        active_indexes = exec.applied_indexes().len(),
+                                        "advisor DDL cycle complete"
+                                    );
                                 }
-                                tracing::debug!(
-                                    active_indexes = exec.applied_indexes().len(),
-                                    "advisor DDL cycle complete"
-                                );
-                            }
 
-                            // Log all recommendations with full structured detail.
-                            for d in &decisions {
-                                match d {
-                                    IndexDecision::Create {
-                                        candidate,
-                                        estimated_benefit,
-                                        estimated_cost_bytes,
-                                        reason,
-                                    } => {
-                                        tracing::debug!(
-                                            index = candidate.index_name(),
-                                            benefit = estimated_benefit,
-                                            cost_bytes = estimated_cost_bytes,
-                                            %reason,
-                                            "advisor: CREATE INDEX"
-                                        );
-                                    }
-                                    IndexDecision::Drop {
-                                        index_name,
-                                        unused_for,
-                                        reason,
-                                    } => {
-                                        tracing::debug!(
-                                            %index_name,
-                                            unused_secs = unused_for.as_secs(),
-                                            %reason,
-                                            "advisor: DROP INDEX"
-                                        );
+                                // Log all recommendations with full structured detail.
+                                for d in &decisions {
+                                    match d {
+                                        IndexDecision::Create {
+                                            candidate,
+                                            estimated_benefit,
+                                            estimated_cost_bytes,
+                                            reason,
+                                        } => {
+                                            tracing::debug!(
+                                                index = candidate.index_name(),
+                                                benefit = estimated_benefit,
+                                                cost_bytes = estimated_cost_bytes,
+                                                %reason,
+                                                "advisor: CREATE INDEX"
+                                            );
+                                        }
+                                        IndexDecision::Drop {
+                                            index_name,
+                                            unused_for,
+                                            reason,
+                                        } => {
+                                            tracing::debug!(
+                                                %index_name,
+                                                unused_secs = unused_for.as_secs(),
+                                                %reason,
+                                                "advisor: DROP INDEX"
+                                            );
+                                        }
                                     }
                                 }
-                            }
-                            inflight_task.store(false, Ordering::Release);
-                        });
+                                inflight_task.store(false, Ordering::Release);
+                            });
                         }
                     }
                 }
@@ -675,6 +693,7 @@ where
                         ctx.dml_exec.as_deref(),
                         ctx.storage_engine.as_ref(),
                         &ctx.registry,
+                        &ctx.users_file,
                         &ctx.plan_cache,
                     )
                     .await?;
@@ -748,9 +767,7 @@ where
 
 /// Read the startup message, handling SSL requests transparently.
 /// Returns (username, raw_startup_body).
-async fn read_startup_message<S>(
-    socket: &mut S,
-) -> Result<(String, Vec<u8>), ProtocolError>
+async fn read_startup_message<S>(socket: &mut S) -> Result<(String, Vec<u8>), ProtocolError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -802,8 +819,8 @@ where
 
     // Read SASLInitialResponse ('p' message).
     let client_first = read_frontend_message_payload(socket).await?;
-    let (_, initial_data) = parse_sasl_initial_response(&client_first)
-        .map_err(|_| ProtocolError::InvalidLength(0))?;
+    let (_, initial_data) =
+        parse_sasl_initial_response(&client_first).map_err(|_| ProtocolError::InvalidLength(0))?;
     let client_first_str =
         String::from_utf8(initial_data).map_err(|_| ProtocolError::InvalidLength(0))?;
 
@@ -824,9 +841,7 @@ where
 
     let server_sig = scram
         .process_client_final(&client_final)
-        .map_err(|_| {
-            ProtocolError::InvalidLength(0)
-        })?;
+        .map_err(|_| ProtocolError::InvalidLength(0))?;
 
     // Send AuthenticationSASLFinal then AuthenticationOk.
     let final_msg = format!("v={}", server_sig);
@@ -861,7 +876,10 @@ where
     // Read PasswordMessage ('p' message).
     let pw_payload = read_frontend_message_payload(socket).await?;
     let response = String::from_utf8(
-        pw_payload.strip_suffix(b"\0").unwrap_or(&pw_payload).to_vec(),
+        pw_payload
+            .strip_suffix(b"\0")
+            .unwrap_or(&pw_payload)
+            .to_vec(),
     )
     .map_err(|_| ProtocolError::InvalidLength(0))?;
 
@@ -907,7 +925,6 @@ where
     Ok(payload)
 }
 
-
 /// Read a null-terminated string from `buf` starting at `*cursor`; advance cursor past the null.
 fn read_cstring(buf: &[u8], cursor: &mut usize) -> String {
     let start = *cursor;
@@ -944,6 +961,7 @@ async fn process_query<S>(
     dml_exec: Option<&StorageExecutor>,
     storage_engine: Option<&Arc<StorageEngine>>,
     registry: &RwLock<UserRegistry>,
+    users_file: &str,
     plan_cache: &Mutex<PlanCache>,
 ) -> std::io::Result<()>
 where
@@ -1041,7 +1059,9 @@ where
                     tracing::warn!(error = %e, table = %name, "failed to clear dropped table data");
                 }
             }
-            socket.write_all(&build_command_complete("DROP TABLE")).await?;
+            socket
+                .write_all(&build_command_complete("DROP TABLE"))
+                .await?;
         }
         BoundPlan::CreateTable(create_plan) => {
             let schema = create_plan.to_table_schema();
@@ -1071,9 +1091,7 @@ where
                     .iter()
                     .zip(row_values)
                     .map(|(col, val)| {
-                        let s = val
-                            .to_storage_string()
-                            .unwrap_or_default();
+                        let s = val.to_storage_string().unwrap_or_default();
                         (col.clone(), s)
                     })
                     .collect();
@@ -1143,33 +1161,81 @@ where
         }
         BoundPlan::CreateUser { username, password } => {
             let new_record = create_scram_user(&username, &password);
-            registry.write().await.add_user(new_record);
-            socket.write_all(&build_command_complete("CREATE USER")).await?;
-        }
-        BoundPlan::AlterUser { username, new_password } => {
-            let updated = create_scram_user(&username, &new_password);
-            if registry.write().await.update_user(updated) {
-                socket.write_all(&build_command_complete("ALTER USER")).await?;
-            } else {
-                write_error_and_ready(
-                    socket,
-                    &format!("user not found: {}", username),
-                    "42704",
-                )
+            {
+                let mut reg = registry.write().await;
+                reg.add_user(new_record);
+                if let Err(e) = reg.save_to_file(users_file) {
+                    write_error_and_ready(
+                        socket,
+                        &format!("failed to persist user registry: {e}"),
+                        "58030",
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            }
+            socket
+                .write_all(&build_command_complete("CREATE USER"))
                 .await?;
+        }
+        BoundPlan::AlterUser {
+            username,
+            new_password,
+        } => {
+            let updated = create_scram_user(&username, &new_password);
+            let updated_ok = {
+                let mut reg = registry.write().await;
+                if reg.update_user(updated) {
+                    if let Err(e) = reg.save_to_file(users_file) {
+                        write_error_and_ready(
+                            socket,
+                            &format!("failed to persist user registry: {e}"),
+                            "58030",
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+                    true
+                } else {
+                    false
+                }
+            };
+            if updated_ok {
+                socket
+                    .write_all(&build_command_complete("ALTER USER"))
+                    .await?;
+            } else {
+                write_error_and_ready(socket, &format!("user not found: {}", username), "42704")
+                    .await?;
             }
         }
-        BoundPlan::DropUser { username, if_exists } => {
-            let removed = registry.write().await.remove_user(&username);
+        BoundPlan::DropUser {
+            username,
+            if_exists,
+        } => {
+            let removed = {
+                let mut reg = registry.write().await;
+                let removed = reg.remove_user(&username);
+                if removed || if_exists {
+                    if let Err(e) = reg.save_to_file(users_file) {
+                        write_error_and_ready(
+                            socket,
+                            &format!("failed to persist user registry: {e}"),
+                            "58030",
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+                }
+                removed
+            };
             if !removed && !if_exists {
-                write_error_and_ready(
-                    socket,
-                    &format!("user not found: {}", username),
-                    "42704",
-                )
-                .await?;
+                write_error_and_ready(socket, &format!("user not found: {}", username), "42704")
+                    .await?;
             } else {
-                socket.write_all(&build_command_complete("DROP USER")).await?;
+                socket
+                    .write_all(&build_command_complete("DROP USER"))
+                    .await?;
             }
         }
         BoundPlan::Explain { query, analyze } => {
@@ -1187,8 +1253,7 @@ where
                         }
                     }
                 }
-                let elapsed_ms = match crate::query_executor::execute_select_query(&query, &qcat)
-                {
+                let elapsed_ms = match crate::query_executor::execute_select_query(&query, &qcat) {
                     Ok(_) => start.elapsed().as_millis(),
                     Err(_) => start.elapsed().as_millis(),
                 };
@@ -1221,19 +1286,19 @@ where
     for row in rows {
         socket.write_all(&build_data_row(&row)).await?;
     }
-    socket.write_all(&build_command_complete(&format!("SELECT {row_count}"))).await?;
+    socket
+        .write_all(&build_command_complete(&format!("SELECT {row_count}")))
+        .await?;
     Ok(())
 }
 
-async fn write_error_and_ready<S>(
-    socket: &mut S,
-    message: &str,
-    code: &str,
-) -> std::io::Result<()>
+async fn write_error_and_ready<S>(socket: &mut S, message: &str, code: &str) -> std::io::Result<()>
 where
     S: AsyncWrite + Unpin,
 {
-    socket.write_all(&build_error_response(message, code)).await?;
+    socket
+        .write_all(&build_error_response(message, code))
+        .await?;
     socket.write_all(&build_ready_for_query()).await?;
     Ok(())
 }
@@ -1287,10 +1352,7 @@ fn extract_query_pattern(sql: &str, elapsed_us: u64) -> Option<QueryPattern> {
 
 /// Collect `(table, column)` pairs from a WHERE expression.
 /// Best-effort: handles `BinaryOp`, `Identifier`, `CompoundIdentifier`, `Nested`.
-fn extract_where_columns(
-    expr: &Option<Expr>,
-    table: &str,
-) -> Vec<(String, String)> {
+fn extract_where_columns(expr: &Option<Expr>, table: &str) -> Vec<(String, String)> {
     let Some(e) = expr else {
         return vec![];
     };

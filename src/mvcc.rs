@@ -199,24 +199,8 @@ impl TransactionManager {
         pk_bytes: &[u8],
         snapshot_ts: HlcTimestamp,
     ) -> Result<bool, TxnError> {
-        // A conflict exists if the highest committed version ts > snapshot_ts.
-        // We use read_latest at MAX to find the most recent committed version.
-        let latest = self
-            .engine
-            .read_latest(table_id, pk_bytes, HlcTimestamp::MAX)?;
-        if latest.is_none() {
-            return Ok(false);
-        }
-        // Re-scan to extract the timestamp of the latest version.
-        // Use raw scan to find the key with the greatest ts.
-        let rows = self.engine.raw_scan_table_versions(table_id)?;
-        let pk_prefix = crate::storage::encode_key_prefix(table_id, pk_bytes);
-        let max_ts = rows
-            .iter()
-            .filter(|(k, _)| k.starts_with(&pk_prefix))
-            .filter_map(|(k, _)| crate::storage::decode_ts_from_key(k))
-            .max();
-        Ok(max_ts.is_some_and(|ts| ts > snapshot_ts))
+        let latest = self.engine.latest_visible_ts_any(table_id, pk_bytes)?;
+        Ok(latest.is_some_and(|ts| ts > snapshot_ts))
     }
 
     fn remove_snapshot(&self, id: u64) {
