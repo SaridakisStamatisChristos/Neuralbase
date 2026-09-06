@@ -61,10 +61,10 @@ metrics:
   serviceMonitor:
     enabled: false
 
-# Pod disruption budget — minAvailable=2 ensures Raft quorum for 3 replicas.
+# Pod disruption budget. The template derives minAvailable as a strict Raft
+# majority: floor(replicaCount / 2) + 1.
 podDisruptionBudget:
   enabled: true
-  minAvailable: 2
 
 # Horizontal scaling is intentionally unavailable for the fixed-membership
 # topology. Change replicaCount only together with a deliberate peer-membership
