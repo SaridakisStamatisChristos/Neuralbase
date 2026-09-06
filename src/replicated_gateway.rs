@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Leader-side materialization and Raft submission for persistent SQL mutations.
 //!
-//! The gateway serializes mutating SQL statements on the leader. Each statement
-//! is converted to concrete deterministic effects before proposal: INSERT gets
-//! leader-chosen primary keys, UPDATE/DELETE predicates are evaluated once on
-//! the leader against the already-applied state, and DML receives one monotonic
-//! leader HLC timestamp. Followers reject writes explicitly instead of mutating
-//! local RocksDB.
+//! The gateway serializes mutating SQL statements on the leader. Before a
+//! mutation is bound/materialized, a current-term non-SQL barrier is committed
+//! and confirmed applied. Because Raft applies log entries in order, successful
+//! barrier acknowledgement proves this leader has applied every preceding
+//! committed entry in its local SQL state machine. This prevents stale catalog
+//! or row materialization immediately after failover.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -23,6 +23,8 @@ use crate::replicated_sql::{ReplicatedMutation, ReplicatedRowWrite};
 use crate::storage::StorageEngine;
 use crate::storage_executor::{decode_row, encode_row, table_id_for};
 use crate::vectorized::{ColumnVector, RecordBatch};
+
+const SQL_READINESS_BARRIER: &[u8] = b"NBRB\x01";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplicatedMutationAck {
@@ -78,12 +80,21 @@ impl ReplicatedSqlGateway {
         self.shared.lock().await.leader_id.clone()
     }
 
+    /// Establish a leader/apply barrier before the SQL binder reads catalog
+    /// state for a persistent table mutation. This method intentionally does
+    /// not take `mutation_serial`; the concrete mutation method takes that lock
+    /// and commits another barrier before materialization, closing the race
+    /// between pre-bind readiness and actual proposal.
+    pub async fn prepare_mutation(&self) -> Result<(), ReplicatedGatewayError> {
+        self.commit_readiness_barrier().await.map(|_| ())
+    }
+
     pub async fn create_table(
         &self,
         schema: TableSchema,
     ) -> Result<ReplicatedMutationAck, ReplicatedGatewayError> {
         let _guard = self.mutation_serial.lock().await;
-        self.ensure_leader().await?;
+        self.commit_readiness_barrier().await?;
         self.submit(ReplicatedMutation::CreateTable { schema }).await
     }
 
@@ -92,7 +103,7 @@ impl ReplicatedSqlGateway {
         table: &str,
     ) -> Result<ReplicatedMutationAck, ReplicatedGatewayError> {
         let _guard = self.mutation_serial.lock().await;
-        self.ensure_leader().await?;
+        self.commit_readiness_barrier().await?;
         self.submit(ReplicatedMutation::DropTable {
             table: table.to_string(),
             table_id: table_id_for(table),
@@ -105,7 +116,7 @@ impl ReplicatedSqlGateway {
         plan: &InsertPlan,
     ) -> Result<ReplicatedMutationAck, ReplicatedGatewayError> {
         let _guard = self.mutation_serial.lock().await;
-        self.ensure_leader().await?;
+        self.commit_readiness_barrier().await?;
 
         let commit_ts = self.clock.tick().to_u64();
         let rows = plan
@@ -145,7 +156,7 @@ impl ReplicatedSqlGateway {
         plan: &UpdatePlan,
     ) -> Result<ReplicatedMutationAck, ReplicatedGatewayError> {
         let _guard = self.mutation_serial.lock().await;
-        self.ensure_leader().await?;
+        self.commit_readiness_barrier().await?;
 
         let table_id = table_id_for(&plan.table.name);
         let visible = self
@@ -194,7 +205,7 @@ impl ReplicatedSqlGateway {
         plan: &DeletePlan,
     ) -> Result<ReplicatedMutationAck, ReplicatedGatewayError> {
         let _guard = self.mutation_serial.lock().await;
-        self.ensure_leader().await?;
+        self.commit_readiness_barrier().await?;
 
         let table_id = table_id_for(&plan.table.name);
         let visible = self
@@ -239,6 +250,23 @@ impl ReplicatedSqlGateway {
         Ok(())
     }
 
+    async fn commit_readiness_barrier(&self) -> Result<u64, ReplicatedGatewayError> {
+        self.ensure_leader().await?;
+        self.submit_payload(SQL_READINESS_BARRIER.to_vec()).await
+    }
+
+    async fn submit_payload(&self, payload: Vec<u8>) -> Result<u64, ReplicatedGatewayError> {
+        let (reply, response) = oneshot::channel();
+        self.client_tx
+            .send(ClientCommand { payload, reply })
+            .await
+            .map_err(|_| ReplicatedGatewayError::CommandChannelClosed)?;
+        response
+            .await
+            .map_err(|_| ReplicatedGatewayError::ReplyChannelClosed)?
+            .map_err(ReplicatedGatewayError::Raft)
+    }
+
     async fn submit(
         &self,
         mutation: ReplicatedMutation,
@@ -248,15 +276,7 @@ impl ReplicatedSqlGateway {
         let payload = mutation
             .encode()
             .map_err(|error| ReplicatedGatewayError::Encoding(error.to_string()))?;
-        let (reply, response) = oneshot::channel();
-        self.client_tx
-            .send(ClientCommand { payload, reply })
-            .await
-            .map_err(|_| ReplicatedGatewayError::CommandChannelClosed)?;
-        let raft_index = response
-            .await
-            .map_err(|_| ReplicatedGatewayError::ReplyChannelClosed)?
-            .map_err(ReplicatedGatewayError::Raft)?;
+        let raft_index = self.submit_payload(payload).await?;
         Ok(ReplicatedMutationAck {
             raft_index,
             command_tag,
@@ -356,7 +376,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn single_node_insert_waits_for_state_machine_apply() {
+    async fn single_node_insert_waits_for_barrier_and_state_machine_apply() {
         let dir = TempDir::new().unwrap();
         let engine = Arc::new(StorageEngine::open(dir.path()).unwrap());
         let catalog = Arc::new(InMemoryCatalog::default());
@@ -416,6 +436,13 @@ mod tests {
         };
         let ack = gateway.insert(&plan).await.unwrap();
         assert_eq!(ack.affected_rows, Some(1));
-        assert_eq!(engine.scan_table(table_id_for("items"), HlcTimestamp::MAX).unwrap().len(), 1);
+        assert!(ack.raft_index >= 2, "barrier must precede SQL mutation");
+        assert_eq!(
+            engine
+                .scan_table(table_id_for("items"), HlcTimestamp::MAX)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }
