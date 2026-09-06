@@ -600,7 +600,7 @@ fn apply_window_functions(
         }
         let fname = func.name.to_string().to_uppercase();
         let values = compute_window_values(&fname, func, &rows, catalog, outer_row)?;
-        for (row, val) in rows.iter_mut().zip(values.into_iter()) {
+        for (row, val) in rows.iter_mut().zip(values) {
             row.push((alias.clone(), val));
         }
     }
