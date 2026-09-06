@@ -25,9 +25,9 @@ pub mod transport;
 pub use log::{MemPersistenceStore, PersistentState, RaftPersistenceStore};
 #[allow(unused_imports)]
 pub use raft::{
-    encode_compact_log, encode_leader_transfer, encode_membership_change, ClientCommand, RaftNode,
-    RaftRole, RaftShared, RaftTaskHandle, APPLY_CHANNEL_CAPACITY, COMPACT_LOG_TAG,
-    LEADER_TRANSFER_TAG, MEMBERSHIP_CHANGE_TAG,
+    encode_compact_log, encode_leader_transfer, encode_membership_change, ClientCommand,
+    CommittedEntry, RaftNode, RaftRole, RaftShared, RaftTaskHandle, APPLY_CHANNEL_CAPACITY,
+    COMPACT_LOG_TAG, LEADER_TRANSFER_TAG, MEMBERSHIP_CHANGE_TAG,
 };
 #[allow(unused_imports)]
 pub use rpc::{

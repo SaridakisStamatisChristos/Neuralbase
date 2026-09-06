@@ -10,6 +10,12 @@
 //   - LeaderTransfer RPC (Raft §3.10): graceful leadership handoff.
 //   - Bounded apply_tx channel: backpressure prevents unbounded memory growth.
 //
+// Replicated-SQL additions:
+//   - Regular ClientCommand replies are deferred until quorum commit.
+//   - A confirmed state-machine channel can defer success until durable apply.
+//   - Single-node regular commands commit immediately (majority of one).
+//   - Pending uncommitted clients fail if leadership is lost.
+//
 // CONFIDENCE: raw=0.76 effective=0.68
 // DEPENDS_ON: log, rpc, transport
 // RISK: Single-step membership changes are unsafe under certain network
@@ -105,13 +111,28 @@ struct LeaderState {
     match_index: HashMap<NodeId, u64>,
 }
 
-// ── ClientCommand ──────────────────────────────────────────────────────────
+// ── ClientCommand / committed state-machine handoff ────────────────────────
 
 /// A client command submitted to the leader for replication.
+///
+/// For regular data commands, `reply` is resolved only after the entry is
+/// quorum-committed and reaches the configured state-machine apply point. The
+/// historical Session-13 membership/compaction admin commands retain their
+/// legacy acknowledgement behavior until coordinated membership work is done.
 pub struct ClientCommand {
     pub payload: Vec<u8>,
-    /// Channel on which the committed log index is returned (or an error string).
     pub reply: oneshot::Sender<Result<u64, String>>,
+}
+
+/// A committed log entry requiring state-machine application.
+///
+/// A consumer attached through `with_confirmed_apply_tx` MUST resolve
+/// `completion` after its durable state-machine apply succeeds or fails. Raft
+/// does not advance `last_applied`, and regular ClientCommand success is not
+/// reported, until this acknowledgement arrives.
+pub struct CommittedEntry {
+    pub entry: LogEntry,
+    pub completion: oneshot::Sender<Result<(), String>>,
 }
 
 /// Handle for a spawned Raft event-loop task.
@@ -183,12 +204,6 @@ pub struct RaftNode<T: Transport> {
     // Snapshot state (Session 13).
     /// Opaque snapshot bytes held by the leader for forwarding to laggard
     /// followers via InstallSnapshot.  Empty = no snapshot held.
-    ///
-    /// Stored as Arc<Vec<u8>> so that InstallSnapshot messages sent to multiple
-    /// laggard peers on every heartbeat tick share the same buffer rather than
-    /// each getting an O(n) copy.  Replacing the snapshot data is still O(1)
-    /// (just swap the Arc pointer).  The buffer is freed when the last holder
-    /// (the node itself or in-flight messages) drops their reference.
     snapshot_data: Arc<Vec<u8>>,
 
     // Membership-change state (Session 13).
@@ -197,29 +212,26 @@ pub struct RaftNode<T: Transport> {
     membership_change_in_progress: bool,
 
     // Leadership transfer state (Session 13 — Raft §3.10).
-    /// Active leadership transfer: (target_node_id, deadline).
-    /// Client commands are rejected while a transfer is in progress.
-    /// If the deadline expires without the target becoming leader,
-    /// the transfer aborts and normal operation resumes.
     transfer_in_progress: Option<(NodeId, Instant)>,
 
     // Persistence (Session 13).
-    /// Stable storage — if Some, called on every state mutation that Raft
-    /// requires to be durable before an RPC reply is sent.
     persistence: Option<Arc<dyn RaftPersistenceStore>>,
 
-    // Election timeout; overrideable for tests (shrinks to tick_ms_override if Some).
+    // Election timeout; overrideable for tests.
     election_timeout_base_ms: u64,
 
-    // Apply channel: receives committed LogEntry values after last_applied advances.
-    // None means apply-loop advances last_applied but does not dispatch entries
-    // (acceptable for nodes that are followers-only or in test mode).
-    //
-    // BOUNDED: capacity = APPLY_CHANNEL_CAPACITY (1024).  When full, the Raft
-    // apply loop blocks (async await) until the consumer drains entries.  This
-    // provides backpressure rather than unbounded memory growth.  Entries are
-    // NEVER dropped — blocking is the correct behavior.
+    // Legacy apply handoff retained for existing callers/tests. Delivery to
+    // this channel is treated as the apply point because it has no completion
+    // protocol. Replicated SQL uses confirmed_apply_tx instead.
     apply_tx: Option<mpsc::Sender<LogEntry>>,
+
+    // Confirmed apply handoff used by replicated SQL. The Raft loop waits for
+    // the consumer's completion acknowledgement before advancing last_applied.
+    confirmed_apply_tx: Option<mpsc::Sender<CommittedEntry>>,
+
+    // Regular client replies keyed by appended log index. They remain pending
+    // through local append and quorum replication, and resolve only on apply.
+    pending_clients: HashMap<u64, oneshot::Sender<Result<u64, String>>>,
 }
 
 impl<T: Transport> RaftNode<T> {
@@ -242,32 +254,39 @@ impl<T: Transport> RaftNode<T> {
             persistence: None,
             election_timeout_base_ms: ELECTION_TIMEOUT_BASE_MS,
             apply_tx: None,
+            confirmed_apply_tx: None,
+            pending_clients: HashMap::new(),
         }
     }
 
-    /// Attach a bounded apply channel.  Committed `LogEntry` values are sent here
-    /// in order after `last_applied` advances.  Call before `spawn`.
-    ///
-    /// The channel has a fixed capacity of `APPLY_CHANNEL_CAPACITY` entries.
-    /// When full, the Raft apply loop blocks until the consumer drains entries.
-    /// Entries are never dropped.
+    /// Attach the legacy bounded apply channel. Committed `LogEntry` values are
+    /// sent in order. Delivery is the apply acknowledgement point for this mode.
     pub fn with_apply_tx(mut self, tx: mpsc::Sender<LogEntry>) -> Self {
         self.apply_tx = Some(tx);
+        self.confirmed_apply_tx = None;
+        self
+    }
+
+    /// Attach a bounded state-machine channel with explicit completion.
+    ///
+    /// This is the required mode for replicated SQL: a committed entry is sent
+    /// to the consumer and ClientCommand success waits until `completion`
+    /// reports that the durable state-machine apply finished successfully.
+    pub fn with_confirmed_apply_tx(mut self, tx: mpsc::Sender<CommittedEntry>) -> Self {
+        self.confirmed_apply_tx = Some(tx);
+        self.apply_tx = None;
         self
     }
 
     /// Attach a persistence store.  If a previously-saved state exists it is
     /// loaded immediately (restoring term, votedFor, log, snapshot).
     ///
-    /// MUST be called before `spawn`.  Calling after spawn has no effect.
+    /// MUST be called before `spawn`. Calling after spawn has no effect.
     pub fn with_persistence(mut self, store: Arc<dyn RaftPersistenceStore>) -> Self {
         if let Ok(Some((ps, snap))) = store.load() {
             self.snapshot_data = Arc::new(snap);
-            // Restore volatile derived state from the persistent snapshot index.
             let snap_idx = ps.snapshot_index;
             self.ps = ps;
-            // After restart: commit_index and last_applied can at minimum be
-            // advanced to snapshot_index (snapshot represents committed + applied).
             self.commit_index = snap_idx;
             self.last_applied = snap_idx;
         }
@@ -282,10 +301,6 @@ impl<T: Transport> RaftNode<T> {
 
     fn election_timeout(&self) -> Duration {
         let base = self.election_timeout_base_ms;
-        // Always use at least a range of 10 for the jitter so that even
-        // base = 1 ms (used by adversarial tests) produces real staggering.
-        // gen_range(0..1) is the integer range {0} only — every node would
-        // get the same timeout and elections would livelock forever.
         let jitter_range = base.max(10);
         let extra = rand::thread_rng().gen_range(0..jitter_range);
         Duration::from_millis(base + extra)
@@ -299,13 +314,33 @@ impl<T: Transport> RaftNode<T> {
     /// depends on the state just mutated (term, vote, log, snapshot).
     fn persist(&self) {
         if let Some(store) = &self.persistence {
-            // Best-effort: a storage error is non-fatal in tests but would
-            // be fatal in production.  Log the error; do not panic.
+            // Session-13 behavior retained in this commit; a following focused
+            // change converts persistence failures to fail-stop semantics.
             if let Err(e) = store.save(&self.ps, &self.snapshot_data) {
-                // tracing is available but we don't import it here to keep
-                // the consensus module independent.  Use eprintln as fallback.
                 eprintln!("[raft] persist error: {e}");
             }
+        }
+    }
+
+    fn fail_uncommitted_clients(&mut self, reason: &str) {
+        let committed = self.commit_index;
+        let indexes: Vec<u64> = self
+            .pending_clients
+            .keys()
+            .copied()
+            .filter(|index| *index > committed)
+            .collect();
+        for index in indexes {
+            if let Some(reply) = self.pending_clients.remove(&index) {
+                let _ = reply.send(Err(reason.to_string()));
+            }
+        }
+    }
+
+    fn fail_all_clients(&mut self, reason: &str) {
+        let pending = std::mem::take(&mut self.pending_clients);
+        for (_, reply) in pending {
+            let _ = reply.send(Err(reason.to_string()));
         }
     }
 
@@ -338,6 +373,7 @@ impl<T: Transport> RaftNode<T> {
             loop {
                 tokio::select! {
                     _ = &mut shutdown_rx => {
+                        self.fail_all_clients("raft node shutting down before command apply");
                         break;
                     }
 
@@ -347,7 +383,10 @@ impl<T: Transport> RaftNode<T> {
                             Some((from, rmsg)) => {
                                 election_deadline = self.handle_message(from, rmsg, election_deadline).await;
                             }
-                            None => break, // transport closed
+                            None => {
+                                self.fail_all_clients("raft transport closed before command apply");
+                                break;
+                            }
                         }
                     }
 
@@ -370,8 +409,30 @@ impl<T: Transport> RaftNode<T> {
 
                     // Client command.
                     Some(cmd) = cmd_rx.recv() => {
-                        let result = self.handle_client_command(cmd.payload);
-                        let _ = cmd.reply.send(result);
+                        // Session-13 membership and compaction admin commands keep
+                        // their historical immediate acknowledgement semantics.
+                        // They are intentionally outside replicated SQL guarantees.
+                        let legacy_admin_ack = cmd.payload.starts_with(MEMBERSHIP_CHANGE_TAG)
+                            || cmd.payload.starts_with(COMPACT_LOG_TAG);
+                        match self.handle_client_command(cmd.payload) {
+                            Ok(index) if legacy_admin_ack => {
+                                let _ = cmd.reply.send(Ok(index));
+                            }
+                            Ok(index) => {
+                                self.pending_clients.insert(index, cmd.reply);
+                                // Majority-of-one must commit without waiting for an
+                                // AppendEntriesReply that can never exist.
+                                self.try_advance_commit();
+                                // Replicate a newly appended entry immediately rather
+                                // than waiting for the next 50 ms heartbeat tick.
+                                if self.role == RaftRole::Leader {
+                                    self.send_heartbeats().await;
+                                }
+                            }
+                            Err(error) => {
+                                let _ = cmd.reply.send(Err(error));
+                            }
+                        }
                     }
 
                     // Leader transfer request (from RaftTaskHandle).
@@ -389,52 +450,94 @@ impl<T: Transport> RaftNode<T> {
                     }
                 }
 
-                // Advance state machine: apply all newly committed log entries.
-                // Raft Invariant 4: last_applied only advances up to commit_index,
-                // so no uncommitted entry is ever applied.
-                // After a snapshot, log entries are addressed by their Raft index
-                // (not physical position).  Physical = raft_index − snapshot_index.
+                // Apply all newly committed entries in Raft order. `last_applied`
+                // advances only after the configured state machine acknowledges
+                // completion; regular client success is resolved at that point.
                 while self.last_applied < self.commit_index {
-                    self.last_applied += 1;
-                    // Physical position in the log vector.
-                    let physical = (self.last_applied - self.ps.snapshot_index) as usize;
-                    if let Some(entry) = self.ps.log.get(physical).cloned() {
-                        // Intercept membership-change entries before forwarding.
-                        if entry.command.starts_with(MEMBERSHIP_CHANGE_TAG) {
-                            let payload = &entry.command[MEMBERSHIP_CHANGE_TAG.len()..];
-                            if let Ok(change) = serde_json::from_slice::<MembershipChange>(payload)
-                            {
-                                self.apply_membership_change(change);
-                            }
+                    let next_index = self.last_applied + 1;
+                    let physical = (next_index - self.ps.snapshot_index) as usize;
+                    let Some(entry) = self.ps.log.get(physical).cloned() else {
+                        self.fail_all_clients("committed Raft entry missing from local log");
+                        return;
+                    };
+
+                    // Membership changes remain an internal consensus state-machine
+                    // concern. Replicated SQL commands do not use this tag.
+                    if entry.command.starts_with(MEMBERSHIP_CHANGE_TAG) {
+                        let payload = &entry.command[MEMBERSHIP_CHANGE_TAG.len()..];
+                        if let Ok(change) = serde_json::from_slice::<MembershipChange>(payload) {
+                            self.apply_membership_change(change);
                         }
-                        if let Some(tx) = &self.apply_tx {
-                            // Preserve bounded-channel backpressure during normal
-                            // operation, but make shutdown pre-empt a blocked send.
-                            // A closed apply channel is a fail-stop condition: once
-                            // the state-machine consumer is gone, continuing would
-                            // risk silently discarding committed entries.
-                            let send_result = tokio::select! {
-                                biased;
-                                _ = &mut shutdown_rx => return,
-                                result = tx.send(entry) => result,
-                            };
-                            if send_result.is_err() {
+                    }
+
+                    if let Some(tx) = &self.confirmed_apply_tx {
+                        let (completion_tx, completion_rx) = oneshot::channel();
+                        let send_result = tokio::select! {
+                            biased;
+                            _ = &mut shutdown_rx => {
+                                self.fail_all_clients("raft node shutting down during state-machine apply");
+                                return;
+                            },
+                            result = tx.send(CommittedEntry {
+                                entry,
+                                completion: completion_tx,
+                            }) => result,
+                        };
+                        if send_result.is_err() {
+                            self.fail_all_clients("confirmed state-machine apply channel closed");
+                            return;
+                        }
+
+                        let completion = tokio::select! {
+                            biased;
+                            _ = &mut shutdown_rx => {
+                                self.fail_all_clients("raft node shutting down while awaiting state-machine completion");
+                                return;
+                            },
+                            result = completion_rx => result,
+                        };
+                        match completion {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => {
+                                self.fail_all_clients(&format!(
+                                    "committed state-machine apply failed at index {next_index}: {error}"
+                                ));
+                                return;
+                            }
+                            Err(_) => {
+                                self.fail_all_clients(&format!(
+                                    "state-machine completion channel dropped at index {next_index}"
+                                ));
                                 return;
                             }
                         }
+                    } else if let Some(tx) = &self.apply_tx {
+                        let send_result = tokio::select! {
+                            biased;
+                            _ = &mut shutdown_rx => {
+                                self.fail_all_clients("raft node shutting down during apply handoff");
+                                return;
+                            },
+                            result = tx.send(entry) => result,
+                        };
+                        if send_result.is_err() {
+                            self.fail_all_clients("legacy state-machine apply channel closed");
+                            return;
+                        }
+                    }
+
+                    self.last_applied = next_index;
+                    if let Some(reply) = self.pending_clients.remove(&next_index) {
+                        let _ = reply.send(Ok(next_index));
                     }
                 }
 
                 // ── Session 13: leadership transfer timeout ────────────────
-                // If a transfer is in progress and the deadline has expired,
-                // abort the transfer and resume accepting client commands.
                 if let Some((_target, deadline)) = &self.transfer_in_progress {
                     if Instant::now() >= *deadline {
                         self.transfer_in_progress = None;
                     }
                 }
-                // If we were the old leader and we detect a new term (meaning
-                // the target won the election), clear the transfer state.
                 if self.transfer_in_progress.is_some() && self.role != RaftRole::Leader {
                     self.transfer_in_progress = None;
                 }
@@ -486,14 +589,12 @@ impl<T: Transport> RaftNode<T> {
                     .send(&from, RaftMessage::AppendEntriesReply(reply))
                     .await;
                 if reset {
-                    // Valid heartbeat/replication from current or newer leader.
                     election_deadline = Instant::now() + self.election_timeout();
                 }
             }
             RaftMessage::AppendEntriesReply(reply) => {
                 self.on_append_entries_reply(from, reply).await;
             }
-            // ── Session 13: snapshot install ──────────────────────────────
             RaftMessage::InstallSnapshot(args) => {
                 let reset = args.term >= self.ps.current_term;
                 let reply = self.on_install_snapshot(args);
@@ -507,7 +608,6 @@ impl<T: Transport> RaftNode<T> {
             RaftMessage::InstallSnapshotReply(reply) => {
                 self.on_install_snapshot_reply(from, reply).await;
             }
-            // ── Session 13: membership changes ───────────────────────────
             RaftMessage::MembershipChangeCmd(change) => {
                 let success = if self.role == RaftRole::Leader {
                     let payload = encode_membership_change(&change);
@@ -532,20 +632,14 @@ impl<T: Transport> RaftNode<T> {
             RaftMessage::MembershipChangeCmdReply {
                 success: _,
                 error: _,
-            } => {
-                // Acknowledgement of a membership-change command we sent.
-                // No action needed in this implementation.
-            }
-            // ── Session 13: leader transfer (Raft §3.10) ────────────────
+            } => {}
             RaftMessage::LeaderTransfer { target } => {
                 self.on_leader_transfer(&from, target).await;
             }
             RaftMessage::LeaderTransferReply {
                 success: _,
                 error: _,
-            } => {
-                // Acknowledgement; no further action needed.
-            }
+            } => {}
             RaftMessage::TimeoutNow { term } => {
                 self.on_timeout_now(term, &mut election_deadline).await;
             }
@@ -559,9 +653,8 @@ impl<T: Transport> RaftNode<T> {
         self.role = RaftRole::Candidate;
         self.ps.current_term += 1;
         self.ps.voted_for = Some(self.id.clone());
-        self.votes_received = 1; // vote for self
+        self.votes_received = 1;
         self.leader_id = None;
-        // Persist before sending RequestVote (Raft safety: term + votedFor durable).
         self.persist();
 
         let args = RequestVoteArgs {
@@ -575,10 +668,8 @@ impl<T: Transport> RaftNode<T> {
                 .send(peer, RaftMessage::RequestVote(args.clone()))
                 .await;
         }
-        // Single-node cluster: self-vote already constitutes a majority.
-        // Check immediately so we don't wait for replies that will never come.
-        let total_nodes = self.peers.len() + 1; // cluster size including self
-        let majority = total_nodes / 2 + 1; // floor(N/2) + 1
+        let total_nodes = self.peers.len() + 1;
+        let majority = total_nodes / 2 + 1;
         if self.votes_received >= majority {
             self.become_leader().await;
         }
@@ -606,7 +697,6 @@ impl<T: Transport> RaftNode<T> {
         let vote_granted = !already_voted && log_up_to_date;
         if vote_granted {
             self.ps.voted_for = Some(args.candidate_id);
-            // Persist before granting vote (Raft safety: votedFor durable).
             self.persist();
         }
         RequestVoteReply {
@@ -644,17 +734,12 @@ impl<T: Transport> RaftNode<T> {
                 .copied()
                 .unwrap_or(1);
 
-            // ── Session 13: InstallSnapshot for laggard followers ──────────
-            // If the next entry the follower needs has been compacted into the
-            // snapshot, send the snapshot instead of AppendEntries.
-            // CONFIDENCE: raw=0.80  [HUMAN REVIEW REQUIRED] §Session13 Inv-2
             if !self.snapshot_data.is_empty() && next <= self.ps.snapshot_index {
                 let snap = InstallSnapshotArgs {
                     term: self.ps.current_term,
                     leader_id: self.id.clone(),
                     last_included_index: self.ps.snapshot_index,
                     last_included_term: self.ps.snapshot_term,
-                    // Arc::clone is O(1) — all peers share the same buffer.
                     data: Arc::clone(&self.snapshot_data),
                     done: true,
                 };
@@ -694,7 +779,6 @@ impl<T: Transport> RaftNode<T> {
         }
         self.leader_id = Some(args.leader_id.clone());
 
-        // Consistency check.
         if args.prev_log_index > 0 && self.ps.term_at(args.prev_log_index) != args.prev_log_term {
             return AppendEntriesReply {
                 term: self.ps.current_term,
@@ -703,15 +787,12 @@ impl<T: Transport> RaftNode<T> {
             };
         }
 
-        // Append entries.
         if !args.entries.is_empty() {
             self.ps
                 .truncate_and_append(args.prev_log_index, args.entries);
-            // Persist log changes before replying (Raft safety).
             self.persist();
         }
 
-        // Advance commit index.
         if args.leader_commit > self.commit_index {
             self.commit_index = args.leader_commit.min(self.ps.last_log_index());
         }
@@ -737,10 +818,8 @@ impl<T: Transport> RaftNode<T> {
                 leader
                     .next_index
                     .insert(from, reply.match_index.saturating_add(1));
-                // Advance commit index if a majority has replicated.
                 self.try_advance_commit();
             } else {
-                // Back off by 1.
                 let cur = leader.next_index.get(&from).copied().unwrap_or(1);
                 leader.next_index.insert(from, cur.saturating_sub(1).max(1));
             }
@@ -761,7 +840,7 @@ impl<T: Transport> RaftNode<T> {
                 .as_ref()
                 .map(|l| l.match_index.values().filter(|&&m| m >= idx).count())
                 .unwrap_or(0)
-                + 1; // +1 for self
+                + 1;
             let total_nodes = self.peers.len() + 1;
             let majority = total_nodes / 2 + 1;
             if replicated >= majority {
@@ -774,11 +853,14 @@ impl<T: Transport> RaftNode<T> {
     // ── Role transitions ───────────────────────────────────────────────────
 
     fn become_follower(&mut self, term: u64) {
+        // A client whose entry is already committed may still receive success
+        // after this node applies it as a follower. Uncommitted proposals become
+        // outcome-uncertain on leadership loss and must never be reported as success.
+        self.fail_uncommitted_clients("leadership lost before command reached quorum commit");
         self.ps.current_term = term;
         self.ps.voted_for = None;
         self.role = RaftRole::Follower;
         self.leader = None;
-        // Persist term change before any RPC interaction at the new term.
         self.persist();
     }
 
@@ -796,7 +878,6 @@ impl<T: Transport> RaftNode<T> {
             next_index,
             match_index,
         });
-        // Immediately send heartbeats to assert leadership.
         self.send_heartbeats().await;
     }
 
@@ -807,50 +888,35 @@ impl<T: Transport> RaftNode<T> {
             return Err(format!("not leader; redirect to {:?}", self.leader_id));
         }
 
-        // ── Session 13: leadership transfer in progress ────────────────────
-        // Reject client commands while a transfer is active (Raft §3.10).
         if self.transfer_in_progress.is_some() {
             return Err("leadership transfer in progress; retry later".to_string());
         }
 
-        // ── Session 13: compact-log (snapshot trigger) ─────────────────────
         if payload.starts_with(COMPACT_LOG_TAG) {
             return self.handle_compact_log_cmd(payload);
         }
 
-        // ── Session 13: leader transfer via admin command ──────────────────
-        // This pathway is reached when a client sends a LEADER_TRANSFER_TAG
-        // payload; the actual transfer RPC is handled in handle_message.
-        // We return immediately — the transfer is async.
         if payload.starts_with(LEADER_TRANSFER_TAG) {
             return Err("use LeaderTransfer RPC, not client command".to_string());
         }
 
-        // ── Session 13: membership change ──────────────────────────────────
         if payload.starts_with(MEMBERSHIP_CHANGE_TAG) {
             if self.membership_change_in_progress {
                 return Err("membership change already in progress".to_string());
             }
             self.membership_change_in_progress = true;
-            // Fall through: append as a regular log entry; apply loop
-            // intercepts membership-change entries when committed.
         } else if self.membership_change_in_progress {
-            // Reject regular data commands while a membership change is
-            // being committed (single-step safety: no overlap).
             return Err("membership change in progress; retry later".to_string());
         }
 
         let idx = self.ps.append(self.ps.current_term, payload);
-        // Persist log change before informing the client (Raft safety).
+        // The append must be durable before replication starts. The public
+        // regular-client reply is intentionally NOT resolved here anymore.
         self.persist();
         Ok(idx)
     }
 
     /// Handle a compact-log admin command embedded in a ClientCommand payload.
-    ///
-    /// Payload format: `COMPACT_LOG_TAG` (2B) + last_index (8B BE) + data (*).
-    ///
-    /// CONFIDENCE: raw=0.80  [HUMAN REVIEW REQUIRED] §Session13 Invariant 1.
     fn handle_compact_log_cmd(&mut self, payload: Vec<u8>) -> Result<u64, String> {
         if payload.len() < 2 + 8 {
             return Err("compact-log payload too short (need at least 10 bytes)".to_string());
@@ -862,7 +928,6 @@ impl<T: Transport> RaftNode<T> {
         );
         let data = payload[10..].to_vec();
 
-        // Safety: only compact entries that are already committed.
         let safe_last = last_index.min(self.commit_index);
         if safe_last == 0 {
             return Ok(0);
@@ -877,22 +942,12 @@ impl<T: Transport> RaftNode<T> {
 
     // ── Session 13: membership change application ─────────────────────────
 
-    /// Apply a committed membership-change entry to the live peer list.
-    ///
-    /// Called from the apply loop AFTER the entry is committed (majority ack).
-    /// This means both the leader and all followers execute this.
-    ///
-    /// CONFIDENCE: raw=0.74  [HUMAN REVIEW REQUIRED] §Session13 Invariant 3.
     fn apply_membership_change(&mut self, change: MembershipChange) {
         match change {
             MembershipChange::AddNode(ref new_id) => {
                 if !self.peers.contains(new_id) && new_id != &self.id {
                     self.peers.push(new_id.clone());
-                    // If we are the leader, initialise tracking state for the
-                    // new peer so it starts receiving AppendEntries.
                     if let Some(leader) = &mut self.leader {
-                        // Fresh node: start at index 1 so the consistency check
-                        // either succeeds (node has log) or drives next_index down.
                         leader.next_index.entry(new_id.clone()).or_insert(1);
                         leader.match_index.entry(new_id.clone()).or_insert(0);
                     }
@@ -911,9 +966,6 @@ impl<T: Transport> RaftNode<T> {
 
     // ── Session 13: InstallSnapshot handlers ──────────────────────────────
 
-    /// Process an InstallSnapshot RPC from the leader.
-    ///
-    /// CONFIDENCE: raw=0.78  [HUMAN REVIEW REQUIRED] §Session13 Invariants 1–4.
     fn on_install_snapshot(&mut self, args: InstallSnapshotArgs) -> InstallSnapshotReply {
         if args.term < self.ps.current_term {
             return InstallSnapshotReply {
@@ -925,27 +977,17 @@ impl<T: Transport> RaftNode<T> {
         }
         self.leader_id = Some(args.leader_id);
 
-        // Invariant 1: Accept only if the snapshot is strictly newer than our
-        // current snapshot (i.e. contains more committed entries).
         if args.last_included_index <= self.ps.snapshot_index {
             return InstallSnapshotReply {
                 term: self.ps.current_term,
             };
         }
 
-        // Install the snapshot.  install_snapshot() retains any log entries
-        // that follow last_included_index (Raft §7 step 6).
         self.ps
             .install_snapshot(args.last_included_index, args.last_included_term);
-        // Arc move — O(1), no buffer copy.
         self.snapshot_data = args.data;
-
-        // Advance commit_index and last_applied to the snapshot boundary.
-        // Invariant 4: last_applied must never exceed commit_index.
         self.commit_index = self.commit_index.max(args.last_included_index);
         self.last_applied = args.last_included_index;
-
-        // Persist the new snapshot state before replying.
         self.persist();
 
         InstallSnapshotReply {
@@ -953,10 +995,6 @@ impl<T: Transport> RaftNode<T> {
         }
     }
 
-    /// Process an InstallSnapshotReply from a follower.
-    ///
-    /// On success: advance next_index and match_index for the follower so
-    /// subsequent heartbeats send AppendEntries for entries after the snapshot.
     async fn on_install_snapshot_reply(&mut self, from: NodeId, reply: InstallSnapshotReply) {
         if reply.term > self.ps.current_term {
             self.become_follower(reply.term);
@@ -966,9 +1004,6 @@ impl<T: Transport> RaftNode<T> {
             return;
         }
         if let Some(leader) = &mut self.leader {
-            // Follower now has the snapshot up to snapshot_index; advance
-            // its next_index to snapshot_index + 1 so we send AppendEntries
-            // (not another snapshot) on the next heartbeat.
             let snap_idx = self.ps.snapshot_index;
             leader.match_index.insert(from.clone(), snap_idx);
             leader.next_index.insert(from, snap_idx + 1);
@@ -977,13 +1012,6 @@ impl<T: Transport> RaftNode<T> {
 
     // ── Session 13: leader transfer (Raft §3.10) ──────────────────────────
 
-    /// Handle a LeaderTransfer request (received by the leader from any node,
-    /// typically via an admin command).
-    ///
-    /// Protocol:
-    /// 1. Verify target is a known peer.
-    /// 2. Set `transfer_in_progress` with a deadline.
-    /// 3. Send `TimeoutNow` to the target so it immediately starts an election.
     async fn on_leader_transfer(&mut self, from: &NodeId, target: NodeId) {
         if self.role != RaftRole::Leader {
             self.transport
@@ -1025,8 +1053,6 @@ impl<T: Transport> RaftNode<T> {
         let deadline = Instant::now() + Duration::from_millis(LEADER_TRANSFER_TIMEOUT_MS);
         self.transfer_in_progress = Some((target.clone(), deadline));
 
-        // Send TimeoutNow to the transfer target so it starts an election
-        // immediately (without waiting for random election timeout).
         self.transport
             .send(
                 &target,
@@ -1048,18 +1074,13 @@ impl<T: Transport> RaftNode<T> {
     }
 
     /// Handle a TimeoutNow message: immediately start an election.
-    ///
-    /// Per Raft §3.10, the transfer target skips the randomized election
-    /// timeout and calls an election right away.
     async fn on_timeout_now(&mut self, term: u64, election_deadline: &mut Instant) {
-        // Only followers should honor TimeoutNow.
         if self.role == RaftRole::Leader {
             return;
         }
         if term < self.ps.current_term {
             return;
         }
-        // Start election immediately (skip randomized timeout).
         self.start_election().await;
         *election_deadline = Instant::now() + self.election_timeout();
     }
