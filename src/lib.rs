@@ -15,6 +15,7 @@ pub mod mvcc;
 pub mod optimizer;
 pub mod protocol;
 pub mod query_executor;
+pub mod replicated_sql;
 pub mod rocksdb_catalog;
 pub mod scheduler;
 pub mod server;
