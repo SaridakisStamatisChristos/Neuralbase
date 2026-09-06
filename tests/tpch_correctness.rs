@@ -1,43 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
-// TPC-H Q1-Q22 correctness test suite — Session 7
+// TPC-H Q1-Q22 correctness suite.
 //
-// Classification of each query:
-//   FULL  — exact numeric output verified against independent Rust calculation
-//           that mirrors the PostgreSQL 16 reference computation on the same
-//           deterministic synthetic dataset (SF 0.1, seed-based).
-//   PARSE — SQL parses without panic; bind attempt returns the expected error
-//           (UnsupportedSelect for multi-table JOINs / subqueries) rather than
-//           a runtime panic or data-corruption.
-//   STUB  — query is present but cannot be exercised until the planner gains
-//           multi-table join support (tracked in SESSION_STATE.md §next_tasks).
+// Evidence layers:
+//   - Q1 and Q6 have additional deterministic correctness checks.
+//   - Every checked-in Q1-Q22 SQL string is parsed and exercised through the
+//     current bind/execution path where applicable.
+//   - Q1-Q22 each have PostgreSQL 16 row-for-row reference comparisons on the
+//     deterministic small execution dataset (EXEC_TEST_SF = 0.001).
 //
-// Q1  FULL  — single-table aggregate; exact sums verified
-// Q2  PARSE — 5-table JOIN + subquery; parse ok, bind expected UnsupportedSelect
-// Q3  PARSE — 3-table JOIN; parse ok, bind expected UnsupportedSelect
-// Q4  PARSE — correlated subquery (EXISTS); parse ok
-// Q5  PARSE — 6-table JOIN; parse ok
-// Q6  FULL  — single-table filter aggregate; exact sum verified
-// Q7  PARSE — 6-table JOIN; parse ok
-// Q8  PARSE — 8-table JOIN; parse ok
-// Q9  PARSE — 6-table JOIN + nested expression; parse ok
-// Q10 PARSE — 4-table JOIN; parse ok
-// Q11 PARSE — 3-table JOIN + HAVING subquery; parse ok
-// Q12 PARSE — 2-table JOIN; parse ok
-// Q13 PARSE — LEFT OUTER JOIN + subquery; parse ok
-// Q14 PARSE — 2-table JOIN + CASE; parse ok
-// Q15 STUB  — CREATE VIEW + SELECT; parse ok (view DDL not yet supported)
-// Q16 PARSE — 3-table JOIN + NOT IN; parse ok
-// Q17 PARSE — 2-table JOIN + subquery; parse ok
-// Q18 PARSE — 3-table JOIN + GROUP BY HAVING subquery; parse ok
-// Q19 PARSE — 2-table JOIN + complex OR filter; parse ok
-// Q20 PARSE — 3-table JOIN + nested subqueries; parse ok
-// Q21 PARSE — 4-table JOIN + correlated subquery; parse ok
-// Q22 PARSE — complex subquery + CASE; parse ok
+// The PostgreSQL reference harness runs in an opt-in test target because it
+// starts a Docker container. This suite is correctness evidence for the exact
+// checked data/query forms, not official TPC-H certification or a production-
+// scale benchmark.
 //
-// CONFIDENCE: raw=0.80 effective=0.76
-// Basis: Q1 and Q6 exact values verified; Q2-Q22 parse gate prevents
-// regressions in SQL grammar handling.
-
 #![allow(unused_imports)]
 
 use neuralbase::binder::{bind_statement, BindError, BoundPlan};
@@ -1208,7 +1183,7 @@ row_for_row_pg16!(q20_row_for_row_pg16_reference, Q20_SQL, "Q20");
 row_for_row_pg16!(q21_row_for_row_pg16_reference, Q21_SQL, "Q21");
 row_for_row_pg16!(q22_row_for_row_pg16_reference, Q22_SQL, "Q22");
 
-// ── Q2-Q22: parse gate + bind-error classification ───────────────────────────
+// ── Q2-Q22: additional parse/bind/execute coverage ────────────────────────────
 // Each test:
 //   1. Asserts the SQL parses without panic.
 //   2. Attempts to bind and asserts the result is expected (Ok or specific Err).
@@ -1223,7 +1198,7 @@ macro_rules! parse_only {
     };
 }
 
-/// Session 9 macro: parse → bind → execute through row-oriented query executor.
+/// Parse → bind → execute through the row-oriented query executor.
 /// Asserts the query runs to completion without error.
 macro_rules! parse_bind_execute {
     ($name:ident, $sql:expr, $q:literal) => {
