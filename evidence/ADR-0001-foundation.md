@@ -1,14 +1,20 @@
-# ADR-0001: Session 1 Foundation Choices
+# ADR-0001: Foundation choices
 
 ## Status
-Accepted
+
+Accepted (historical foundation decision)
+
+## Context
+
+NeuralBase began with a deliberately small Rust-only SQL/protocol foundation before storage and distributed components were added.
 
 ## Decision
-- Use Rust only for Session 1 implementation.
-- Implement PostgreSQL wire protocol v3 simple query support first.
+
+- Use Rust for the database engine implementation.
+- Implement a PostgreSQL wire-protocol endpoint as the initial client interface.
 - Use `sqlparser-rs` for SQL parsing.
-- Keep catalog in-memory behind a trait interface for future persistence swap.
+- Keep catalog access behind a trait boundary so persistence can evolve independently.
 
 ## Consequences
-- Enables a minimal, testable baseline with low dependency surface.
-- Defers storage and distributed complexity to later sessions.
+
+The initial architecture established a small testable front end and left room for later persistent storage and consensus work. The repository has since added MVCC/RocksDB persistence, broader execution, authentication, and Raft; the original in-memory-only implementation state is historical rather than current behavior.

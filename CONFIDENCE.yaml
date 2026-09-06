@@ -61,18 +61,16 @@ artifacts:
 
   - artifact: mvcc_txn_manager
     effective: 0.76
-    status: tested_and_human_reviewed
+    status: tested
     evidence:
       - tests/mvcc_correctness.rs
       - tests/adversarial_mvcc.rs
-      - REVIEW_REQUIRED.md
 
   - artifact: mvcc_gc
     effective: 0.72
-    status: tested_and_human_reviewed
+    status: tested
     evidence:
       - tests/mvcc_correctness.rs
-      - REVIEW_REQUIRED.md
 
   - artifact: authentication
     effective: 0.72
@@ -80,6 +78,7 @@ artifacts:
     evidence:
       - src/auth.rs
       - src/server.rs
+      - tests/auth_correctness.rs
     limitation: >-
       User DDL is persisted per node. Authentication state is not replicated
       through Raft.
@@ -90,9 +89,9 @@ artifacts:
     evidence:
       - tests/raft_correctness.rs
       - tests/adversarial_raft.rs
-      - REVIEW_REQUIRED.md
     limitation: >-
-      No TLA+ proof and no claim of SQL-state-machine replication.
+      No TLA+ proof and no claim of SQL-state-machine replication. Stable-store
+      error handling is not yet a fail-closed production persistence model.
 
   - artifact: raft_tcp_transport
     effective: 0.74
@@ -134,4 +133,4 @@ next_high_value_work:
   - Wire deterministic SQL mutation commands through Raft and apply committed entries on every node.
   - Make Raft stable-storage failures fail closed rather than logging and continuing.
   - Add separate-process restart, partition, re-election, and state convergence tests.
-  - Add transactional rollback semantics for authentication registry persistence failures.
+  - Add coordinated membership changes and operator recovery workflows.

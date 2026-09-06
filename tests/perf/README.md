@@ -1,17 +1,34 @@
-# Performance Benchmarks
+# Performance benchmarks
 
-## Command
+NeuralBase keeps benchmark code and historical measurements for regression-oriented engineering. Benchmarks are **not** part of the normal CI correctness gate and should not be quoted without their exact workload and hardware context.
+
+## Commands
 
 ```bash
 make bench
+make bench-full
 ```
 
-## Scope
+`make bench` runs the checked-in release-mode TPC-H execution benchmarks and optimizer benchmark. `make bench-full` additionally enables the heavier ignored scale-factor runs.
 
-- TPC-H Q1 baseline at scale factor 0.1
-- TPC-H Q6 baseline at scale factor 0.1
+## Recorded baseline scope
 
-## Notes
+`BENCH_BASELINES.yaml` currently records historical measurements for:
 
-- Session 2 records deterministic local baselines for regression tracking.
-- CI runs `make bench` and keeps benchmark artifacts in version control.
+- vectorized TPC-H Q1 at scale factor 0.1;
+- vectorized TPC-H Q6 at scale factor 0.1;
+- optimizer join-order cost comparisons over the repository's Q1-Q22 join graphs.
+
+The optimizer percentage is a **repository cost-model comparison**, not a wall-clock claim that NeuralBase is faster than PostgreSQL, DuckDB, or another database.
+
+## Reproducibility rule
+
+A benchmark result is only meaningful with:
+
+- exact commit/model artifact;
+- command and Cargo profile/features;
+- dataset/scale factor;
+- hardware/runtime environment;
+- repetition/warmup methodology.
+
+Re-measure before using old development-laptop values as current performance claims.

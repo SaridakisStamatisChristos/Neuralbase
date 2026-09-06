@@ -28,6 +28,8 @@ certs/*.pem
 build_*.txt
 clippy_*.txt
 clippy_out*.txt
+test_*.txt
+tls_build*.txt
 audit_result.txt
 
 # OS / editor noise
