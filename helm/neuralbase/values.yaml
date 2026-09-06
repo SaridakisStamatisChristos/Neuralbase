@@ -4,7 +4,7 @@
 replicaCount: 3
 
 image:
-  repository: ghcr.io/neuralbase/neuralbase
+  repository: ghcr.io/saridakisstamatischristos/neuralbase
   tag: "1.0.0"
   pullPolicy: IfNotPresent
 
@@ -30,7 +30,9 @@ config:
   maxConnections: "500"
   maxConnectionsPerIp: "100"
   maxConnectionsPerUser: "50"
-  authRequired: "true"
+  # Disabled by default so a stock chart is reachable. To enable authentication,
+  # set this to "true" and provide auth.existingSecret containing users.json.
+  authRequired: "false"
   dbPath: "/data/neuralbase"
 
 # TLS configuration.
@@ -43,7 +45,9 @@ tls:
 
 # User authentication.
 auth:
-  # Name of existing Secret containing users.json.
+  # Name of existing Secret containing users.json. The Secret is used only as
+  # an initial seed; the live registry is copied to the writable data PVC so
+  # CREATE/ALTER/DROP USER can persist across restarts.
   existingSecret: ""
 
 # Service configuration.
@@ -57,16 +61,18 @@ metrics:
   serviceMonitor:
     enabled: false
 
-# Pod disruption budget — minAvailable=2 ensures Raft quorum.
+# Pod disruption budget — minAvailable=2 ensures Raft quorum for 3 replicas.
 podDisruptionBudget:
   enabled: true
   minAvailable: 2
 
 # Horizontal Pod Autoscaler.
+# NOTE: automatic horizontal scaling is not appropriate for a fixed Raft
+# membership without coordinated membership changes; keep disabled.
 autoscaling:
   enabled: false
   minReplicas: 3
-  maxReplicas: 9
+  maxReplicas: 3
   targetCPUUtilizationPercentage: 70
 
 # Graceful shutdown.
