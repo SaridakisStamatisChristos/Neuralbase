@@ -8,11 +8,11 @@ rust-version = "1.88.0"
 [features]
 default = []
 simd = []
+# Opt-in gate for tests/tpch_correctness.rs. That suite starts a PostgreSQL 16
+# Docker reference database and therefore must not be hidden inside the generic
+# unit/integration-test gate.
+tpch-reference-tests = []
 # tls: enable TLS 1.3 for client and node-to-node connections.
-# Requires external crates (tokio-rustls, rustls, rcgen, rustls-pemfile)
-# to be added to [dependencies] and NASM or a compatible C11 compiler
-# installed (for aws-lc-sys or ring assembly). See docs/THREAT_MODEL.md §2.
-# To enable: `cargo build --features tls` (after adding TLS deps below).
 tls = ["dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:rustls-pemfile"]
 
 [dependencies]
@@ -50,3 +50,8 @@ serde_yaml = "0.9.34"
 tempfile = "=3.10.1"
 proptest = "=1.4.0"
 postgres = "=0.19.12"
+
+[[test]]
+name = "tpch_correctness"
+path = "tests/tpch_correctness.rs"
+required-features = ["tpch-reference-tests"]
