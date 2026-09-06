@@ -102,8 +102,7 @@ impl StorageEngine {
 
         // Discover all existing CFs (handles dynamically created index CFs on re-open).
         // list_cf() returns Err when the DB does not exist yet — treat that as empty list.
-        let existing_cfs: Vec<String> =
-            RocksDb::list_cf(&opts, path).unwrap_or_default();
+        let existing_cfs: Vec<String> = RocksDb::list_cf(&opts, path).unwrap_or_default();
 
         // Merge static CFs + any extra CFs from a previous run.
         let mut all_cf_names: Vec<String> = ALL_CFS.iter().map(|s| s.to_string()).collect();
@@ -231,6 +230,28 @@ impl StorageEngine {
         }
     }
 
+    /// Return the latest committed timestamp for a key regardless of snapshot visibility.
+    pub fn latest_visible_ts_any(
+        &self,
+        table_id: u32,
+        pk_bytes: &[u8],
+    ) -> Result<Option<HlcTimestamp>, StorageError> {
+        let seek_key = encode_versioned_key(table_id, pk_bytes, HlcTimestamp::MAX);
+        let prefix = encode_key_prefix(table_id, pk_bytes);
+        let cf = self.db.cf_handle(CF_DATA).unwrap();
+        let mut iter = self.db.raw_iterator_cf(&cf);
+        iter.seek_for_prev(&seek_key);
+
+        if !iter.valid() {
+            return Ok(None);
+        }
+        let k = iter.key().unwrap();
+        if !k.starts_with(&prefix) {
+            return Ok(None);
+        }
+        Ok(decode_ts_from_key(k))
+    }
+
     /// Iterate all pk-prefix entries in `table_id` visible at `snapshot_ts`.
     /// Returns (pk_bytes, value) pairs — one entry per unique pk at latest visible version.
     pub fn scan_table(
@@ -283,10 +304,7 @@ impl StorageEngine {
 
     /// Iterate all keys in CF_DATA within table_id, returning raw (key, value) pairs.
     /// Used by GC to find all versions.
-    pub fn raw_scan_table_versions(
-        &self,
-        table_id: u32,
-    ) -> Result<VersionedRows, StorageError> {
+    pub fn raw_scan_table_versions(&self, table_id: u32) -> Result<VersionedRows, StorageError> {
         let cf = self.db.cf_handle(CF_DATA).unwrap();
         let table_prefix = table_id.to_be_bytes();
         let mut iter = self.db.raw_iterator_cf(&cf);
@@ -426,7 +444,10 @@ impl StorageEngine {
         value: &[u8],
     ) -> Result<(), StorageError> {
         let cf = self.db.cf_handle(index_cf).ok_or_else(|| {
-            StorageError::Encoding(format!("index CF '{}' not found — call create_index_cf first", index_cf))
+            StorageError::Encoding(format!(
+                "index CF '{}' not found — call create_index_cf first",
+                index_cf
+            ))
         })?;
         self.db.put_cf(&cf, key, value)?;
         Ok(())
@@ -576,29 +597,50 @@ mod tests {
     #[test]
     fn read_latest_seek_for_prev_correctness_no_cross_pk_bleed() {
         let (engine, _dir) = open_tmp();
-        let ts1 = HlcTimestamp { wall_ms: 100, logical: 0 };
+        let ts1 = HlcTimestamp {
+            wall_ms: 100,
+            logical: 0,
+        };
         // Write a row for pk "aaa" in table 1.
         engine.write_version(1, b"aaa", ts1, b"aaa_data").unwrap();
         // Read table 1, pk "zzz" — must return None, not "aaa_data".
         // The old seek_to_last() bug would have returned "aaa_data" here
         // because "aaa" is the last key and seek("zzz") goes past-all-keys.
-        let snap = HlcTimestamp { wall_ms: 200, logical: 0 };
+        let snap = HlcTimestamp {
+            wall_ms: 200,
+            logical: 0,
+        };
         let val = engine.read_latest(1, b"zzz", snap).unwrap();
-        assert!(val.is_none(), "seek_for_prev must not bleed across pk boundaries");
+        assert!(
+            val.is_none(),
+            "seek_for_prev must not bleed across pk boundaries"
+        );
     }
 
     /// Verifies seek_for_prev finds the correct version when multiple versions exist.
     #[test]
     fn read_latest_returns_latest_version_le_snapshot() {
         let (engine, _dir) = open_tmp();
-        let ts10 = HlcTimestamp { wall_ms: 10, logical: 0 };
-        let ts20 = HlcTimestamp { wall_ms: 20, logical: 0 };
-        let ts30 = HlcTimestamp { wall_ms: 30, logical: 0 };
+        let ts10 = HlcTimestamp {
+            wall_ms: 10,
+            logical: 0,
+        };
+        let ts20 = HlcTimestamp {
+            wall_ms: 20,
+            logical: 0,
+        };
+        let ts30 = HlcTimestamp {
+            wall_ms: 30,
+            logical: 0,
+        };
         engine.write_version(1, b"pk", ts10, b"v10").unwrap();
         engine.write_version(1, b"pk", ts20, b"v20").unwrap();
         engine.write_version(1, b"pk", ts30, b"v30").unwrap();
         // Snapshot at ts25 should see v20 (not v30).
-        let snap25 = HlcTimestamp { wall_ms: 25, logical: 0 };
+        let snap25 = HlcTimestamp {
+            wall_ms: 25,
+            logical: 0,
+        };
         let val = engine.read_latest(1, b"pk", snap25).unwrap();
         assert_eq!(val.as_deref(), Some(b"v20" as &[u8]));
     }
@@ -612,7 +654,9 @@ mod tests {
         // Idempotent second call.
         engine.create_index_cf(idx).unwrap();
         // Write an entry.
-        engine.write_secondary_index_entry(idx, b"key1", b"").unwrap();
+        engine
+            .write_secondary_index_entry(idx, b"key1", b"")
+            .unwrap();
         // List indexes.
         let list = engine.list_index_cfs().unwrap();
         assert!(list.contains(&idx.to_string()));
@@ -629,14 +673,26 @@ mod tests {
     #[test]
     fn write_batch_atomicity_two_keys() {
         let (engine, _dir) = open_tmp();
-        let ts = HlcTimestamp { wall_ms: 1, logical: 0 };
-        let snap = HlcTimestamp { wall_ms: 100, logical: 0 };
+        let ts = HlcTimestamp {
+            wall_ms: 1,
+            logical: 0,
+        };
+        let snap = HlcTimestamp {
+            wall_ms: 100,
+            logical: 0,
+        };
         let cf = engine.db.cf_handle(CF_DATA).unwrap();
         let mut batch = rocksdb::WriteBatch::default();
         batch.put_cf(&cf, encode_versioned_key(7, b"a", ts), b"val_a");
         batch.put_cf(&cf, encode_versioned_key(7, b"b", ts), b"val_b");
         engine.write_batch(batch).unwrap();
-        assert_eq!(engine.read_latest(7, b"a", snap).unwrap().as_deref(), Some(b"val_a" as &[u8]));
-        assert_eq!(engine.read_latest(7, b"b", snap).unwrap().as_deref(), Some(b"val_b" as &[u8]));
+        assert_eq!(
+            engine.read_latest(7, b"a", snap).unwrap().as_deref(),
+            Some(b"val_a" as &[u8])
+        );
+        assert_eq!(
+            engine.read_latest(7, b"b", snap).unwrap().as_deref(),
+            Some(b"val_b" as &[u8])
+        );
     }
 }

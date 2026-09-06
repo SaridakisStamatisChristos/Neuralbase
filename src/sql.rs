@@ -36,7 +36,10 @@ pub enum NbStatement {
     /// CREATE USER name WITH PASSWORD 'password'
     CreateUser { username: String, password: String },
     /// ALTER USER name WITH PASSWORD 'new_password'
-    AlterUser { username: String, new_password: String },
+    AlterUser {
+        username: String,
+        new_password: String,
+    },
     /// DROP USER [IF EXISTS] name
     DropUser { username: String, if_exists: bool },
 }
@@ -82,7 +85,10 @@ fn parse_alter_user(sql: &str) -> Result<NbStatement, SqlParseError> {
     }
     let username = tokens[2].to_string();
     let new_password = extract_password_literal(sql)?;
-    Ok(NbStatement::AlterUser { username, new_password })
+    Ok(NbStatement::AlterUser {
+        username,
+        new_password,
+    })
 }
 
 fn parse_drop_user(sql: &str) -> Result<NbStatement, SqlParseError> {
@@ -101,7 +107,10 @@ fn parse_drop_user(sql: &str) -> Result<NbStatement, SqlParseError> {
             "DROP USER requires a username".to_string(),
         ));
     }
-    Ok(NbStatement::DropUser { username, if_exists })
+    Ok(NbStatement::DropUser {
+        username,
+        if_exists,
+    })
 }
 
 /// Extract the value of a `PASSWORD 'literal'` clause (case-insensitive).
@@ -127,4 +136,3 @@ fn extract_password_literal(sql: &str) -> Result<String, SqlParseError> {
         .ok_or_else(|| SqlParseError::Parser("unterminated password literal".to_string()))?;
     Ok(after[1..1 + end].to_string())
 }
-

@@ -179,7 +179,10 @@ impl QueryCoordinator {
         fragment_id: u32,
         reason: String,
     ) -> bool {
-        if let Some(exec) = manifest.iter_mut().find(|e| e.fragment.fragment_id == fragment_id) {
+        if let Some(exec) = manifest
+            .iter_mut()
+            .find(|e| e.fragment.fragment_id == fragment_id)
+        {
             exec.attempt += 1;
             if exec.attempt > self.max_retries {
                 exec.status = FragmentStatus::Failed(format!(
@@ -207,12 +210,16 @@ impl QueryCoordinator {
 
     /// True if all fragments have succeeded.
     pub fn is_complete(&self, manifest: &[FragmentExecution]) -> bool {
-        manifest.iter().all(|e| e.status == FragmentStatus::Completed)
+        manifest
+            .iter()
+            .all(|e| e.status == FragmentStatus::Completed)
     }
 
     /// True if any fragment has permanently failed.
     pub fn has_permanent_failure(&self, manifest: &[FragmentExecution]) -> bool {
-        manifest.iter().any(|e| matches!(&e.status, FragmentStatus::Failed(_)))
+        manifest
+            .iter()
+            .any(|e| matches!(&e.status, FragmentStatus::Failed(_)))
     }
 }
 

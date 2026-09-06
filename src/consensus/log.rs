@@ -55,12 +55,16 @@ struct MemPersistedData {
 
 impl MemPersistenceStore {
     pub fn new() -> Self {
-        Self { inner: Mutex::new(None) }
+        Self {
+            inner: Mutex::new(None),
+        }
     }
 }
 
 impl Default for MemPersistenceStore {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RaftPersistenceStore for MemPersistenceStore {
@@ -75,7 +79,9 @@ impl RaftPersistenceStore for MemPersistenceStore {
 
     fn load(&self) -> Result<Option<(PersistentState, Vec<u8>)>, String> {
         let guard = self.inner.lock().map_err(|e| e.to_string())?;
-        Ok(guard.as_ref().map(|d| (d.state.clone(), d.snapshot_data.clone())))
+        Ok(guard
+            .as_ref()
+            .map(|d| (d.state.clone(), d.snapshot_data.clone())))
     }
 }
 
@@ -109,7 +115,9 @@ pub struct PersistentState {
 }
 
 impl Default for PersistentState {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PersistentState {
@@ -118,7 +126,11 @@ impl PersistentState {
         Self {
             current_term: 0,
             voted_for: None,
-            log: vec![LogEntry { term: 0, index: 0, command: vec![] }],
+            log: vec![LogEntry {
+                term: 0,
+                index: 0,
+                command: vec![],
+            }],
             snapshot_index: 0,
             snapshot_term: 0,
         }
@@ -149,7 +161,11 @@ impl PersistentState {
     /// Append a new entry and return its Raft index.
     pub fn append(&mut self, term: u64, command: Vec<u8>) -> u64 {
         let index = self.snapshot_index + self.log.len() as u64;
-        self.log.push(LogEntry { term, index, command });
+        self.log.push(LogEntry {
+            term,
+            index,
+            command,
+        });
         index
     }
 
@@ -209,8 +225,7 @@ impl PersistentState {
             // Entire existing log is covered by the snapshot.
             vec![]
         } else {
-            let physical_first_kept =
-                (last_included_index - self.snapshot_index) as usize + 1;
+            let physical_first_kept = (last_included_index - self.snapshot_index) as usize + 1;
             self.log[physical_first_kept..].to_vec()
         };
 
@@ -246,7 +261,7 @@ mod tests {
         s.append(1, b"a".to_vec()); // idx=1
         s.append(1, b"b".to_vec()); // idx=2
         s.append(2, b"c".to_vec()); // idx=3 — conflicting
-        // Leader sends entries starting at index 2 with term 3.
+                                    // Leader sends entries starting at index 2 with term 3.
         s.truncate_and_append(
             1,
             vec![LogEntry {

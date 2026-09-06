@@ -19,7 +19,7 @@ bench-full:
 	cargo test --test bench_optimizer --release --locked -- --nocapture
 
 tpch-correctness:
-	cargo test --test tpch_correctness --locked -- --nocapture
+	cargo test --test tpch_correctness --features "tls,tpch-reference-tests" --locked -- --nocapture --test-threads=1
 
 adversarial:
 	cargo test --test adversarial_vectorized --features simd --locked

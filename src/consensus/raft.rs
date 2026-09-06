@@ -22,15 +22,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rand::Rng;
-use tokio::sync::{mpsc, oneshot, Mutex};
-use tokio::time::{self, Instant};
 use crate::consensus::log::{PersistentState, RaftPersistenceStore};
 use crate::consensus::rpc::{
     AppendEntriesArgs, AppendEntriesReply, InstallSnapshotArgs, InstallSnapshotReply, LogEntry,
     MembershipChange, NodeId, RaftMessage, RequestVoteArgs, RequestVoteReply,
 };
 use crate::consensus::transport::Transport;
+use rand::Rng;
+use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::time::{self, Instant};
 
 // ── Admin payload tags ─────────────────────────────────────────────────────
 
@@ -137,11 +137,8 @@ impl RaftTaskHandle {
             .send(reply_tx)
             .await
             .map_err(|_| "raft event loop closed".to_string())?;
-        match tokio::time::timeout(
-            Duration::from_millis(LEADER_TRANSFER_TIMEOUT_MS),
-            reply_rx,
-        )
-        .await
+        match tokio::time::timeout(Duration::from_millis(LEADER_TRANSFER_TIMEOUT_MS), reply_rx)
+            .await
         {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err("reply channel dropped".to_string()),
@@ -400,25 +397,29 @@ impl<T: Transport> RaftNode<T> {
                 while self.last_applied < self.commit_index {
                     self.last_applied += 1;
                     // Physical position in the log vector.
-                    let physical =
-                        (self.last_applied - self.ps.snapshot_index) as usize;
+                    let physical = (self.last_applied - self.ps.snapshot_index) as usize;
                     if let Some(entry) = self.ps.log.get(physical).cloned() {
                         // Intercept membership-change entries before forwarding.
                         if entry.command.starts_with(MEMBERSHIP_CHANGE_TAG) {
                             let payload = &entry.command[MEMBERSHIP_CHANGE_TAG.len()..];
-                            if let Ok(change) =
-                                serde_json::from_slice::<MembershipChange>(payload)
+                            if let Ok(change) = serde_json::from_slice::<MembershipChange>(payload)
                             {
                                 self.apply_membership_change(change);
                             }
                         }
                         if let Some(tx) = &self.apply_tx {
-                            // Bounded channel: .send().await blocks when full,
-                            // providing backpressure.  Entries are never dropped.
-                            // Channel closed means executor is shutting down.
-                            if tx.send(entry).await.is_err() {
-                                // Receiver dropped — no consumer, stop forwarding.
-                                break;
+                            // Preserve bounded-channel backpressure during normal
+                            // operation, but make shutdown pre-empt a blocked send.
+                            // A closed apply channel is a fail-stop condition: once
+                            // the state-machine consumer is gone, continuing would
+                            // risk silently discarding committed entries.
+                            let send_result = tokio::select! {
+                                biased;
+                                _ = &mut shutdown_rx => return,
+                                result = tx.send(entry) => result,
+                            };
+                            if send_result.is_err() {
+                                return;
                             }
                         }
                     }
@@ -528,7 +529,10 @@ impl<T: Transport> RaftNode<T> {
                     )
                     .await;
             }
-            RaftMessage::MembershipChangeCmdReply { success: _, error: _ } => {
+            RaftMessage::MembershipChangeCmdReply {
+                success: _,
+                error: _,
+            } => {
                 // Acknowledgement of a membership-change command we sent.
                 // No action needed in this implementation.
             }
@@ -536,7 +540,10 @@ impl<T: Transport> RaftNode<T> {
             RaftMessage::LeaderTransfer { target } => {
                 self.on_leader_transfer(&from, target).await;
             }
-            RaftMessage::LeaderTransferReply { success: _, error: _ } => {
+            RaftMessage::LeaderTransferReply {
+                success: _,
+                error: _,
+            } => {
                 // Acknowledgement; no further action needed.
             }
             RaftMessage::TimeoutNow { term } => {
@@ -568,10 +575,10 @@ impl<T: Transport> RaftNode<T> {
                 .send(peer, RaftMessage::RequestVote(args.clone()))
                 .await;
         }
-        // Single-node cluster: self-vote already constitutes a majority.  
+        // Single-node cluster: self-vote already constitutes a majority.
         // Check immediately so we don't wait for replies that will never come.
         let total_nodes = self.peers.len() + 1; // cluster size including self
-        let majority = total_nodes / 2 + 1;    // floor(N/2) + 1
+        let majority = total_nodes / 2 + 1; // floor(N/2) + 1
         if self.votes_received >= majority {
             self.become_leader().await;
         }
@@ -752,12 +759,7 @@ impl<T: Transport> RaftNode<T> {
             let replicated = self
                 .leader
                 .as_ref()
-                .map(|l| {
-                    l.match_index
-                        .values()
-                        .filter(|&&m| m >= idx)
-                        .count()
-                })
+                .map(|l| l.match_index.values().filter(|&&m| m >= idx).count())
                 .unwrap_or(0)
                 + 1; // +1 for self
             let total_nodes = self.peers.len() + 1;
@@ -802,10 +804,7 @@ impl<T: Transport> RaftNode<T> {
 
     fn handle_client_command(&mut self, payload: Vec<u8>) -> Result<u64, String> {
         if self.role != RaftRole::Leader {
-            return Err(format!(
-                "not leader; redirect to {:?}",
-                self.leader_id
-            ));
+            return Err(format!("not leader; redirect to {:?}", self.leader_id));
         }
 
         // ── Session 13: leadership transfer in progress ────────────────────
@@ -917,7 +916,9 @@ impl<T: Transport> RaftNode<T> {
     /// CONFIDENCE: raw=0.78  [HUMAN REVIEW REQUIRED] §Session13 Invariants 1–4.
     fn on_install_snapshot(&mut self, args: InstallSnapshotArgs) -> InstallSnapshotReply {
         if args.term < self.ps.current_term {
-            return InstallSnapshotReply { term: self.ps.current_term };
+            return InstallSnapshotReply {
+                term: self.ps.current_term,
+            };
         }
         if args.term > self.ps.current_term || self.role == RaftRole::Candidate {
             self.become_follower(args.term);
@@ -927,12 +928,15 @@ impl<T: Transport> RaftNode<T> {
         // Invariant 1: Accept only if the snapshot is strictly newer than our
         // current snapshot (i.e. contains more committed entries).
         if args.last_included_index <= self.ps.snapshot_index {
-            return InstallSnapshotReply { term: self.ps.current_term };
+            return InstallSnapshotReply {
+                term: self.ps.current_term,
+            };
         }
 
         // Install the snapshot.  install_snapshot() retains any log entries
         // that follow last_included_index (Raft §7 step 6).
-        self.ps.install_snapshot(args.last_included_index, args.last_included_term);
+        self.ps
+            .install_snapshot(args.last_included_index, args.last_included_term);
         // Arc move — O(1), no buffer copy.
         self.snapshot_data = args.data;
 
@@ -944,7 +948,9 @@ impl<T: Transport> RaftNode<T> {
         // Persist the new snapshot state before replying.
         self.persist();
 
-        InstallSnapshotReply { term: self.ps.current_term }
+        InstallSnapshotReply {
+            term: self.ps.current_term,
+        }
     }
 
     /// Process an InstallSnapshotReply from a follower.

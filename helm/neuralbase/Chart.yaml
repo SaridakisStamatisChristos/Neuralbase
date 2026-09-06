@@ -1,17 +1,17 @@
 apiVersion: v2
 name: neuralbase
-description: Self-optimizing distributed SQL query engine
+description: Experimental Rust SQL engine with MVCC/RocksDB and a separate Raft subsystem
 type: application
-version: 1.0.0
-appVersion: "1.0.0"
+version: 0.1.0
+appVersion: "0.1.0"
 keywords:
   - database
   - sql
-  - distributed
+  - mvcc
   - raft
-  - rl-optimizer
+  - query-engine
 maintainers:
-  - name: NeuralBase Team
+  - name: Stamatis-Christos Saridakis
 home: https://github.com/SaridakisStamatisChristos/Neuralbase
 sources:
   - https://github.com/SaridakisStamatisChristos/Neuralbase

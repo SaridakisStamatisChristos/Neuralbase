@@ -63,7 +63,9 @@ pub enum StoredCredential {
     ScramSha256(ScramKeys),
     /// hex(md5(password || username)) — no "md5" prefix.
     /// Sufficient to answer the MD5 challenge without storing plaintext.
-    Md5 { password_hash: String },
+    Md5 {
+        password_hash: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -94,7 +96,10 @@ impl UserRegistry {
         let require_auth = std::env::var("NEURALBASE_AUTH_REQUIRED")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
-        Self { users: HashMap::new(), require_auth }
+        Self {
+            users: HashMap::new(),
+            require_auth,
+        }
     }
 
     /// Load from a JSON file.  Missing or malformed file → empty (non-fatal).
@@ -105,19 +110,130 @@ impl UserRegistry {
         let Ok(content) = std::fs::read_to_string(path) else {
             return registry;
         };
-        let Ok(doc) = serde_json::from_str::<serde_json::Value>(&content) else {
+        let Ok(doc) = serde_json::from_str::<UserRegistryFile>(&content) else {
             tracing::warn!(path, "users.json could not be parsed; using empty registry");
             return registry;
         };
-        if let Some(serde_json::Value::Array(entries)) = doc.get("users") {
-            for entry in entries {
-                if let Some(rec) = parse_user_entry(entry) {
-                    registry.users.insert(rec.username.clone(), rec);
+        for entry in doc.users {
+            let rec = match entry {
+                UserRecordFile::ScramSha256 {
+                    username,
+                    salt,
+                    iterations,
+                    stored_key,
+                    server_key,
+                } => {
+                    let sk_bytes = match BASE64.decode(stored_key) {
+                        Ok(v) if v.len() == 32 => v,
+                        _ => continue,
+                    };
+                    let vk_bytes = match BASE64.decode(server_key) {
+                        Ok(v) if v.len() == 32 => v,
+                        _ => continue,
+                    };
+                    let mut sk = [0u8; 32];
+                    let mut vk = [0u8; 32];
+                    sk.copy_from_slice(&sk_bytes);
+                    vk.copy_from_slice(&vk_bytes);
+                    UserRecord {
+                        username: username.clone(),
+                        credential: StoredCredential::ScramSha256(ScramKeys {
+                            salt_b64: salt,
+                            iterations,
+                            stored_key: sk,
+                            server_key: vk,
+                        }),
+                    }
                 }
-            }
+                UserRecordFile::Md5 { username, md5_hash } => UserRecord {
+                    username: username.clone(),
+                    credential: StoredCredential::Md5 {
+                        password_hash: md5_hash,
+                    },
+                },
+            };
+            registry.users.insert(rec.username.clone(), rec);
         }
         tracing::info!(count = registry.users.len(), path, "loaded user registry");
         registry
+    }
+
+    fn to_file_model(&self) -> UserRegistryFile {
+        let mut users: Vec<UserRecordFile> = self
+            .users
+            .values()
+            .map(|rec| match &rec.credential {
+                StoredCredential::ScramSha256(keys) => UserRecordFile::ScramSha256 {
+                    username: rec.username.clone(),
+                    salt: keys.salt_b64.clone(),
+                    iterations: keys.iterations,
+                    stored_key: BASE64.encode(keys.stored_key),
+                    server_key: BASE64.encode(keys.server_key),
+                },
+                StoredCredential::Md5 { password_hash } => UserRecordFile::Md5 {
+                    username: rec.username.clone(),
+                    md5_hash: password_hash.clone(),
+                },
+            })
+            .collect();
+
+        users.sort_by(|a, b| {
+            let an = match a {
+                UserRecordFile::ScramSha256 { username, .. } => username,
+                UserRecordFile::Md5 { username, .. } => username,
+            };
+            let bn = match b {
+                UserRecordFile::ScramSha256 { username, .. } => username,
+                UserRecordFile::Md5 { username, .. } => username,
+            };
+            an.cmp(bn)
+        });
+
+        UserRegistryFile { users }
+    }
+
+    /// Atomically persist the registry. If persistence fails, restore the
+    /// in-memory users from the last durable file so SQL user DDL cannot
+    /// report an error while leaving a transient mutation active.
+    pub fn save_to_file(&mut self, path: &str) -> std::io::Result<()> {
+        use std::io::Write;
+
+        let persisted_users = Self::load_from_file(path).users;
+        let doc = self.to_file_model();
+        let json = serde_json::to_vec_pretty(&doc)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let tmp_path = format!("{path}.tmp");
+
+        let persist_result = (|| -> std::io::Result<()> {
+            let mut options = std::fs::OpenOptions::new();
+            options.create(true).truncate(true).write(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+
+            let mut file = options.open(&tmp_path)?;
+            file.write_all(&json)?;
+            file.sync_all()?;
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600))?;
+            }
+
+            std::fs::rename(&tmp_path, path)?;
+            Ok(())
+        })();
+
+        if let Err(error) = persist_result {
+            self.users = persisted_users;
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(error);
+        }
+
+        Ok(())
     }
 
     pub fn get_user(&self, username: &str) -> Option<&UserRecord> {
@@ -143,40 +259,24 @@ impl UserRegistry {
     }
 }
 
-fn parse_user_entry(entry: &serde_json::Value) -> Option<UserRecord> {
-    let username = entry.get("username")?.as_str()?.to_string();
-    match entry.get("method")?.as_str()? {
-        "scram-sha-256" => {
-            let salt_b64   = entry.get("salt")?.as_str()?.to_string();
-            let iterations = entry.get("iterations")?.as_u64()? as u32;
-            let sk_bytes   = BASE64.decode(entry.get("stored_key")?.as_str()?).ok()?;
-            let vk_bytes   = BASE64.decode(entry.get("server_key")?.as_str()?).ok()?;
-            if sk_bytes.len() != 32 || vk_bytes.len() != 32 {
-                return None;
-            }
-            let mut stored_key = [0u8; 32];
-            let mut server_key = [0u8; 32];
-            stored_key.copy_from_slice(&sk_bytes);
-            server_key.copy_from_slice(&vk_bytes);
-            Some(UserRecord {
-                username,
-                credential: StoredCredential::ScramSha256(ScramKeys {
-                    salt_b64,
-                    iterations,
-                    stored_key,
-                    server_key,
-                }),
-            })
-        }
-        "md5" => {
-            let password_hash = entry.get("md5_hash")?.as_str()?.to_string();
-            Some(UserRecord {
-                username,
-                credential: StoredCredential::Md5 { password_hash },
-            })
-        }
-        _ => None,
-    }
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct UserRegistryFile {
+    users: Vec<UserRecordFile>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "method")]
+enum UserRecordFile {
+    #[serde(rename = "scram-sha-256")]
+    ScramSha256 {
+        username: String,
+        salt: String,
+        iterations: u32,
+        stored_key: String,
+        server_key: String,
+    },
+    #[serde(rename = "md5")]
+    Md5 { username: String, md5_hash: String },
 }
 
 // ── Key derivation ─────────────────────────────────────────────────────────────
@@ -216,7 +316,9 @@ pub fn create_md5_user(username: &str, password: &str) -> UserRecord {
     let hash = hasher.finalize();
     UserRecord {
         username: username.to_string(),
-        credential: StoredCredential::Md5 { password_hash: hex::encode(hash) },
+        credential: StoredCredential::Md5 {
+            password_hash: hex::encode(hash),
+        },
     }
 }
 
@@ -231,7 +333,10 @@ pub struct Md5State {
 impl Md5State {
     pub fn new(password_hash: String) -> Self {
         let salt: [u8; 4] = rand::thread_rng().gen();
-        Self { password_hash, salt }
+        Self {
+            password_hash,
+            salt,
+        }
     }
 
     /// Verify a client's PasswordMessage response.
@@ -255,10 +360,10 @@ impl Md5State {
 ///   2. `process_client_first(msg)`           — parse client-first, return server-first
 ///   3. `process_client_final(msg)`           → verify proof, return server-signature
 pub struct ScramServer {
-    keys:              ScramKeys,
-    server_nonce:      String,
+    keys: ScramKeys,
+    server_nonce: String,
     client_first_bare: Option<String>,
-    server_first:      Option<String>,
+    server_first: Option<String>,
 }
 
 impl ScramServer {
@@ -320,9 +425,10 @@ impl ScramServer {
             .decode(proof_b64)
             .map_err(|_| AuthError::InvalidMessage("proof is not valid base64".into()))?;
         if proof_bytes.len() != 32 {
-            return Err(AuthError::InvalidMessage(
-                format!("proof length {} != 32", proof_bytes.len()),
-            ));
+            return Err(AuthError::InvalidMessage(format!(
+                "proof length {} != 32",
+                proof_bytes.len()
+            )));
         }
 
         // ClientKey = ClientProof XOR ClientSignature
@@ -358,7 +464,9 @@ fn strip_gs2_header(msg: &str) -> Result<&str, AuthError> {
             }
         }
     }
-    Err(AuthError::InvalidMessage("invalid or missing GS2 header".into()))
+    Err(AuthError::InvalidMessage(
+        "invalid or missing GS2 header".into(),
+    ))
 }
 
 // ── Crypto primitives ──────────────────────────────────────────────────────────
@@ -447,6 +555,78 @@ mod tests {
         create_md5_user(username, password)
     }
 
+    #[test]
+    fn user_registry_persistence_round_trips_scram_and_md5() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("users.json");
+        let path = path.to_str().unwrap();
+
+        let mut reg = UserRegistry::new();
+        reg.add_user(create_scram_user("alice", "secret"));
+        reg.add_user(create_md5_user("bob", "legacy"));
+        reg.save_to_file(path).unwrap();
+
+        let loaded = UserRegistry::load_from_file(path);
+        assert!(matches!(
+            &loaded.get_user("alice").unwrap().credential,
+            StoredCredential::ScramSha256(_)
+        ));
+        assert!(matches!(
+            &loaded.get_user("bob").unwrap().credential,
+            StoredCredential::Md5 { .. }
+        ));
+    }
+
+    #[test]
+    fn user_registry_save_failure_restores_last_durable_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("users.json");
+        let path_str = path.to_str().unwrap();
+
+        let mut reg = UserRegistry::new();
+        reg.add_user(create_scram_user("durable", "secret"));
+        reg.save_to_file(path_str).unwrap();
+
+        let tmp_path = format!("{path_str}.tmp");
+        std::fs::create_dir(&tmp_path).unwrap();
+        reg.add_user(create_scram_user("transient", "secret"));
+
+        assert!(reg.save_to_file(path_str).is_err());
+        assert!(reg.get_user("durable").is_some());
+        assert!(reg.get_user("transient").is_none());
+
+        let durable = UserRegistry::load_from_file(path_str);
+        assert!(durable.get_user("durable").is_some());
+        assert!(durable.get_user("transient").is_none());
+        std::fs::remove_dir(&tmp_path).unwrap();
+    }
+
+    #[test]
+    fn user_registry_serialization_is_deterministic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("users.json");
+        let path_str = path.to_str().unwrap();
+
+        let mut reg = UserRegistry::new();
+        reg.add_user(create_md5_user("zeta", "z"));
+        reg.add_user(create_md5_user("alpha", "a"));
+        reg.save_to_file(path_str).unwrap();
+
+        let json = std::fs::read_to_string(path_str).unwrap();
+        assert!(json.find("alpha").unwrap() < json.find("zeta").unwrap());
+    }
+
+    #[test]
+    fn user_registry_missing_parent_failure_rolls_back_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing").join("users.json");
+        let path_str = path.to_str().unwrap();
+
+        let mut reg = UserRegistry::new();
+        reg.add_user(create_scram_user("transient", "secret"));
+        assert!(reg.save_to_file(path_str).is_err());
+        assert!(reg.get_user("transient").is_none());
+    }
     #[test]
     fn scram_key_derivation_is_deterministic() {
         let salt = b"fixed_salt_01234";
@@ -543,8 +723,7 @@ mod tests {
 
         let client_first_bare = format!("n=bob,r={}", client_nonce);
         let channel_binding = BASE64.encode("n,,");
-        let client_final_without_proof =
-            format!("c={},r={}", channel_binding, combined_nonce);
+        let client_final_without_proof = format!("c={},r={}", channel_binding, combined_nonce);
         let auth_msg = format!(
             "{},{},{}",
             client_first_bare, server_first, client_final_without_proof
@@ -605,15 +784,17 @@ mod tests {
         let client_first_bare = format!("n=carol,r={}", client_nonce);
         let channel_binding = BASE64.encode("n,,");
         let client_final_wop = format!("c={},r={}", channel_binding, combined_nonce);
-        let auth_msg = format!("{},{},{}", client_first_bare, server_first, client_final_wop);
+        let auth_msg = format!(
+            "{},{},{}",
+            client_first_bare, server_first, client_final_wop
+        );
         let client_sig = hmac_sha256(&wrong_stored, auth_msg.as_bytes());
         let client_proof: Vec<u8> = client_key
             .iter()
             .zip(client_sig.iter())
             .map(|(k, s)| k ^ s)
             .collect();
-        let client_final =
-            format!("{},p={}", client_final_wop, BASE64.encode(&client_proof));
+        let client_final = format!("{},p={}", client_final_wop, BASE64.encode(&client_proof));
 
         let result = server.process_client_final(&client_final);
         assert!(
@@ -640,7 +821,10 @@ mod tests {
         assert!(tracker.try_acquire(ip));
         assert!(!tracker.try_acquire(ip));
         tracker.release(ip);
-        assert!(tracker.try_acquire(ip), "slot must be available after release");
+        assert!(
+            tracker.try_acquire(ip),
+            "slot must be available after release"
+        );
     }
 
     #[test]
@@ -662,7 +846,10 @@ mod tests {
         let ip2: IpAddr = "5.6.7.8".parse().unwrap();
         assert!(tracker.try_acquire(ip1));
         assert!(!tracker.try_acquire(ip1));
-        assert!(tracker.try_acquire(ip2), "ip2 must not be blocked by ip1 limit");
+        assert!(
+            tracker.try_acquire(ip2),
+            "ip2 must not be blocked by ip1 limit"
+        );
     }
 
     #[test]
@@ -701,11 +888,16 @@ mod tests {
     #[test]
     fn scram_invalid_proof_base64_error() {
         let user = create_scram_user("hank", "pass");
-        let StoredCredential::ScramSha256(keys) = &user.credential else { panic!(); };
+        let StoredCredential::ScramSha256(keys) = &user.credential else {
+            panic!();
+        };
         let mut server = ScramServer::new(keys.clone());
         let client_first = format!("n,,n=hank,r={}", BASE64.encode(b"nonce"));
         let server_first = server.process_client_first(&client_first).unwrap();
-        let combined = server_first.split(',').find_map(|p| p.strip_prefix("r=")).unwrap();
+        let combined = server_first
+            .split(',')
+            .find_map(|p| p.strip_prefix("r="))
+            .unwrap();
         let channel_binding = BASE64.encode("n,,");
         let client_final = format!(
             "c={},r={},p=!!!NOT_VALID_BASE64!!!",
@@ -742,12 +934,18 @@ mod tests {
 
     #[test]
     fn strip_gs2_header_n_variant() {
-        assert_eq!(strip_gs2_header("n,,n=user,r=nonce").unwrap(), "n=user,r=nonce");
+        assert_eq!(
+            strip_gs2_header("n,,n=user,r=nonce").unwrap(),
+            "n=user,r=nonce"
+        );
     }
 
     #[test]
     fn strip_gs2_header_y_variant() {
-        assert_eq!(strip_gs2_header("y,,n=user,r=nonce").unwrap(), "n=user,r=nonce");
+        assert_eq!(
+            strip_gs2_header("y,,n=user,r=nonce").unwrap(),
+            "n=user,r=nonce"
+        );
     }
 
     #[test]
@@ -762,7 +960,9 @@ mod tests {
         let key = b"Jefe";
         let msg = b"what do ya want for nothing?";
         let result = hmac_sha256(key, msg);
-        let expected = hex::decode("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843").unwrap();
+        let expected =
+            hex::decode("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
+                .unwrap();
         assert_eq!(&result, expected.as_slice());
     }
 }

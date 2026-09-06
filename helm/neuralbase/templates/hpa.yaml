@@ -1,27 +1,3 @@
-{{- if .Values.autoscaling.enabled }}
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: {{ include "neuralbase.fullname" . }}
-  labels:
-    {{- include "neuralbase.labels" . | nindent 4 }}
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: StatefulSet
-    name: {{ include "neuralbase.fullname" . }}
-  minReplicas: {{ .Values.autoscaling.minReplicas }}
-  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
-  behavior:
-    scaleDown:
-      stabilizationWindowSeconds: 300
-    scaleUp:
-      stabilizationWindowSeconds: 60
-{{- end }}
+{{- if .Values.autoscaling.enabled -}}
+{{- fail "autoscaling.enabled=true is unsupported: NeuralBase currently uses fixed Raft membership and cannot safely change StatefulSet replica count through an HPA" -}}
+{{- end -}}

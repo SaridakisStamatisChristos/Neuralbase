@@ -275,8 +275,8 @@ impl CostBenefitModel {
         // For 1M rows: log2(1M) ≈ 20; speedup ≈ 1 000 000 / 20 = 50_000× on CPU.
         // Normalise to [0, 1] using a sigmoid-like factor capped at 0.9.
         let row_speedup_factor = if self.estimated_row_count > 0 {
-            let ratio = self.estimated_row_count as f64
-                / (self.estimated_row_count as f64).log2().max(1.0);
+            let ratio =
+                self.estimated_row_count as f64 / (self.estimated_row_count as f64).log2().max(1.0);
             (ratio / 100_000.0).min(0.9)
         } else {
             0.0
@@ -286,8 +286,7 @@ impl CostBenefitModel {
 
         // Cost: estimated storage × write amplification weight.
         let cost_bytes = self.estimated_row_count * self.bytes_per_entry;
-        let cost_score = self.write_amplification_weight
-            * (cost_bytes as f64 / 1_073_741_824.0); // per GiB
+        let cost_score = self.write_amplification_weight * (cost_bytes as f64 / 1_073_741_824.0); // per GiB
 
         let net = benefit - cost_score;
         (net, cost_bytes)
@@ -365,7 +364,10 @@ impl IndexAdvisor {
         let hot = monitor.hot_columns(2);
         let mut table_hot: HashMap<&str, Vec<&str>> = HashMap::new();
         for ((table, col), _) in &hot {
-            table_hot.entry(table.as_str()).or_default().push(col.as_str());
+            table_hot
+                .entry(table.as_str())
+                .or_default()
+                .push(col.as_str());
         }
 
         for (table, cols) in &table_hot {
@@ -377,9 +379,7 @@ impl IndexAdvisor {
             // Single-column candidates.
             for &col in cols {
                 let candidate = IndexCandidate::single(table, col);
-                let (net, cost_bytes) =
-                    self.model
-                        .evaluate(&candidate, &monitor.stats, total_q);
+                let (net, cost_bytes) = self.model.evaluate(&candidate, &monitor.stats, total_q);
                 if net >= self.model.creation_threshold {
                     decisions.push(IndexDecision::Create {
                         candidate,
@@ -403,9 +403,7 @@ impl IndexAdvisor {
             // Composite candidate (top-2 hot columns on same table).
             if cols.len() >= 2 {
                 let candidate = IndexCandidate::composite(table, &cols[..2]);
-                let (net, cost_bytes) =
-                    self.model
-                        .evaluate(&candidate, &monitor.stats, total_q);
+                let (net, cost_bytes) = self.model.evaluate(&candidate, &monitor.stats, total_q);
                 if net >= self.model.creation_threshold {
                     decisions.push(IndexDecision::Create {
                         candidate,
@@ -477,11 +475,7 @@ impl IndexExecutor {
     /// Returns one `DdlResult` per decision.  Never panics — errors are
     /// captured in `DdlResult::Failed` so the background advisor loop can
     /// log them and continue.
-    pub fn apply(
-        &self,
-        decisions: &[IndexDecision],
-        engine: &StorageEngine,
-    ) -> Vec<DdlResult> {
+    pub fn apply(&self, decisions: &[IndexDecision], engine: &StorageEngine) -> Vec<DdlResult> {
         let mut results = Vec::with_capacity(decisions.len());
         let mut applied = self.applied_indexes.lock().unwrap();
 
@@ -509,22 +503,20 @@ impl IndexExecutor {
                         }
                     }
                 }
-                IndexDecision::Drop { index_name, .. } => {
-                    match engine.drop_index_cf(index_name) {
-                        Ok(()) => {
-                            applied.retain(|n| n != index_name);
-                            results.push(DdlResult::Dropped {
-                                index_name: index_name.clone(),
-                            });
-                        }
-                        Err(e) => {
-                            results.push(DdlResult::Failed {
-                                index_name: index_name.clone(),
-                                error: e.to_string(),
-                            });
-                        }
+                IndexDecision::Drop { index_name, .. } => match engine.drop_index_cf(index_name) {
+                    Ok(()) => {
+                        applied.retain(|n| n != index_name);
+                        results.push(DdlResult::Dropped {
+                            index_name: index_name.clone(),
+                        });
                     }
-                }
+                    Err(e) => {
+                        results.push(DdlResult::Failed {
+                            index_name: index_name.clone(),
+                            error: e.to_string(),
+                        });
+                    }
+                },
             }
         }
         results
@@ -626,7 +618,10 @@ mod tests {
             .iter()
             .filter(|d| matches!(d, IndexDecision::Drop { .. }))
             .collect();
-        assert!(!drops.is_empty(), "expected at least one drop recommendation");
+        assert!(
+            !drops.is_empty(),
+            "expected at least one drop recommendation"
+        );
     }
 
     #[test]

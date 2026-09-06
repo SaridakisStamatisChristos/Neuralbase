@@ -122,11 +122,14 @@ pub struct QueryCatalog {
 
 impl QueryCatalog {
     pub fn new() -> Self {
-        Self { tables: HashMap::new() }
+        Self {
+            tables: HashMap::new(),
+        }
     }
 
     pub fn add_batch(&mut self, name: &str, batch: &RecordBatch) {
-        self.tables.insert(name.to_lowercase(), recordbatch_to_rows(batch, name));
+        self.tables
+            .insert(name.to_lowercase(), recordbatch_to_rows(batch, name));
     }
 
     pub fn from_tpch(data: &TpchDataSet) -> Self {
@@ -167,11 +170,21 @@ fn recordbatch_to_rows(batch: &RecordBatch, _alias: &str) -> Vec<Row> {
                 .iter()
                 .map(|(col_name, col)| {
                     let sv = match col {
-                        ColumnVector::Int32(v) => v[r].map(|x| ScalarVal::Int(x as i64)).unwrap_or(ScalarVal::Null),
-                        ColumnVector::Int64(v) => v[r].map(ScalarVal::Int).unwrap_or(ScalarVal::Null),
-                        ColumnVector::Float64(v) => v[r].map(ScalarVal::Float).unwrap_or(ScalarVal::Null),
-                        ColumnVector::Date32(v) => v[r].map(ScalarVal::Date).unwrap_or(ScalarVal::Null),
-                        ColumnVector::Utf8(v) => v.get(r).map(ScalarVal::Text).unwrap_or(ScalarVal::Null),
+                        ColumnVector::Int32(v) => v[r]
+                            .map(|x| ScalarVal::Int(x as i64))
+                            .unwrap_or(ScalarVal::Null),
+                        ColumnVector::Int64(v) => {
+                            v[r].map(ScalarVal::Int).unwrap_or(ScalarVal::Null)
+                        }
+                        ColumnVector::Float64(v) => {
+                            v[r].map(ScalarVal::Float).unwrap_or(ScalarVal::Null)
+                        }
+                        ColumnVector::Date32(v) => {
+                            v[r].map(ScalarVal::Date).unwrap_or(ScalarVal::Null)
+                        }
+                        ColumnVector::Utf8(v) => {
+                            v.get(r).map(ScalarVal::Text).unwrap_or(ScalarVal::Null)
+                        }
                     };
                     (col_name.clone(), sv)
                 })
@@ -209,34 +222,56 @@ fn infer_column_vector(vals: &[ScalarVal]) -> ColumnVector {
     let non_null = vals.iter().find(|v| !matches!(v, ScalarVal::Null));
     match non_null {
         Some(ScalarVal::Int(_)) | None => ColumnVector::Int64(
-            vals.iter().map(|v| if let ScalarVal::Int(n) = v { Some(*n) } else { None }).collect(),
+            vals.iter()
+                .map(|v| {
+                    if let ScalarVal::Int(n) = v {
+                        Some(*n)
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
         ),
         Some(ScalarVal::Float(_)) => ColumnVector::Float64(
-            vals.iter().map(|v| match v {
-                ScalarVal::Float(f) => Some(*f),
-                ScalarVal::Int(n) => Some(*n as f64),
-                _ => None,
-            }).collect(),
+            vals.iter()
+                .map(|v| match v {
+                    ScalarVal::Float(f) => Some(*f),
+                    ScalarVal::Int(n) => Some(*n as f64),
+                    _ => None,
+                })
+                .collect(),
         ),
         Some(ScalarVal::Date(_)) => ColumnVector::Date32(
-            vals.iter().map(|v| if let ScalarVal::Date(d) = v { Some(*d) } else { None }).collect(),
+            vals.iter()
+                .map(|v| {
+                    if let ScalarVal::Date(d) = v {
+                        Some(*d)
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
         ),
         Some(ScalarVal::Bool(_)) => ColumnVector::Int64(
-            vals.iter().map(|v| match v {
-                ScalarVal::Bool(b) => Some(*b as i64),
-                ScalarVal::Int(n) => Some(*n),
-                _ => None,
-            }).collect(),
+            vals.iter()
+                .map(|v| match v {
+                    ScalarVal::Bool(b) => Some(*b as i64),
+                    ScalarVal::Int(n) => Some(*n),
+                    _ => None,
+                })
+                .collect(),
         ),
         _ => ColumnVector::Utf8(Utf8Column::from_owned_options(
-            vals.iter().map(|v| match v {
-                ScalarVal::Text(s) => Some(s.clone()),
-                ScalarVal::Int(n) => Some(n.to_string()),
-                ScalarVal::Float(f) => Some(format!("{f:.4}")),
-                ScalarVal::Date(d) => Some(d.to_string()),
-                ScalarVal::Bool(b) => Some(b.to_string()),
-                ScalarVal::Null => None,
-            }).collect(),
+            vals.iter()
+                .map(|v| match v {
+                    ScalarVal::Text(s) => Some(s.clone()),
+                    ScalarVal::Int(n) => Some(n.to_string()),
+                    ScalarVal::Float(f) => Some(format!("{f:.4}")),
+                    ScalarVal::Date(d) => Some(d.to_string()),
+                    ScalarVal::Bool(b) => Some(b.to_string()),
+                    ScalarVal::Null => None,
+                })
+                .collect(),
         )),
     }
 }
@@ -265,11 +300,18 @@ fn execute_query_inner(
         for cte in &with.cte_tables {
             let cte_name = cte.alias.name.value.to_lowercase();
             let cte_result = execute_query_inner(&cte.query, &ext, outer_row)?;
-            let cte_rows: Vec<Row> = cte_result.rows.iter().map(|row_vals| {
-                cte_result.columns.iter().zip(row_vals.iter())
-                    .map(|(col, val)| (format!("{cte_name}.{col}"), val.clone()))
-                    .collect()
-            }).collect();
+            let cte_rows: Vec<Row> = cte_result
+                .rows
+                .iter()
+                .map(|row_vals| {
+                    cte_result
+                        .columns
+                        .iter()
+                        .zip(row_vals.iter())
+                        .map(|(col, val)| (format!("{cte_name}.{col}"), val.clone()))
+                        .collect()
+                })
+                .collect();
             ext.tables.insert(cte_name, cte_rows);
         }
         Some(ext)
@@ -281,19 +323,22 @@ fn execute_query_inner(
     match query.body.as_ref() {
         SetExpr::Select(select) => execute_select(select, query, eff_catalog, outer_row),
         SetExpr::Query(inner) => execute_query_inner(inner, eff_catalog, outer_row),
-        SetExpr::SetOperation { op, left, right, set_quantifier } => {
-            execute_set_op(
-                op,
-                set_quantifier,
-                left,
-                right,
-                eff_catalog,
-                outer_row,
-                &query.order_by,
-                query.limit.as_ref(),
-                query.offset.as_ref(),
-            )
-        }
+        SetExpr::SetOperation {
+            op,
+            left,
+            right,
+            set_quantifier,
+        } => execute_set_op(
+            op,
+            set_quantifier,
+            left,
+            right,
+            eff_catalog,
+            outer_row,
+            &query.order_by,
+            query.limit.as_ref(),
+            query.offset.as_ref(),
+        ),
         _ => Err(QueryError::Unsupported("set expression type".into())),
     }
 }
@@ -325,7 +370,9 @@ fn execute_select_bare(
     outer_row: &Row,
 ) -> Result<QueryResult, QueryError> {
     // Step 1: Extract equi-join predicates from WHERE first, then resolve FROM.
-    let equi_pairs: Vec<(String, String)> = select.selection.as_ref()
+    let equi_pairs: Vec<(String, String)> = select
+        .selection
+        .as_ref()
         .map(extract_equi_pairs)
         .unwrap_or_default();
     let mut rows = resolve_from(
@@ -398,10 +445,12 @@ fn apply_limit_offset(
     limit: Option<&Expr>,
     offset: Option<&Offset>,
 ) -> Result<QueryResult, QueryError> {
-    let off = offset.and_then(|o| match &o.value {
-        Expr::Value(Value::Number(s, _)) => s.parse::<usize>().ok(),
-        _ => None,
-    }).unwrap_or(0);
+    let off = offset
+        .and_then(|o| match &o.value {
+            Expr::Value(Value::Number(s, _)) => s.parse::<usize>().ok(),
+            _ => None,
+        })
+        .unwrap_or(0);
     let lim = limit.and_then(|e| match e {
         Expr::Value(Value::Number(s, _)) => s.parse::<usize>().ok(),
         _ => None,
@@ -414,7 +463,10 @@ fn apply_limit_offset(
     if let Some(n) = lim {
         rows.truncate(n);
     }
-    Ok(QueryResult { columns: cols, rows })
+    Ok(QueryResult {
+        columns: cols,
+        rows,
+    })
 }
 
 // ── UNION / INTERSECT / EXCEPT ────────────────────────────────────────────────
@@ -470,7 +522,10 @@ fn execute_set_op(
         });
     }
 
-    let mut result = QueryResult { columns: lres.columns, rows };
+    let mut result = QueryResult {
+        columns: lres.columns,
+        rows,
+    };
 
     if !order_by.is_empty() {
         result = apply_order_by(result, order_by)?;
@@ -488,9 +543,22 @@ fn execute_setexpr(
     match expr {
         SetExpr::Select(select) => execute_select_bare(select, catalog, outer_row),
         SetExpr::Query(inner) => execute_query_inner(inner, catalog, outer_row),
-        SetExpr::SetOperation { op, left, right, set_quantifier } => {
-            execute_set_op(op, set_quantifier, left, right, catalog, outer_row, &[], None, None)
-        }
+        SetExpr::SetOperation {
+            op,
+            left,
+            right,
+            set_quantifier,
+        } => execute_set_op(
+            op,
+            set_quantifier,
+            left,
+            right,
+            catalog,
+            outer_row,
+            &[],
+            None,
+            None,
+        ),
         _ => Err(QueryError::Unsupported(
             "set expression in combination query".into(),
         )),
@@ -520,9 +588,7 @@ fn apply_window_functions(
 ) -> Result<Vec<Row>, QueryError> {
     for item in projection {
         let (alias, func) = match item {
-            SelectItem::UnnamedExpr(Expr::Function(f)) => {
-                (f.name.to_string().to_lowercase(), f)
-            }
+            SelectItem::UnnamedExpr(Expr::Function(f)) => (f.name.to_string().to_lowercase(), f),
             SelectItem::ExprWithAlias {
                 expr: Expr::Function(f),
                 alias,
@@ -534,7 +600,7 @@ fn apply_window_functions(
         }
         let fname = func.name.to_string().to_uppercase();
         let values = compute_window_values(&fname, func, &rows, catalog, outer_row)?;
-        for (row, val) in rows.iter_mut().zip(values.into_iter()) {
+        for (row, val) in rows.iter_mut().zip(values) {
             row.push((alias.clone(), val));
         }
     }
@@ -575,7 +641,11 @@ fn compute_window_values(
             let va = eval_expr(&ob.expr, &rows[a], catalog, outer_row).unwrap_or(ScalarVal::Null);
             let vb = eval_expr(&ob.expr, &rows[b], catalog, outer_row).unwrap_or(ScalarVal::Null);
             let ord = va.cmp_val(&vb).unwrap_or(Ordering::Equal);
-            let ord = if ob.asc == Some(false) { ord.reverse() } else { ord };
+            let ord = if ob.asc == Some(false) {
+                ord.reverse()
+            } else {
+                ord
+            };
             if ord != Ordering::Equal {
                 return ord;
             }
@@ -590,9 +660,7 @@ fn compute_window_values(
     while i < sorted_indices.len() {
         let part_key = get_partition_key(&rows[sorted_indices[i]]);
         let mut j = i + 1;
-        while j < sorted_indices.len()
-            && get_partition_key(&rows[sorted_indices[j]]) == part_key
-        {
+        while j < sorted_indices.len() && get_partition_key(&rows[sorted_indices[j]]) == part_key {
             j += 1;
         }
         let part_sorted = &sorted_indices[i..j];
@@ -635,9 +703,9 @@ fn compute_window_values(
                 let lag_offset: i64 = func_args
                     .get(1)
                     .and_then(|fa| match fa {
-                        FunctionArg::Unnamed(FunctionArgExpr::Expr(
-                            Expr::Value(Value::Number(s, _)),
-                        )) => s.parse::<i64>().ok(),
+                        FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(
+                            Value::Number(s, _),
+                        ))) => s.parse::<i64>().ok(),
                         _ => None,
                     })
                     .unwrap_or(1);
@@ -665,9 +733,7 @@ fn compute_window_values(
                 }
             }
             other => {
-                return Err(QueryError::Unsupported(format!(
-                    "window function: {other}"
-                )));
+                return Err(QueryError::Unsupported(format!("window function: {other}")));
             }
         }
 
@@ -693,9 +759,7 @@ fn extract_window_spec(func: &Function) -> (Vec<Expr>, Vec<OrderByExpr>) {
 /// Extract (partition_by, order_by) from a `WindowType` value.
 /// In sqlparser >= 0.44, `Function.over` is `Option<WindowType>` where
 /// `WindowType::WindowSpec(spec)` carries the details we need.
-fn extract_window_type_spec(
-    over: &sqlparser::ast::WindowType,
-) -> (Vec<Expr>, Vec<OrderByExpr>) {
+fn extract_window_type_spec(over: &sqlparser::ast::WindowType) -> (Vec<Expr>, Vec<OrderByExpr>) {
     match over {
         sqlparser::ast::WindowType::WindowSpec(spec) => {
             (spec.partition_by.clone(), spec.order_by.clone())
@@ -710,21 +774,33 @@ fn extract_window_type_spec(
 /// Only traverses AND nodes; stops at anything more complex.
 fn extract_equi_pairs(expr: &Expr) -> Vec<(String, String)> {
     match expr {
-        Expr::BinaryOp { left, op: BinaryOperator::Eq, right } => {
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::Eq,
+            right,
+        } => {
             if let (Some(l), Some(r)) = (expr_col_ref(left), expr_col_ref(right)) {
                 vec![(l, r)]
             } else {
                 vec![]
             }
         }
-        Expr::BinaryOp { left, op: BinaryOperator::And, right } => {
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::And,
+            right,
+        } => {
             let mut v = extract_equi_pairs(left);
             v.extend(extract_equi_pairs(right));
             v.sort();
             v.dedup();
             v
         }
-        Expr::BinaryOp { left, op: BinaryOperator::Or, right } => {
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::Or,
+            right,
+        } => {
             let left_pairs = extract_equi_pairs(left);
             let right_pairs = extract_equi_pairs(right);
             if left_pairs.is_empty() || right_pairs.is_empty() {
@@ -757,9 +833,13 @@ fn canonical_pair(a: String, b: String) -> (String, String) {
 fn expr_col_ref(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Identifier(id) => Some(id.value.to_lowercase()),
-        Expr::CompoundIdentifier(parts) => {
-            Some(parts.iter().map(|p| p.value.to_lowercase()).collect::<Vec<_>>().join("."))
-        }
+        Expr::CompoundIdentifier(parts) => Some(
+            parts
+                .iter()
+                .map(|p| p.value.to_lowercase())
+                .collect::<Vec<_>>()
+                .join("."),
+        ),
         _ => None,
     }
 }
@@ -782,12 +862,12 @@ fn col_matches(name: &str, qualified: &str) -> bool {
 /// Deterministic string key for hashing a ScalarVal.
 fn scalar_hash_key(val: &ScalarVal) -> String {
     match val {
-        ScalarVal::Int(n)   => format!("i{n}"),
+        ScalarVal::Int(n) => format!("i{n}"),
         ScalarVal::Float(f) => format!("f{f:.10}"),
-        ScalarVal::Text(s)  => format!("t{s}"),
-        ScalarVal::Date(d)  => format!("d{d}"),
-        ScalarVal::Bool(b)  => format!("b{b}"),
-        ScalarVal::Null     => "null".to_string(),
+        ScalarVal::Text(s) => format!("t{s}"),
+        ScalarVal::Date(d) => format!("d{d}"),
+        ScalarVal::Bool(b) => format!("b{b}"),
+        ScalarVal::Null => "null".to_string(),
     }
 }
 
@@ -799,26 +879,44 @@ fn find_join_key(
     new_rows: &[Row],
     equi_pairs: &[(String, String)],
 ) -> Option<(String, String)> {
-    let rcols: Vec<String> = result.first()
+    let rcols: Vec<String> = result
+        .first()
         .map(|r| r.iter().map(|(k, _)| k.clone()).collect())
         .unwrap_or_default();
-    let ncols: Vec<String> = new_rows.first()
+    let ncols: Vec<String> = new_rows
+        .first()
         .map(|r| r.iter().map(|(k, _)| k.clone()).collect())
         .unwrap_or_default();
 
     for (l, r) in equi_pairs {
         let l_in_result = rcols.iter().any(|c| col_matches(l, c));
-        let r_in_new    = ncols.iter().any(|c| col_matches(r, c));
+        let r_in_new = ncols.iter().any(|c| col_matches(r, c));
         if l_in_result && r_in_new {
-            let lk = rcols.iter().find(|c| col_matches(l, c)).cloned().unwrap_or_else(|| l.clone());
-            let rk = ncols.iter().find(|c| col_matches(r, c)).cloned().unwrap_or_else(|| r.clone());
+            let lk = rcols
+                .iter()
+                .find(|c| col_matches(l, c))
+                .cloned()
+                .unwrap_or_else(|| l.clone());
+            let rk = ncols
+                .iter()
+                .find(|c| col_matches(r, c))
+                .cloned()
+                .unwrap_or_else(|| r.clone());
             return Some((lk, rk));
         }
         let r_in_result = rcols.iter().any(|c| col_matches(r, c));
-        let l_in_new    = ncols.iter().any(|c| col_matches(l, c));
+        let l_in_new = ncols.iter().any(|c| col_matches(l, c));
         if r_in_result && l_in_new {
-            let lk = rcols.iter().find(|c| col_matches(r, c)).cloned().unwrap_or_else(|| r.clone());
-            let rk = ncols.iter().find(|c| col_matches(l, c)).cloned().unwrap_or_else(|| l.clone());
+            let lk = rcols
+                .iter()
+                .find(|c| col_matches(r, c))
+                .cloned()
+                .unwrap_or_else(|| r.clone());
+            let rk = ncols
+                .iter()
+                .find(|c| col_matches(l, c))
+                .cloned()
+                .unwrap_or_else(|| l.clone());
             return Some((lk, rk));
         }
     }
@@ -928,9 +1026,7 @@ fn resolve_from(
             } else {
                 // For explicit INNER JOIN ... ON, extract any equi-predicate from
                 // the ON clause and use hash join if possible.
-                let join_equi = on_expr.as_ref()
-                    .map(extract_equi_pairs)
-                    .unwrap_or_default();
+                let join_equi = on_expr.as_ref().map(extract_equi_pairs).unwrap_or_default();
                 if let Some((lk, rk)) = find_join_key(&result, &join_rows, &join_equi) {
                     let mut combined = hash_join_keyed(result, join_rows, &lk, &rk)?;
                     // Apply any remaining non-equi predicates from the ON clause.
@@ -960,21 +1056,41 @@ fn resolve_table_factor(
     match factor {
         TableFactor::Table { name, alias, .. } => {
             let tname = name.to_string().to_lowercase();
-            let alias_str = alias.as_ref().map(|a| a.name.value.clone()).unwrap_or_else(|| tname.clone());
-            let rows = catalog.tables.get(&tname)
+            let alias_str = alias
+                .as_ref()
+                .map(|a| a.name.value.clone())
+                .unwrap_or_else(|| tname.clone());
+            let rows = catalog
+                .tables
+                .get(&tname)
                 .ok_or_else(|| QueryError::TableNotFound(tname.clone()))?;
             // Re-qualify column names with alias.
-            Ok(rows.iter().map(|row| qualify_row(row, &alias_str)).collect())
+            Ok(rows
+                .iter()
+                .map(|row| qualify_row(row, &alias_str))
+                .collect())
         }
-        TableFactor::Derived { subquery, alias, .. } => {
-            let alias_str = alias.as_ref().map(|a| a.name.value.clone()).unwrap_or_else(|| "derived".to_string());
+        TableFactor::Derived {
+            subquery, alias, ..
+        } => {
+            let alias_str = alias
+                .as_ref()
+                .map(|a| a.name.value.clone())
+                .unwrap_or_else(|| "derived".to_string());
             let result = execute_query_inner(subquery, catalog, outer_row)?;
             // Convert QueryResult back to rows, qualified with alias.
-            Ok(result.rows.iter().map(|row_vals| {
-                result.columns.iter().zip(row_vals)
-                    .map(|(col, val)| (format!("{alias_str}.{col}"), val.clone()))
-                    .collect()
-            }).collect())
+            Ok(result
+                .rows
+                .iter()
+                .map(|row_vals| {
+                    result
+                        .columns
+                        .iter()
+                        .zip(row_vals)
+                        .map(|(col, val)| (format!("{alias_str}.{col}"), val.clone()))
+                        .collect()
+                })
+                .collect())
         }
         _ => Err(QueryError::Unsupported("table factor type".into())),
     }
@@ -982,7 +1098,11 @@ fn resolve_table_factor(
 
 fn split_conjuncts<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
     match expr {
-        Expr::BinaryOp { left, op: BinaryOperator::And, right } => {
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::And,
+            right,
+        } => {
             split_conjuncts(left, out);
             split_conjuncts(right, out);
         }
@@ -1027,9 +1147,9 @@ fn expr_refs_only_row(expr: &Expr, row: &Row) -> bool {
             ..
         } => expr_refs_only_row(inner, row) && expr_refs_only_row(pattern, row),
         Expr::IsNull(inner) | Expr::IsNotNull(inner) => expr_refs_only_row(inner, row),
-        Expr::InList { expr: inner, list, .. } => {
-            expr_refs_only_row(inner, row) && list.iter().all(|e| expr_refs_only_row(e, row))
-        }
+        Expr::InList {
+            expr: inner, list, ..
+        } => expr_refs_only_row(inner, row) && list.iter().all(|e| expr_refs_only_row(e, row)),
         Expr::Case {
             operand,
             conditions,
@@ -1100,7 +1220,7 @@ fn qualify_row(row: &Row, alias: &str) -> Row {
     row.iter()
         .map(|(name, val)| {
             // Strip any existing prefix and re-qualify.
-            let bare = name.rfind('.').map(|i| &name[i+1..]).unwrap_or(name);
+            let bare = name.rfind('.').map(|i| &name[i + 1..]).unwrap_or(name);
             (format!("{alias}.{bare}"), val.clone())
         })
         .collect()
@@ -1140,9 +1260,14 @@ fn inner_join(
     }
     let combined = cross_product(left, right)?;
     if let Some(cond) = on {
-        Ok(combined.into_iter().filter(|row| {
-            eval_expr(cond, row, catalog, outer_row).map(|v| v.truthy()).unwrap_or(false)
-        }).collect())
+        Ok(combined
+            .into_iter()
+            .filter(|row| {
+                eval_expr(cond, row, catalog, outer_row)
+                    .map(|v| v.truthy())
+                    .unwrap_or(false)
+            })
+            .collect())
     } else {
         Ok(combined)
     }
@@ -1156,7 +1281,9 @@ fn left_outer_join(
     outer_row: &Row,
 ) -> Result<Vec<Row>, QueryError> {
     let null_right: Row = if let Some(r) = right.first() {
-        r.iter().map(|(k, _)| (k.clone(), ScalarVal::Null)).collect()
+        r.iter()
+            .map(|(k, _)| (k.clone(), ScalarVal::Null))
+            .collect()
     } else {
         vec![]
     };
@@ -1171,9 +1298,13 @@ fn left_outer_join(
             }
             let mut combined = lrow.clone();
             combined.extend_from_slice(rrow);
-            let keep = on.map(|cond| {
-                eval_expr(cond, &combined, catalog, outer_row).map(|v| v.truthy()).unwrap_or(false)
-            }).unwrap_or(true);
+            let keep = on
+                .map(|cond| {
+                    eval_expr(cond, &combined, catalog, outer_row)
+                        .map(|v| v.truthy())
+                        .unwrap_or(false)
+                })
+                .unwrap_or(true);
             if keep {
                 out.push(combined);
                 matched = true;
@@ -1190,7 +1321,6 @@ fn left_outer_join(
 
 // ── Aggregation ───────────────────────────────────────────────────────────────
 
-
 fn perform_groupby(
     select: &Select,
     rows: &[Row],
@@ -1206,7 +1336,8 @@ fn perform_groupby(
         groups.push((vec![], rows.iter().collect()));
     } else {
         for row in rows {
-            let key: Vec<ScalarVal> = group_cols.iter()
+            let key: Vec<ScalarVal> = group_cols
+                .iter()
                 .map(|e| eval_expr(e, row, catalog, outer_row).unwrap_or(ScalarVal::Null))
                 .collect();
             let key_strings: Vec<String> = key.iter().map(|v| format!("{v:?}")).collect();
@@ -1276,7 +1407,8 @@ fn eval_group_expr(
             let name = func.name.to_string().to_uppercase();
             match name.as_str() {
                 "SUM" | "COUNT" | "AVG" | "MIN" | "MAX" => {
-                    Ok(eval_aggregate(expr, group_rows, catalog, outer_row).unwrap_or(ScalarVal::Null))
+                    Ok(eval_aggregate(expr, group_rows, catalog, outer_row)
+                        .unwrap_or(ScalarVal::Null))
                 }
                 _ => eval_expr(expr, row, catalog, outer_row),
             }
@@ -1327,13 +1459,31 @@ fn eval_binary_values(
             }
             Ok(ScalarVal::Float(lv.as_f64().unwrap_or(0.0) % b))
         }
-        BinaryOperator::StringConcat => Ok(ScalarVal::Text(scalar_to_string(&lv) + &scalar_to_string(&rv))),
+        BinaryOperator::StringConcat => Ok(ScalarVal::Text(
+            scalar_to_string(&lv) + &scalar_to_string(&rv),
+        )),
         BinaryOperator::Eq => Ok(ScalarVal::Bool(lv == rv)),
         BinaryOperator::NotEq => Ok(ScalarVal::Bool(lv != rv)),
-        BinaryOperator::Gt => Ok(ScalarVal::Bool(lv.cmp_val(&rv).map(|c| c == std::cmp::Ordering::Greater).unwrap_or(false))),
-        BinaryOperator::Lt => Ok(ScalarVal::Bool(lv.cmp_val(&rv).map(|c| c == std::cmp::Ordering::Less).unwrap_or(false))),
-        BinaryOperator::GtEq => Ok(ScalarVal::Bool(lv.cmp_val(&rv).map(|c| c != std::cmp::Ordering::Less).unwrap_or(false))),
-        BinaryOperator::LtEq => Ok(ScalarVal::Bool(lv.cmp_val(&rv).map(|c| c != std::cmp::Ordering::Greater).unwrap_or(false))),
+        BinaryOperator::Gt => Ok(ScalarVal::Bool(
+            lv.cmp_val(&rv)
+                .map(|c| c == std::cmp::Ordering::Greater)
+                .unwrap_or(false),
+        )),
+        BinaryOperator::Lt => Ok(ScalarVal::Bool(
+            lv.cmp_val(&rv)
+                .map(|c| c == std::cmp::Ordering::Less)
+                .unwrap_or(false),
+        )),
+        BinaryOperator::GtEq => Ok(ScalarVal::Bool(
+            lv.cmp_val(&rv)
+                .map(|c| c != std::cmp::Ordering::Less)
+                .unwrap_or(false),
+        )),
+        BinaryOperator::LtEq => Ok(ScalarVal::Bool(
+            lv.cmp_val(&rv)
+                .map(|c| c != std::cmp::Ordering::Greater)
+                .unwrap_or(false),
+        )),
         BinaryOperator::And => Ok(ScalarVal::Bool(lv.truthy() && rv.truthy())),
         BinaryOperator::Or => Ok(ScalarVal::Bool(lv.truthy() || rv.truthy())),
         _ => Err(QueryError::Unsupported(format!("binary op: {op}"))),
@@ -1351,7 +1501,12 @@ fn eval_aggregate(
             let fname = func.name.to_string().to_uppercase();
             match fname.as_str() {
                 "COUNT" => {
-                    let is_star = func_args(&func.args).iter().any(|a| matches!(a, sqlparser::ast::FunctionArg::Unnamed(FunctionArgExpr::Wildcard)));
+                    let is_star = func_args(&func.args).iter().any(|a| {
+                        matches!(
+                            a,
+                            sqlparser::ast::FunctionArg::Unnamed(FunctionArgExpr::Wildcard)
+                        )
+                    });
                     if is_star {
                         return Some(ScalarVal::Int(group_rows.len() as i64));
                     }
@@ -1359,9 +1514,15 @@ fn eval_aggregate(
                         sqlparser::ast::FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => Some(e),
                         _ => None,
                     })?;
-                    let cnt = group_rows.iter().filter(|r| {
-                        !matches!(eval_expr(arg_expr, r, catalog, outer_row), Ok(ScalarVal::Null) | Err(_))
-                    }).count();
+                    let cnt = group_rows
+                        .iter()
+                        .filter(|r| {
+                            !matches!(
+                                eval_expr(arg_expr, r, catalog, outer_row),
+                                Ok(ScalarVal::Null) | Err(_)
+                            )
+                        })
+                        .count();
                     Some(ScalarVal::Int(cnt as i64))
                 }
                 "SUM" => {
@@ -1369,9 +1530,10 @@ fn eval_aggregate(
                         sqlparser::ast::FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => Some(e),
                         _ => None,
                     })?;
-                    let vals: Vec<f64> = group_rows.iter().filter_map(|r| {
-                        eval_expr(arg_expr, r, catalog, outer_row).ok()?.as_f64()
-                    }).collect();
+                    let vals: Vec<f64> = group_rows
+                        .iter()
+                        .filter_map(|r| eval_expr(arg_expr, r, catalog, outer_row).ok()?.as_f64())
+                        .collect();
                     if vals.is_empty() {
                         Some(ScalarVal::Null)
                     } else {
@@ -1383,11 +1545,17 @@ fn eval_aggregate(
                         sqlparser::ast::FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => Some(e),
                         _ => None,
                     })?;
-                    let vals: Vec<f64> = group_rows.iter().filter_map(|r| {
-                        eval_expr(arg_expr, r, catalog, outer_row).ok()?.as_f64()
-                    }).collect();
-                    if vals.is_empty() { Some(ScalarVal::Null) }
-                    else { Some(ScalarVal::Float(vals.iter().sum::<f64>() / vals.len() as f64)) }
+                    let vals: Vec<f64> = group_rows
+                        .iter()
+                        .filter_map(|r| eval_expr(arg_expr, r, catalog, outer_row).ok()?.as_f64())
+                        .collect();
+                    if vals.is_empty() {
+                        Some(ScalarVal::Null)
+                    } else {
+                        Some(ScalarVal::Float(
+                            vals.iter().sum::<f64>() / vals.len() as f64,
+                        ))
+                    }
                 }
                 "MIN" => {
                     let arg_expr = func_args(&func.args).first().and_then(|a| match a {
@@ -1435,76 +1603,117 @@ fn apply_projection(
     outer_row: &Row,
 ) -> Result<QueryResult, QueryError> {
     // Build column name list from first row evaluation.
-    let cols: Vec<String> = items.iter().flat_map(|item| match item {
-        SelectItem::Wildcard(_) => rows.first()
-            .map(|r| r.iter().map(|(k, _)| {
-                k.rfind('.').map(|i| k[i+1..].to_string()).unwrap_or_else(|| k.clone())
-            }).collect::<Vec<_>>())
-            .unwrap_or_default(),
-        SelectItem::QualifiedWildcard(name, _) => {
-            let pfx = name.to_string().to_lowercase();
-            rows.first()
-                .map(|r| r.iter()
-                    .filter(|(k, _)| k.starts_with(&format!("{pfx}.")))
-                    .map(|(k, _)| k.rfind('.').map(|i| k[i+1..].to_string()).unwrap_or_else(|| k.clone()))
-                    .collect::<Vec<_>>())
-                .unwrap_or_default()
-        }
-        SelectItem::UnnamedExpr(e) => vec![expr_alias(e)],
-        SelectItem::ExprWithAlias { alias, .. } => vec![alias.value.clone()],
-    }).collect();
-
-    let result_rows: Vec<Vec<ScalarVal>> = rows.iter().map(|row| {
-        items.iter().flat_map(|item| match item {
-            SelectItem::Wildcard(_) => row.iter().map(|(_, v)| v.clone()).collect::<Vec<_>>(),
+    let cols: Vec<String> = items
+        .iter()
+        .flat_map(|item| match item {
+            SelectItem::Wildcard(_) => rows
+                .first()
+                .map(|r| {
+                    r.iter()
+                        .map(|(k, _)| {
+                            k.rfind('.')
+                                .map(|i| k[i + 1..].to_string())
+                                .unwrap_or_else(|| k.clone())
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
             SelectItem::QualifiedWildcard(name, _) => {
                 let pfx = name.to_string().to_lowercase();
-                row.iter()
-                    .filter(|(k, _)| k.starts_with(&format!("{pfx}.")))
-                    .map(|(_, v)| v.clone())
-                    .collect()
+                rows.first()
+                    .map(|r| {
+                        r.iter()
+                            .filter(|(k, _)| k.starts_with(&format!("{pfx}.")))
+                            .map(|(k, _)| {
+                                k.rfind('.')
+                                    .map(|i| k[i + 1..].to_string())
+                                    .unwrap_or_else(|| k.clone())
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
             }
-            SelectItem::UnnamedExpr(e) => {
-                // If we already computed the aggregate in perform_groupby, fetch from row by alias.
-                let alias = expr_alias(e);
-                if let Some(v) = row_get(row, &alias) {
-                    vec![v.clone()]
-                } else {
-                    vec![eval_expr(e, row, catalog, outer_row).unwrap_or(ScalarVal::Null)]
-                }
-            }
-            SelectItem::ExprWithAlias { expr, alias } => {
-                let v = if let Some(v) = row_get(row, &alias.value) {
-                    v.clone()
-                } else {
-                    eval_expr(expr, row, catalog, outer_row).unwrap_or(ScalarVal::Null)
-                };
-                vec![v]
-            }
-        }).collect()
-    }).collect();
+            SelectItem::UnnamedExpr(e) => vec![expr_alias(e)],
+            SelectItem::ExprWithAlias { alias, .. } => vec![alias.value.clone()],
+        })
+        .collect();
 
-    Ok(QueryResult { columns: cols, rows: result_rows })
+    let result_rows: Vec<Vec<ScalarVal>> = rows
+        .iter()
+        .map(|row| {
+            items
+                .iter()
+                .flat_map(|item| match item {
+                    SelectItem::Wildcard(_) => {
+                        row.iter().map(|(_, v)| v.clone()).collect::<Vec<_>>()
+                    }
+                    SelectItem::QualifiedWildcard(name, _) => {
+                        let pfx = name.to_string().to_lowercase();
+                        row.iter()
+                            .filter(|(k, _)| k.starts_with(&format!("{pfx}.")))
+                            .map(|(_, v)| v.clone())
+                            .collect()
+                    }
+                    SelectItem::UnnamedExpr(e) => {
+                        // If we already computed the aggregate in perform_groupby, fetch from row by alias.
+                        let alias = expr_alias(e);
+                        if let Some(v) = row_get(row, &alias) {
+                            vec![v.clone()]
+                        } else {
+                            vec![eval_expr(e, row, catalog, outer_row).unwrap_or(ScalarVal::Null)]
+                        }
+                    }
+                    SelectItem::ExprWithAlias { expr, alias } => {
+                        let v = if let Some(v) = row_get(row, &alias.value) {
+                            v.clone()
+                        } else {
+                            eval_expr(expr, row, catalog, outer_row).unwrap_or(ScalarVal::Null)
+                        };
+                        vec![v]
+                    }
+                })
+                .collect()
+        })
+        .collect();
+
+    Ok(QueryResult {
+        columns: cols,
+        rows: result_rows,
+    })
 }
 
 // ── ORDER BY ──────────────────────────────────────────────────────────────────
 
-fn apply_order_by(mut result: QueryResult, order: &[OrderByExpr]) -> Result<QueryResult, QueryError> {
+fn apply_order_by(
+    mut result: QueryResult,
+    order: &[OrderByExpr],
+) -> Result<QueryResult, QueryError> {
     let cols = result.columns.clone();
     result.rows.sort_by(|a, b| {
         for ob in order {
             let idx = match &ob.expr {
                 Expr::Identifier(id) => cols.iter().position(|c| c.eq_ignore_ascii_case(&id.value)),
-                Expr::Value(Value::Number(s, _)) => s.parse::<usize>().ok().and_then(|n| if n > 0 { Some(n-1) } else { None }),
+                Expr::Value(Value::Number(s, _)) => {
+                    s.parse::<usize>()
+                        .ok()
+                        .and_then(|n| if n > 0 { Some(n - 1) } else { None })
+                }
                 _ => None,
             };
             let (va, vb) = if let Some(i) = idx {
-                (a.get(i).unwrap_or(&ScalarVal::Null), b.get(i).unwrap_or(&ScalarVal::Null))
+                (
+                    a.get(i).unwrap_or(&ScalarVal::Null),
+                    b.get(i).unwrap_or(&ScalarVal::Null),
+                )
             } else {
                 continue;
             };
             let cmp = va.cmp_val(vb).unwrap_or(std::cmp::Ordering::Equal);
-            let cmp = if ob.asc == Some(false) { cmp.reverse() } else { cmp };
+            let cmp = if ob.asc == Some(false) {
+                cmp.reverse()
+            } else {
+                cmp
+            };
             if cmp != std::cmp::Ordering::Equal {
                 return cmp;
             }
@@ -1518,7 +1727,12 @@ fn dedup_result(mut result: QueryResult) -> QueryResult {
     let mut seen: Vec<Vec<String>> = Vec::new();
     result.rows.retain(|row| {
         let key: Vec<String> = row.iter().map(|v| format!("{v:?}")).collect();
-        if seen.contains(&key) { false } else { seen.push(key); true }
+        if seen.contains(&key) {
+            false
+        } else {
+            seen.push(key);
+            true
+        }
     });
     result
 }
@@ -1554,7 +1768,11 @@ fn eval_expr(
                 .ok_or_else(|| QueryError::ColumnNotFound(name.to_string()))
         }
         Expr::CompoundIdentifier(parts) => {
-            let qualified = parts.iter().map(|p| p.value.as_str()).collect::<Vec<_>>().join(".");
+            let qualified = parts
+                .iter()
+                .map(|p| p.value.as_str())
+                .collect::<Vec<_>>()
+                .join(".");
             let bare = parts.last().map(|p| p.value.as_str()).unwrap_or("");
             row_get(row, &qualified)
                 .or_else(|| row_get(row, bare))
@@ -1593,17 +1811,32 @@ fn eval_expr(
         }
 
         // BETWEEN
-        Expr::Between { expr: inner, low, high, negated } => {
+        Expr::Between {
+            expr: inner,
+            low,
+            high,
+            negated,
+        } => {
             let v = eval_expr(inner, row, catalog, outer_row)?;
             let lo = eval_expr(low, row, catalog, outer_row)?;
             let hi = eval_expr(high, row, catalog, outer_row)?;
-            let in_range = v.cmp_val(&lo).map(|c| c != std::cmp::Ordering::Less).unwrap_or(false)
-                && v.cmp_val(&hi).map(|c| c != std::cmp::Ordering::Greater).unwrap_or(false);
+            let in_range = v
+                .cmp_val(&lo)
+                .map(|c| c != std::cmp::Ordering::Less)
+                .unwrap_or(false)
+                && v.cmp_val(&hi)
+                    .map(|c| c != std::cmp::Ordering::Greater)
+                    .unwrap_or(false);
             Ok(ScalarVal::Bool(if *negated { !in_range } else { in_range }))
         }
 
         // LIKE / NOT LIKE
-        Expr::Like { expr: inner, pattern, negated, .. } => {
+        Expr::Like {
+            expr: inner,
+            pattern,
+            negated,
+            ..
+        } => {
             let v = eval_expr(inner, row, catalog, outer_row)?;
             let p = eval_expr(pattern, row, catalog, outer_row)?;
             if let (ScalarVal::Text(s), ScalarVal::Text(pat)) = (&v, &p) {
@@ -1614,7 +1847,12 @@ fn eval_expr(
             }
         }
         // ILIKE (case-insensitive LIKE)
-        Expr::ILike { expr: inner, pattern, negated, .. } => {
+        Expr::ILike {
+            expr: inner,
+            pattern,
+            negated,
+            ..
+        } => {
             let v = eval_expr(inner, row, catalog, outer_row)?;
             let p = eval_expr(pattern, row, catalog, outer_row)?;
             if let (ScalarVal::Text(s), ScalarVal::Text(pat)) = (&v, &p) {
@@ -1626,17 +1864,30 @@ fn eval_expr(
         }
 
         // IN list / IN subquery
-        Expr::InList { expr: inner, list, negated } => {
+        Expr::InList {
+            expr: inner,
+            list,
+            negated,
+        } => {
             let v = eval_expr(inner, row, catalog, outer_row)?;
             let found = list.iter().any(|e| {
-                eval_expr(e, row, catalog, outer_row).map(|ev| ev == v).unwrap_or(false)
+                eval_expr(e, row, catalog, outer_row)
+                    .map(|ev| ev == v)
+                    .unwrap_or(false)
             });
             Ok(ScalarVal::Bool(if *negated { !found } else { found }))
         }
-        Expr::InSubquery { expr: inner, subquery, negated } => {
+        Expr::InSubquery {
+            expr: inner,
+            subquery,
+            negated,
+        } => {
             let v = eval_expr(inner, row, catalog, outer_row)?;
             let result = execute_query_inner(subquery, catalog, row)?;
-            let found = result.rows.iter().any(|r| r.first().map(|sv| sv == &v).unwrap_or(false));
+            let found = result
+                .rows
+                .iter()
+                .any(|r| r.first().map(|sv| sv == &v).unwrap_or(false));
             Ok(ScalarVal::Bool(if *negated { !found } else { found }))
         }
 
@@ -1658,7 +1909,12 @@ fn eval_expr(
         }
 
         // CASE WHEN
-        Expr::Case { operand, conditions, results, else_result } => {
+        Expr::Case {
+            operand,
+            conditions,
+            results,
+            else_result,
+        } => {
             for (cond, res) in conditions.iter().zip(results.iter()) {
                 let matches = if let Some(op) = operand {
                     let lhs = eval_expr(op, row, catalog, outer_row)?;
@@ -1685,7 +1941,11 @@ fn eval_expr(
         Expr::Function(func) => eval_function(func, row, catalog, outer_row),
 
         // CAST
-        Expr::Cast { expr: inner, data_type, .. } => {
+        Expr::Cast {
+            expr: inner,
+            data_type,
+            ..
+        } => {
             let v = eval_expr(inner, row, catalog, outer_row)?;
             match data_type {
                 sqlparser::ast::DataType::Float(_) | sqlparser::ast::DataType::Double => {
@@ -1703,7 +1963,9 @@ fn eval_expr(
         }
 
         // EXTRACT(field FROM expr)
-        Expr::Extract { field, expr: inner, .. } => {
+        Expr::Extract {
+            field, expr: inner, ..
+        } => {
             let v = eval_expr(inner, row, catalog, outer_row)?;
             let yyyymmdd = match &v {
                 ScalarVal::Date(d) => *d,
@@ -1711,9 +1973,9 @@ fn eval_expr(
                 _ => return Ok(ScalarVal::Null),
             };
             let result = match field {
-                DateTimeField::Year  => yyyymmdd / 10_000,
+                DateTimeField::Year => yyyymmdd / 10_000,
                 DateTimeField::Month => (yyyymmdd / 100) % 100,
-                DateTimeField::Day   => yyyymmdd % 100,
+                DateTimeField::Day => yyyymmdd % 100,
                 _ => return Ok(ScalarVal::Null),
             };
             Ok(ScalarVal::Int(result as i64))
@@ -1722,8 +1984,11 @@ fn eval_expr(
         // Trim
         Expr::Trim { expr: inner, .. } => {
             let v = eval_expr(inner, row, catalog, outer_row)?;
-            if let ScalarVal::Text(s) = v { Ok(ScalarVal::Text(s.trim().to_string())) }
-            else { Ok(v) }
+            if let ScalarVal::Text(s) = v {
+                Ok(ScalarVal::Text(s.trim().to_string()))
+            } else {
+                Ok(v)
+            }
         }
 
         _ => Err(QueryError::Unsupported(format!("expr: {expr}"))),
@@ -1733,9 +1998,13 @@ fn eval_expr(
 fn eval_value(v: &Value) -> ScalarVal {
     match v {
         Value::Number(s, _) => {
-            if let Ok(n) = s.parse::<i64>() { ScalarVal::Int(n) }
-            else if let Ok(f) = s.parse::<f64>() { ScalarVal::Float(f) }
-            else { ScalarVal::Null }
+            if let Ok(n) = s.parse::<i64>() {
+                ScalarVal::Int(n)
+            } else if let Ok(f) = s.parse::<f64>() {
+                ScalarVal::Float(f)
+            } else {
+                ScalarVal::Null
+            }
         }
         // Bare string literals: keep as Text. Date casting happens only via TypedString.
         Value::SingleQuotedString(s) | Value::DoubleQuotedString(s) => ScalarVal::Text(s.clone()),
@@ -1758,13 +2027,17 @@ fn eval_binary(
     match op {
         BinaryOperator::And => {
             let lv = eval_expr(left, row, catalog, outer_row)?;
-            if !lv.truthy() { return Ok(ScalarVal::Bool(false)); }
+            if !lv.truthy() {
+                return Ok(ScalarVal::Bool(false));
+            }
             let rv = eval_expr(right, row, catalog, outer_row)?;
             return Ok(ScalarVal::Bool(rv.truthy()));
         }
         BinaryOperator::Or => {
             let lv = eval_expr(left, row, catalog, outer_row)?;
-            if lv.truthy() { return Ok(ScalarVal::Bool(true)); }
+            if lv.truthy() {
+                return Ok(ScalarVal::Bool(true));
+            }
             let rv = eval_expr(right, row, catalog, outer_row)?;
             return Ok(ScalarVal::Bool(rv.truthy()));
         }
@@ -1780,12 +2053,16 @@ fn eval_binary(
         BinaryOperator::Multiply => numeric_op(&lv, &rv, |a, b| a * b),
         BinaryOperator::Divide => {
             let b = rv.as_f64().unwrap_or(0.0);
-            if b == 0.0 { return Err(QueryError::DivisionByZero); }
+            if b == 0.0 {
+                return Err(QueryError::DivisionByZero);
+            }
             Ok(ScalarVal::Float(lv.as_f64().unwrap_or(0.0) / b))
         }
         BinaryOperator::Modulo => {
             let b = rv.as_f64().unwrap_or(0.0);
-            if b == 0.0 { return Err(QueryError::DivisionByZero); }
+            if b == 0.0 {
+                return Err(QueryError::DivisionByZero);
+            }
             Ok(ScalarVal::Float(lv.as_f64().unwrap_or(0.0) % b))
         }
         BinaryOperator::StringConcat => {
@@ -1795,15 +2072,35 @@ fn eval_binary(
         }
         BinaryOperator::Eq => Ok(ScalarVal::Bool(lv == rv)),
         BinaryOperator::NotEq => Ok(ScalarVal::Bool(lv != rv)),
-        BinaryOperator::Gt => Ok(ScalarVal::Bool(lv.cmp_val(&rv).map(|c| c == std::cmp::Ordering::Greater).unwrap_or(false))),
-        BinaryOperator::Lt => Ok(ScalarVal::Bool(lv.cmp_val(&rv).map(|c| c == std::cmp::Ordering::Less).unwrap_or(false))),
-        BinaryOperator::GtEq => Ok(ScalarVal::Bool(lv.cmp_val(&rv).map(|c| c != std::cmp::Ordering::Less).unwrap_or(false))),
-        BinaryOperator::LtEq => Ok(ScalarVal::Bool(lv.cmp_val(&rv).map(|c| c != std::cmp::Ordering::Greater).unwrap_or(false))),
+        BinaryOperator::Gt => Ok(ScalarVal::Bool(
+            lv.cmp_val(&rv)
+                .map(|c| c == std::cmp::Ordering::Greater)
+                .unwrap_or(false),
+        )),
+        BinaryOperator::Lt => Ok(ScalarVal::Bool(
+            lv.cmp_val(&rv)
+                .map(|c| c == std::cmp::Ordering::Less)
+                .unwrap_or(false),
+        )),
+        BinaryOperator::GtEq => Ok(ScalarVal::Bool(
+            lv.cmp_val(&rv)
+                .map(|c| c != std::cmp::Ordering::Less)
+                .unwrap_or(false),
+        )),
+        BinaryOperator::LtEq => Ok(ScalarVal::Bool(
+            lv.cmp_val(&rv)
+                .map(|c| c != std::cmp::Ordering::Greater)
+                .unwrap_or(false),
+        )),
         _ => Err(QueryError::Unsupported(format!("binary op: {op}"))),
     }
 }
 
-fn numeric_op(a: &ScalarVal, b: &ScalarVal, f: impl Fn(f64, f64) -> f64) -> Result<ScalarVal, QueryError> {
+fn numeric_op(
+    a: &ScalarVal,
+    b: &ScalarVal,
+    f: impl Fn(f64, f64) -> f64,
+) -> Result<ScalarVal, QueryError> {
     match (a, b) {
         (ScalarVal::Int(x), ScalarVal::Int(y)) => {
             let r = f(*x as f64, *y as f64);
@@ -1814,8 +2111,12 @@ fn numeric_op(a: &ScalarVal, b: &ScalarVal, f: impl Fn(f64, f64) -> f64) -> Resu
             }
         }
         _ => {
-            let fa = a.as_f64().ok_or_else(|| QueryError::TypeError(format!("non-numeric: {a:?}")))?;
-            let fb = b.as_f64().ok_or_else(|| QueryError::TypeError(format!("non-numeric: {b:?}")))?;
+            let fa = a
+                .as_f64()
+                .ok_or_else(|| QueryError::TypeError(format!("non-numeric: {a:?}")))?;
+            let fb = b
+                .as_f64()
+                .ok_or_else(|| QueryError::TypeError(format!("non-numeric: {b:?}")))?;
             Ok(ScalarVal::Float(f(fa, fb)))
         }
     }
@@ -1846,43 +2147,87 @@ fn eval_function(
 
     match fname.as_str() {
         "UPPER" => {
-            let v = eval_expr(first_arg_expr.as_ref().ok_or_else(|| QueryError::TypeError("UPPER needs arg".into()))?, row, catalog, outer_row)?;
+            let v = eval_expr(
+                first_arg_expr
+                    .as_ref()
+                    .ok_or_else(|| QueryError::TypeError("UPPER needs arg".into()))?,
+                row,
+                catalog,
+                outer_row,
+            )?;
             Ok(ScalarVal::Text(scalar_to_string(&v).to_uppercase()))
         }
         "LOWER" => {
-            let v = eval_expr(first_arg_expr.as_ref().ok_or_else(|| QueryError::TypeError("LOWER needs arg".into()))?, row, catalog, outer_row)?;
+            let v = eval_expr(
+                first_arg_expr
+                    .as_ref()
+                    .ok_or_else(|| QueryError::TypeError("LOWER needs arg".into()))?,
+                row,
+                catalog,
+                outer_row,
+            )?;
             Ok(ScalarVal::Text(scalar_to_string(&v).to_lowercase()))
         }
         "SUBSTR" | "SUBSTRING" => {
-            let arg1 = first_arg_expr.as_ref().ok_or_else(|| QueryError::TypeError("SUBSTRING needs arg".into()))?;
+            let arg1 = first_arg_expr
+                .as_ref()
+                .ok_or_else(|| QueryError::TypeError("SUBSTRING needs arg".into()))?;
             let s = scalar_to_string(&eval_expr(arg1, row, catalog, outer_row)?);
-            let start: usize = func_args(&func.args).get(1).and_then(|a| match a {
-                sqlparser::ast::FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => eval_expr(e, row, catalog, outer_row).ok(),
-                _ => None,
-            }).and_then(|v| v.as_f64()).map(|n| (n as usize).saturating_sub(1)).unwrap_or(0);
-            let len: usize = func_args(&func.args).get(2).and_then(|a| match a {
-                sqlparser::ast::FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => eval_expr(e, row, catalog, outer_row).ok(),
-                _ => None,
-            }).and_then(|v| v.as_f64()).map(|n| n as usize).unwrap_or(s.len().saturating_sub(start));
+            let start: usize = func_args(&func.args)
+                .get(1)
+                .and_then(|a| match a {
+                    sqlparser::ast::FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => {
+                        eval_expr(e, row, catalog, outer_row).ok()
+                    }
+                    _ => None,
+                })
+                .and_then(|v| v.as_f64())
+                .map(|n| (n as usize).saturating_sub(1))
+                .unwrap_or(0);
+            let len: usize = func_args(&func.args)
+                .get(2)
+                .and_then(|a| match a {
+                    sqlparser::ast::FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => {
+                        eval_expr(e, row, catalog, outer_row).ok()
+                    }
+                    _ => None,
+                })
+                .and_then(|v| v.as_f64())
+                .map(|n| n as usize)
+                .unwrap_or(s.len().saturating_sub(start));
             let chars: Vec<char> = s.chars().collect();
             let end = (start + len).min(chars.len());
-            Ok(ScalarVal::Text(chars[start.min(chars.len())..end].iter().collect()))
+            Ok(ScalarVal::Text(
+                chars[start.min(chars.len())..end].iter().collect(),
+            ))
         }
         "COALESCE" => {
             for arg in func_args(&func.args) {
                 if let sqlparser::ast::FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) = arg {
                     let v = eval_expr(e, row, catalog, outer_row)?;
-                    if !matches!(v, ScalarVal::Null) { return Ok(v); }
+                    if !matches!(v, ScalarVal::Null) {
+                        return Ok(v);
+                    }
                 }
             }
             Ok(ScalarVal::Null)
         }
         "NULLIF" => {
-            let a = eval_expr(first_arg_expr.as_ref().ok_or_else(|| QueryError::TypeError("NULLIF arg".into()))?, row, catalog, outer_row)?;
-            let b_expr = func_args(&func.args).get(1).and_then(|a| match a {
-                sqlparser::ast::FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => Some(e),
-                _ => None,
-            }).ok_or_else(|| QueryError::TypeError("NULLIF needs 2 args".into()))?;
+            let a = eval_expr(
+                first_arg_expr
+                    .as_ref()
+                    .ok_or_else(|| QueryError::TypeError("NULLIF arg".into()))?,
+                row,
+                catalog,
+                outer_row,
+            )?;
+            let b_expr = func_args(&func.args)
+                .get(1)
+                .and_then(|a| match a {
+                    sqlparser::ast::FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => Some(e),
+                    _ => None,
+                })
+                .ok_or_else(|| QueryError::TypeError("NULLIF needs 2 args".into()))?;
             let b = eval_expr(b_expr, row, catalog, outer_row)?;
             Ok(if a == b { ScalarVal::Null } else { a })
         }
@@ -1922,13 +2267,18 @@ fn like_match_bytes(s: &[u8], p: &[u8]) -> bool {
     match (s, p) {
         (_, []) => s.is_empty(),
         (_, [b'%', rest @ ..]) => {
-            if rest.is_empty() { return true; }
+            if rest.is_empty() {
+                return true;
+            }
             (0..=s.len()).any(|i| like_match_bytes(&s[i..], rest))
         }
         ([], _) => false,
-        ([sc, s_rest @ ..], [b'_', p_rest @ ..]) => like_match_bytes(s_rest, p_rest) || {
-            let _ = sc; false
-        },
+        ([sc, s_rest @ ..], [b'_', p_rest @ ..]) => {
+            like_match_bytes(s_rest, p_rest) || {
+                let _ = sc;
+                false
+            }
+        }
         ([sc, s_rest @ ..], [pc, p_rest @ ..]) => {
             sc.eq_ignore_ascii_case(pc) && like_match_bytes(s_rest, p_rest)
         }
@@ -1942,11 +2292,15 @@ fn like_match_bytes(s: &[u8], p: &[u8]) -> bool {
 /// comparability (e.g., 19950315 > 19940101).
 fn iso_to_yyyymmdd(s: &str) -> Option<i32> {
     let parts: Vec<&str> = s.split('-').collect();
-    if parts.len() != 3 { return None; }
+    if parts.len() != 3 {
+        return None;
+    }
     let y: i32 = parts[0].parse().ok()?;
     let m: i32 = parts[1].parse().ok()?;
     let d: i32 = parts[2].parse().ok()?;
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) { return None; }
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
     Some(y * 10_000 + m * 100 + d)
 }
 
@@ -1954,7 +2308,9 @@ fn iso_to_yyyymmdd(s: &str) -> Option<i32> {
 
 fn has_aggregate_in_projection(items: &[SelectItem]) -> bool {
     items.iter().any(|item| match item {
-        SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => has_aggregate_expr(e),
+        SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => {
+            has_aggregate_expr(e)
+        }
         _ => false,
     })
 }
@@ -1967,10 +2323,18 @@ fn has_aggregate_expr(e: &Expr) -> bool {
         }
         Expr::BinaryOp { left, right, .. } => has_aggregate_expr(left) || has_aggregate_expr(right),
         Expr::Nested(inner) | Expr::UnaryOp { expr: inner, .. } => has_aggregate_expr(inner),
-        Expr::Case { conditions, results, else_result, .. } => {
+        Expr::Case {
+            conditions,
+            results,
+            else_result,
+            ..
+        } => {
             conditions.iter().any(has_aggregate_expr)
                 || results.iter().any(has_aggregate_expr)
-                || else_result.as_deref().map(has_aggregate_expr).unwrap_or(false)
+                || else_result
+                    .as_deref()
+                    .map(has_aggregate_expr)
+                    .unwrap_or(false)
         }
         _ => false,
     }
@@ -1979,9 +2343,13 @@ fn has_aggregate_expr(e: &Expr) -> bool {
 fn expr_alias(e: &Expr) -> String {
     match e {
         Expr::Identifier(id) => id.value.clone(),
-        Expr::CompoundIdentifier(parts) => parts.last().map(|p| p.value.clone()).unwrap_or_default(),
+        Expr::CompoundIdentifier(parts) => {
+            parts.last().map(|p| p.value.clone()).unwrap_or_default()
+        }
         Expr::Function(f) => f.name.to_string().to_lowercase(),
-        Expr::BinaryOp { left, op, right } => format!("{}_{}_{}", expr_alias(left), op, expr_alias(right)),
+        Expr::BinaryOp { left, op, right } => {
+            format!("{}_{}_{}", expr_alias(left), op, expr_alias(right))
+        }
         Expr::Value(Value::Number(s, _)) => format!("const_{s}"),
         _ => "col".to_string(),
     }
@@ -1995,7 +2363,11 @@ mod tests {
 
     fn epoch_days_to_ymd(days: i32) -> (i32, u32, u32) {
         let z = days as i64 + 719468;
-        let era = if z >= 0 { z / 146_097 } else { (z - 146_096) / 146_097 };
+        let era = if z >= 0 {
+            z / 146_097
+        } else {
+            (z - 146_096) / 146_097
+        };
         let doe = z - era * 146_097;
         let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
         let y = yoe + era * 400;
@@ -2008,7 +2380,9 @@ mod tests {
     }
 
     fn make_rows(data: &[&[(&str, ScalarVal)]]) -> Vec<Row> {
-        data.iter().map(|r| r.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()).collect()
+        data.iter()
+            .map(|r| r.iter().map(|(k, v)| (k.to_string(), v.clone())).collect())
+            .collect()
     }
 
     #[test]
@@ -2028,9 +2402,18 @@ mod tests {
 
     #[test]
     fn scalar_val_comparison() {
-        assert_eq!(ScalarVal::Int(3).cmp_val(&ScalarVal::Int(5)), Some(std::cmp::Ordering::Less));
-        assert_eq!(ScalarVal::Float(1.5).cmp_val(&ScalarVal::Int(2)), Some(std::cmp::Ordering::Less));
-        assert_eq!(ScalarVal::Text("a".into()).cmp_val(&ScalarVal::Text("b".into())), Some(std::cmp::Ordering::Less));
+        assert_eq!(
+            ScalarVal::Int(3).cmp_val(&ScalarVal::Int(5)),
+            Some(std::cmp::Ordering::Less)
+        );
+        assert_eq!(
+            ScalarVal::Float(1.5).cmp_val(&ScalarVal::Int(2)),
+            Some(std::cmp::Ordering::Less)
+        );
+        assert_eq!(
+            ScalarVal::Text("a".into()).cmp_val(&ScalarVal::Text("b".into())),
+            Some(std::cmp::Ordering::Less)
+        );
         assert_eq!(ScalarVal::Null.cmp_val(&ScalarVal::Int(1)), None);
     }
 
@@ -2046,18 +2429,25 @@ mod tests {
         use sqlparser::ast::Statement;
 
         let mut catalog = QueryCatalog::new();
-        catalog.tables.insert("t".into(), make_rows(&[
-            &[("t.id", ScalarVal::Int(1)), ("t.val", ScalarVal::Int(10))],
-            &[("t.id", ScalarVal::Int(2)), ("t.val", ScalarVal::Int(20))],
-            &[("t.id", ScalarVal::Int(3)), ("t.val", ScalarVal::Int(30))],
-        ]));
+        catalog.tables.insert(
+            "t".into(),
+            make_rows(&[
+                &[("t.id", ScalarVal::Int(1)), ("t.val", ScalarVal::Int(10))],
+                &[("t.id", ScalarVal::Int(2)), ("t.val", ScalarVal::Int(20))],
+                &[("t.id", ScalarVal::Int(3)), ("t.val", ScalarVal::Int(30))],
+            ]),
+        );
 
         let stmt = parse_statement("SELECT t.id, t.val FROM t WHERE t.val > 15").unwrap();
         let Statement::Query(q) = stmt else { panic!() };
         let result = execute_select_query(&q, &catalog).unwrap();
         assert_eq!(result.rows.len(), 2);
         assert!(result.rows.iter().all(|r| {
-            if let Some(ScalarVal::Int(n)) = r.get(1) { *n > 15 } else { false }
+            if let Some(ScalarVal::Int(n)) = r.get(1) {
+                *n > 15
+            } else {
+                false
+            }
         }));
     }
 
@@ -2067,13 +2457,26 @@ mod tests {
         use sqlparser::ast::Statement;
 
         let mut catalog = QueryCatalog::new();
-        catalog.tables.insert("sales".into(), make_rows(&[
-            &[("sales.cat", ScalarVal::Text("A".into())), ("sales.amt", ScalarVal::Float(10.0))],
-            &[("sales.cat", ScalarVal::Text("A".into())), ("sales.amt", ScalarVal::Float(20.0))],
-            &[("sales.cat", ScalarVal::Text("B".into())), ("sales.amt", ScalarVal::Float(5.0))],
-        ]));
+        catalog.tables.insert(
+            "sales".into(),
+            make_rows(&[
+                &[
+                    ("sales.cat", ScalarVal::Text("A".into())),
+                    ("sales.amt", ScalarVal::Float(10.0)),
+                ],
+                &[
+                    ("sales.cat", ScalarVal::Text("A".into())),
+                    ("sales.amt", ScalarVal::Float(20.0)),
+                ],
+                &[
+                    ("sales.cat", ScalarVal::Text("B".into())),
+                    ("sales.amt", ScalarVal::Float(5.0)),
+                ],
+            ]),
+        );
 
-        let stmt = parse_statement("SELECT cat, sum(amt) AS total FROM sales GROUP BY cat").unwrap();
+        let stmt =
+            parse_statement("SELECT cat, sum(amt) AS total FROM sales GROUP BY cat").unwrap();
         let Statement::Query(q) = stmt else { panic!() };
         let result = execute_select_query(&q, &catalog).unwrap();
         assert_eq!(result.rows.len(), 2);
@@ -2085,11 +2488,14 @@ mod tests {
         use sqlparser::ast::Statement;
 
         let mut catalog = QueryCatalog::new();
-        catalog.tables.insert("n".into(), make_rows(&[
-            &[("n.v", ScalarVal::Int(3))],
-            &[("n.v", ScalarVal::Int(1))],
-            &[("n.v", ScalarVal::Int(2))],
-        ]));
+        catalog.tables.insert(
+            "n".into(),
+            make_rows(&[
+                &[("n.v", ScalarVal::Int(3))],
+                &[("n.v", ScalarVal::Int(1))],
+                &[("n.v", ScalarVal::Int(2))],
+            ]),
+        );
 
         let stmt = parse_statement("SELECT v FROM n ORDER BY v ASC LIMIT 2").unwrap();
         let Statement::Query(q) = stmt else { panic!() };
@@ -2105,10 +2511,13 @@ mod tests {
         use sqlparser::ast::Statement;
 
         let mut catalog = QueryCatalog::new();
-        catalog.tables.insert("s".into(), make_rows(&[
-            &[("s.x", ScalarVal::Int(5))],
-            &[("s.x", ScalarVal::Int(15))],
-        ]));
+        catalog.tables.insert(
+            "s".into(),
+            make_rows(&[
+                &[("s.x", ScalarVal::Int(5))],
+                &[("s.x", ScalarVal::Int(15))],
+            ]),
+        );
 
         let sql = "SELECT CASE WHEN x > 10 THEN 1 ELSE 0 END AS flag FROM s";
         let stmt = parse_statement(sql).unwrap();

@@ -45,7 +45,7 @@ use neuralbase::catalog::InMemoryCatalog;
 use neuralbase::execution::{build_physical_plan, execute_physical_plan};
 use neuralbase::join_graph;
 use neuralbase::optimizer;
-use neuralbase::query_executor::{self, QueryCatalog, execute_select_query};
+use neuralbase::query_executor::{self, execute_select_query, QueryCatalog};
 use neuralbase::scheduler::MorselScheduler;
 use neuralbase::sql::parse_statement;
 use neuralbase::stats;
@@ -129,7 +129,10 @@ fn ensure_pg16_container_running() {
             ])
             .status()
             .expect("docker command must execute");
-        assert!(status.success(), "failed to start PostgreSQL 16 reference container");
+        assert!(
+            status.success(),
+            "failed to start PostgreSQL 16 reference container"
+        );
     }
 
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -158,7 +161,10 @@ fn pg16_client() -> Client {
             }
         }
     }
-    panic!("failed to connect to PostgreSQL 16 reference: {:?}", last_err);
+    panic!(
+        "failed to connect to PostgreSQL 16 reference: {:?}",
+        last_err
+    );
 }
 
 fn yyyymmdd_to_iso(date: i32) -> String {
@@ -480,8 +486,11 @@ fn seed_pg16_reference_data() {
         _ => panic!("n_regionkey type"),
     };
     for i in 0..nation.row_count {
-        tx.execute(&ins_nation, &[&n_nationkey[i], &n_name.get(i), &n_regionkey[i]])
-            .expect("insert nation row");
+        tx.execute(
+            &ins_nation,
+            &[&n_nationkey[i], &n_name.get(i), &n_regionkey[i]],
+        )
+        .expect("insert nation row");
     }
 
     let region = &data.region;
@@ -625,7 +634,12 @@ fn seed_pg16_reference_data() {
     for i in 0..partsupp.row_count {
         tx.execute(
             &ins_partsupp,
-            &[&ps_partkey[i], &ps_suppkey[i], &ps_availqty[i], &ps_supplycost[i]],
+            &[
+                &ps_partkey[i],
+                &ps_suppkey[i],
+                &ps_availqty[i],
+                &ps_supplycost[i],
+            ],
         )
         .expect("insert partsupp row");
     }
@@ -699,8 +713,12 @@ fn record_batch_to_json_rows(batch: &vectorized::RecordBatch) -> Vec<Value> {
         let mut obj = Map::new();
         for (name, col) in &batch.columns {
             let value = match col {
-                ColumnVector::Int32(v) => v[row].map(|x| Value::Number(Number::from(x))).unwrap_or(Value::Null),
-                ColumnVector::Int64(v) => v[row].map(|x| Value::Number(Number::from(x))).unwrap_or(Value::Null),
+                ColumnVector::Int32(v) => v[row]
+                    .map(|x| Value::Number(Number::from(x)))
+                    .unwrap_or(Value::Null),
+                ColumnVector::Int64(v) => v[row]
+                    .map(|x| Value::Number(Number::from(x)))
+                    .unwrap_or(Value::Null),
                 ColumnVector::Float64(v) => v[row]
                     .and_then(Number::from_f64)
                     .map(Value::Number)
@@ -837,8 +855,7 @@ fn assert_row_for_row_pg16(sql: &str, query_name: &str) {
 // the deterministic parameter values given in the TPC-H specification §4.2
 // (parameter 1 of each query template).
 
-const Q1_SQL: &str =
-    "SELECT l_returnflag, l_linestatus, \
+const Q1_SQL: &str = "SELECT l_returnflag, l_linestatus, \
      sum(l_quantity) AS sum_qty, \
      sum(l_extendedprice) AS sum_base_price, \
      sum(l_extendedprice * (1 - l_discount)) AS sum_disc_price, \
@@ -864,8 +881,7 @@ const Q2_SQL: &str =
                          AND r_name = 'EUROPE') \
      ORDER BY s_acctbal DESC, n_name, s_name, p_partkey LIMIT 100";
 
-const Q3_SQL: &str =
-    "SELECT l_orderkey, sum(l_extendedprice * (1 - l_discount)) AS revenue, \
+const Q3_SQL: &str = "SELECT l_orderkey, sum(l_extendedprice * (1 - l_discount)) AS revenue, \
      o_orderdate, o_shippriority \
      FROM customer, orders, lineitem \
      WHERE c_mktsegment = 'BUILDING' AND c_custkey = o_custkey \
@@ -874,8 +890,7 @@ const Q3_SQL: &str =
      GROUP BY l_orderkey, o_orderdate, o_shippriority \
      ORDER BY revenue DESC, o_orderdate LIMIT 10";
 
-const Q4_SQL: &str =
-    "SELECT o_orderpriority, count(*) AS order_count \
+const Q4_SQL: &str = "SELECT o_orderpriority, count(*) AS order_count \
      FROM orders \
      WHERE o_orderdate >= date '1993-07-01' AND o_orderdate < date '1993-10-01' \
      AND EXISTS (SELECT * FROM lineitem WHERE l_orderkey = o_orderkey \
@@ -883,8 +898,7 @@ const Q4_SQL: &str =
      GROUP BY o_orderpriority \
      ORDER BY o_orderpriority";
 
-const Q5_SQL: &str =
-    "SELECT n_name, sum(l_extendedprice * (1 - l_discount)) AS revenue \
+const Q5_SQL: &str = "SELECT n_name, sum(l_extendedprice * (1 - l_discount)) AS revenue \
      FROM customer, orders, lineitem, supplier, nation, region \
      WHERE c_custkey = o_custkey AND l_orderkey = o_orderkey \
      AND l_suppkey = s_suppkey AND c_nationkey = s_nationkey \
@@ -893,14 +907,12 @@ const Q5_SQL: &str =
      AND o_orderdate < date '1995-01-01' \
      GROUP BY n_name ORDER BY revenue DESC";
 
-const Q6_SQL: &str =
-    "SELECT sum(l_extendedprice * l_discount) AS revenue \
+const Q6_SQL: &str = "SELECT sum(l_extendedprice * l_discount) AS revenue \
      FROM lineitem \
      WHERE l_shipdate >= date '1994-01-01' AND l_shipdate < date '1995-01-01' \
      AND l_discount BETWEEN 0.05 AND 0.07 AND l_quantity < 24";
 
-const Q7_SQL: &str =
-    "SELECT supp_nation, cust_nation, l_year, \
+const Q7_SQL: &str = "SELECT supp_nation, cust_nation, l_year, \
      sum(volume) AS revenue \
      FROM (SELECT n1.n_name AS supp_nation, n2.n_name AS cust_nation, \
            extract(year FROM l_shipdate) AS l_year, \
@@ -915,8 +927,7 @@ const Q7_SQL: &str =
      GROUP BY supp_nation, cust_nation, l_year \
      ORDER BY supp_nation, cust_nation, l_year";
 
-const Q8_SQL: &str =
-    "SELECT o_year, \
+const Q8_SQL: &str = "SELECT o_year, \
      sum(CASE WHEN nation = 'BRAZIL' THEN volume ELSE 0 END) / sum(volume) AS mkt_share \
      FROM (SELECT extract(year FROM o_orderdate) AS o_year, \
            l_extendedprice * (1 - l_discount) AS volume, n2.n_name AS nation \
@@ -929,8 +940,7 @@ const Q8_SQL: &str =
            AND p_type = 'ECONOMY ANODIZED STEEL') AS all_nations \
      GROUP BY o_year ORDER BY o_year";
 
-const Q9_SQL: &str =
-    "SELECT nation, o_year, sum(amount) AS sum_profit \
+const Q9_SQL: &str = "SELECT nation, o_year, sum(amount) AS sum_profit \
      FROM (SELECT n_name AS nation, extract(year FROM o_orderdate) AS o_year, \
            l_extendedprice * (1 - l_discount) - ps_supplycost * l_quantity AS amount \
            FROM part, supplier, lineitem, partsupp, orders, nation \
@@ -950,8 +960,7 @@ const Q10_SQL: &str =
      GROUP BY c_custkey, c_name, c_acctbal, c_phone, n_name, c_address, c_comment \
      ORDER BY revenue DESC LIMIT 20";
 
-const Q11_SQL: &str =
-    "SELECT ps_partkey, sum(ps_supplycost * ps_availqty) AS value \
+const Q11_SQL: &str = "SELECT ps_partkey, sum(ps_supplycost * ps_availqty) AS value \
      FROM partsupp, supplier, nation \
      WHERE ps_suppkey = s_suppkey AND s_nationkey = n_nationkey AND n_name = 'GERMANY' \
      GROUP BY ps_partkey \
@@ -970,16 +979,14 @@ const Q12_SQL: &str =
      AND l_receiptdate >= date '1994-01-01' AND l_receiptdate < date '1995-01-01' \
      GROUP BY l_shipmode ORDER BY l_shipmode";
 
-const Q13_SQL: &str =
-    "SELECT c_count, count(*) AS custdist \
+const Q13_SQL: &str = "SELECT c_count, count(*) AS custdist \
      FROM (SELECT c_custkey, count(o_orderkey) AS c_count \
            FROM customer LEFT OUTER JOIN orders \
            ON c_custkey = o_custkey AND o_comment NOT LIKE '%special%requests%' \
            GROUP BY c_custkey) AS c_orders \
      GROUP BY c_count ORDER BY custdist DESC, c_count DESC";
 
-const Q14_SQL: &str =
-    "SELECT 100.00 * sum(CASE WHEN p_type LIKE 'PROMO%' \
+const Q14_SQL: &str = "SELECT 100.00 * sum(CASE WHEN p_type LIKE 'PROMO%' \
      THEN l_extendedprice * (1 - l_discount) ELSE 0 END) / \
      sum(l_extendedprice * (1 - l_discount)) AS promo_revenue \
      FROM lineitem, part \
@@ -987,8 +994,7 @@ const Q14_SQL: &str =
      AND l_shipdate < date '1995-10-01'";
 
 // Q15 rewritten without CREATE VIEW: inline derived table `revenue0`.
-const Q15_SQL: &str =
-        "SELECT s_suppkey, s_name, s_address, s_phone, total_revenue \
+const Q15_SQL: &str = "SELECT s_suppkey, s_name, s_address, s_phone, total_revenue \
          FROM supplier, \
                     (SELECT l_suppkey AS supplier_no, \
                                     sum(l_extendedprice * (1 - l_discount)) AS total_revenue \
@@ -1015,8 +1021,7 @@ const Q16_SQL: &str =
      GROUP BY p_brand, p_type, p_size \
      ORDER BY supplier_cnt DESC, p_brand, p_type, p_size";
 
-const Q17_SQL: &str =
-    "SELECT sum(l_extendedprice) / 7.0 AS avg_yearly \
+const Q17_SQL: &str = "SELECT sum(l_extendedprice) / 7.0 AS avg_yearly \
      FROM lineitem, part \
      WHERE p_partkey = l_partkey AND p_brand = 'Brand#23' AND p_container = 'MED BOX' \
      AND l_quantity < (SELECT 0.2 * avg(l_quantity) FROM lineitem WHERE l_partkey = p_partkey)";
@@ -1030,8 +1035,7 @@ const Q18_SQL: &str =
      GROUP BY c_name, c_custkey, o_orderkey, o_orderdate, o_totalprice \
      ORDER BY o_totalprice DESC, o_orderdate LIMIT 100";
 
-const Q19_SQL: &str =
-    "SELECT sum(l_extendedprice * (1 - l_discount)) AS revenue \
+const Q19_SQL: &str = "SELECT sum(l_extendedprice * (1 - l_discount)) AS revenue \
      FROM lineitem, part \
      WHERE (p_partkey = l_partkey AND p_brand = 'Brand#12' \
             AND p_container IN ('SM CASE','SM BOX','SM PACK','SM PKG') \
@@ -1056,8 +1060,7 @@ const Q20_SQL: &str =
                                            AND l_shipdate >= date '1994-01-01' AND l_shipdate < date '1995-01-01')) \
      AND s_nationkey = n_nationkey AND n_name = 'CANADA' ORDER BY s_name";
 
-const Q21_SQL: &str =
-    "SELECT s_name, count(*) AS numwait \
+const Q21_SQL: &str = "SELECT s_name, count(*) AS numwait \
      FROM supplier, lineitem l1, orders, nation \
      WHERE s_suppkey = l1.l_suppkey AND o_orderkey = l1.l_orderkey \
      AND o_orderstatus = 'F' AND l1.l_receiptdate > l1.l_commitdate \
@@ -1131,7 +1134,11 @@ fn q1_full_official_pg16_reference_rows_match() {
     nb_rows.sort_by_key(canonical_row_string);
     expected_rows.sort_by_key(canonical_row_string);
 
-    assert_eq!(pg_rows.len(), 4, "Q1 PostgreSQL reference must have 4 groups");
+    assert_eq!(
+        pg_rows.len(),
+        4,
+        "Q1 PostgreSQL reference must have 4 groups"
+    );
     assert_eq!(nb_rows.len(), 4, "Q1 NeuralBase output must have 4 groups");
 
     for (idx, (pg, exp)) in pg_rows.iter().zip(expected_rows.iter()).enumerate() {
@@ -1211,8 +1218,7 @@ macro_rules! parse_only {
     ($name:ident, $sql:expr, $q:literal) => {
         #[test]
         fn $name() {
-            parse_statement($sql)
-                .unwrap_or_else(|e| panic!("TPC-H {} parse failed: {e}", $q));
+            parse_statement($sql).unwrap_or_else(|e| panic!("TPC-H {} parse failed: {e}", $q));
         }
     };
 }
@@ -1223,8 +1229,8 @@ macro_rules! parse_bind_execute {
     ($name:ident, $sql:expr, $q:literal) => {
         #[test]
         fn $name() {
-            let stmt = parse_statement($sql)
-                .unwrap_or_else(|e| panic!("TPC-H {} parse failed: {e}", $q));
+            let stmt =
+                parse_statement($sql).unwrap_or_else(|e| panic!("TPC-H {} parse failed: {e}", $q));
             let catalog = InMemoryCatalog::with_tpch_all_tables();
             match bind_statement(&stmt, &catalog) {
                 Ok(BoundPlan::SelectQuery(query)) => {
@@ -1249,11 +1255,19 @@ macro_rules! parse_bind_execute {
                     let plan = build_physical_plan(&other);
                     let scheduler = MorselScheduler::new(16_384);
                     let out = execute_physical_plan(&plan, tpch_exec_dataset(), &scheduler, None)
-                        .unwrap_or_else(|e| panic!("TPC-H {} execute error on SelectFromTable: {e}", $q));
-                    println!("TPC-H {} executed OK via SelectFromTable: {} rows", $q, out.row_count);
+                        .unwrap_or_else(|e| {
+                            panic!("TPC-H {} execute error on SelectFromTable: {e}", $q)
+                        });
+                    println!(
+                        "TPC-H {} executed OK via SelectFromTable: {} rows",
+                        $q, out.row_count
+                    );
                 }
                 Ok(other) => {
-                    panic!("TPC-H {} bound to unsupported plan variant for this macro: {other:?}", $q);
+                    panic!(
+                        "TPC-H {} bound to unsupported plan variant for this macro: {other:?}",
+                        $q
+                    );
                 }
                 Err(e) => {
                     panic!("TPC-H {} bind error: {e}", $q);
@@ -1264,11 +1278,7 @@ macro_rules! parse_bind_execute {
 }
 
 // Q2: 5-table JOIN + correlated subquery
-parse_bind_execute!(
-    q2_parse_and_bind_graceful,
-    Q2_SQL,
-    "Q2"
-);
+parse_bind_execute!(q2_parse_and_bind_graceful, Q2_SQL, "Q2");
 
 // Q3: 3-table JOIN (customer, orders, lineitem)
 parse_bind_execute!(q3_parse_and_bind_graceful, Q3_SQL, "Q3");
@@ -1290,8 +1300,7 @@ fn q6_correctness_revenue_matches_reference() {
     let plan = build_physical_plan(&bound);
     let dataset = tpch_sf01_dataset();
     let scheduler = MorselScheduler::new(16_384);
-    let out =
-        execute_physical_plan(&plan, dataset, &scheduler, None).expect("Q6 execute");
+    let out = execute_physical_plan(&plan, dataset, &scheduler, None).expect("Q6 execute");
 
     let reference = q6_reference(&dataset.lineitem);
 
@@ -1364,15 +1373,34 @@ parse_bind_execute!(q22_bind_graceful_degradation, Q22_SQL, "Q22");
 #[test]
 fn all_22_sql_constants_are_non_empty() {
     let queries = [
-        ("Q1", Q1_SQL), ("Q2", Q2_SQL), ("Q3", Q3_SQL), ("Q4", Q4_SQL),
-        ("Q5", Q5_SQL), ("Q6", Q6_SQL), ("Q7", Q7_SQL), ("Q8", Q8_SQL),
-        ("Q9", Q9_SQL), ("Q10", Q10_SQL), ("Q11", Q11_SQL), ("Q12", Q12_SQL),
-        ("Q13", Q13_SQL), ("Q14", Q14_SQL), ("Q15", Q15_SQL), ("Q16", Q16_SQL),
-        ("Q17", Q17_SQL), ("Q18", Q18_SQL), ("Q19", Q19_SQL), ("Q20", Q20_SQL),
-        ("Q21", Q21_SQL), ("Q22", Q22_SQL),
+        ("Q1", Q1_SQL),
+        ("Q2", Q2_SQL),
+        ("Q3", Q3_SQL),
+        ("Q4", Q4_SQL),
+        ("Q5", Q5_SQL),
+        ("Q6", Q6_SQL),
+        ("Q7", Q7_SQL),
+        ("Q8", Q8_SQL),
+        ("Q9", Q9_SQL),
+        ("Q10", Q10_SQL),
+        ("Q11", Q11_SQL),
+        ("Q12", Q12_SQL),
+        ("Q13", Q13_SQL),
+        ("Q14", Q14_SQL),
+        ("Q15", Q15_SQL),
+        ("Q16", Q16_SQL),
+        ("Q17", Q17_SQL),
+        ("Q18", Q18_SQL),
+        ("Q19", Q19_SQL),
+        ("Q20", Q20_SQL),
+        ("Q21", Q21_SQL),
+        ("Q22", Q22_SQL),
     ];
     for (name, sql) in &queries {
-        assert!(!sql.trim().is_empty(), "{name} SQL constant must not be empty");
+        assert!(
+            !sql.trim().is_empty(),
+            "{name} SQL constant must not be empty"
+        );
         parse_statement(sql).unwrap_or_else(|e| panic!("{name} parse failed: {e}"));
     }
     println!("All 22 TPC-H SQL constants present and parse successfully.");

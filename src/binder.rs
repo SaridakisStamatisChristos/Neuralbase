@@ -9,13 +9,12 @@
 // CONFIDENCE: raw=0.76 effective=0.67
 // DEPENDS_ON: catalog, sqlparser
 
-use crate::catalog::{Catalog, ColumnDef, TableSchema};
 #[cfg(test)]
 use crate::catalog::InMemoryCatalog;
+use crate::catalog::{Catalog, ColumnDef, TableSchema};
 use crate::sql::NbStatement;
 use sqlparser::ast::{
-    Assignment, BinaryOperator, DataType, Expr, SelectItem, SetExpr,
-    Statement, TableFactor, Value,
+    Assignment, BinaryOperator, DataType, Expr, SelectItem, SetExpr, Statement, TableFactor, Value,
 };
 use thiserror::Error;
 
@@ -37,11 +36,11 @@ impl SqlValue {
     /// (which stores all values as UTF-8 strings keyed by column name).
     pub fn to_storage_string(&self) -> Option<String> {
         match self {
-            Self::Int(v)   => Some(v.to_string()),
+            Self::Int(v) => Some(v.to_string()),
             Self::Float(v) => Some(v.to_string()),
-            Self::Text(s)  => Some(s.clone()),
-            Self::Date(d)  => Some(d.to_string()),
-            Self::Null     => None,
+            Self::Text(s) => Some(s.clone()),
+            Self::Date(d) => Some(d.to_string()),
+            Self::Null => None,
         }
     }
 }
@@ -76,29 +75,23 @@ impl DmlPredicate {
             None => return false,
         };
         match &self.value {
-            SqlValue::Int(v) => {
-                val_str
-                    .parse::<i64>()
-                    .map(|x| apply_op_i64(x, *v, self.op))
-                    .unwrap_or(false)
-            }
-            SqlValue::Float(v) => {
-                val_str
-                    .parse::<f64>()
-                    .map(|x| apply_op_f64(x, *v, self.op))
-                    .unwrap_or(false)
-            }
+            SqlValue::Int(v) => val_str
+                .parse::<i64>()
+                .map(|x| apply_op_i64(x, *v, self.op))
+                .unwrap_or(false),
+            SqlValue::Float(v) => val_str
+                .parse::<f64>()
+                .map(|x| apply_op_f64(x, *v, self.op))
+                .unwrap_or(false),
             SqlValue::Text(s) => match self.op {
-                DmlCmpOp::Eq  => val_str == s,
+                DmlCmpOp::Eq => val_str == s,
                 DmlCmpOp::Neq => val_str != s,
-                _             => false,
+                _ => false,
             },
-            SqlValue::Date(d) => {
-                val_str
-                    .parse::<i32>()
-                    .map(|x| apply_op_i64(x as i64, *d as i64, self.op))
-                    .unwrap_or(false)
-            }
+            SqlValue::Date(d) => val_str
+                .parse::<i32>()
+                .map(|x| apply_op_i64(x as i64, *d as i64, self.op))
+                .unwrap_or(false),
             SqlValue::Null => false,
         }
     }
@@ -106,10 +99,10 @@ impl DmlPredicate {
 
 fn apply_op_i64(x: i64, criterion: i64, op: DmlCmpOp) -> bool {
     match op {
-        DmlCmpOp::Eq   => x == criterion,
-        DmlCmpOp::Neq  => x != criterion,
-        DmlCmpOp::Gt   => x > criterion,
-        DmlCmpOp::Lt   => x < criterion,
+        DmlCmpOp::Eq => x == criterion,
+        DmlCmpOp::Neq => x != criterion,
+        DmlCmpOp::Gt => x > criterion,
+        DmlCmpOp::Lt => x < criterion,
         DmlCmpOp::GtEq => x >= criterion,
         DmlCmpOp::LtEq => x <= criterion,
     }
@@ -117,10 +110,10 @@ fn apply_op_i64(x: i64, criterion: i64, op: DmlCmpOp) -> bool {
 
 fn apply_op_f64(x: f64, criterion: f64, op: DmlCmpOp) -> bool {
     match op {
-        DmlCmpOp::Eq   => (x - criterion).abs() < f64::EPSILON,
-        DmlCmpOp::Neq  => (x - criterion).abs() >= f64::EPSILON,
-        DmlCmpOp::Gt   => x > criterion,
-        DmlCmpOp::Lt   => x < criterion,
+        DmlCmpOp::Eq => (x - criterion).abs() < f64::EPSILON,
+        DmlCmpOp::Neq => (x - criterion).abs() >= f64::EPSILON,
+        DmlCmpOp::Gt => x > criterion,
+        DmlCmpOp::Lt => x < criterion,
         DmlCmpOp::GtEq => x >= criterion,
         DmlCmpOp::LtEq => x <= criterion,
     }
@@ -160,7 +153,10 @@ pub struct CreateTablePlan {
 
 impl CreateTablePlan {
     pub fn to_table_schema(&self) -> TableSchema {
-        TableSchema { name: self.name.clone(), columns: self.columns.clone() }
+        TableSchema {
+            name: self.name.clone(),
+            columns: self.columns.clone(),
+        }
     }
 }
 
@@ -184,13 +180,24 @@ pub enum BoundPlan {
     Update(UpdatePlan),
     Delete(DeletePlan),
     CreateTable(CreateTablePlan),
-    DropTable { name: String },
+    DropTable {
+        name: String,
+    },
     /// CREATE USER name WITH PASSWORD 'password'
-    CreateUser { username: String, password: String },
+    CreateUser {
+        username: String,
+        password: String,
+    },
     /// ALTER USER name WITH PASSWORD 'new_password'
-    AlterUser { username: String, new_password: String },
+    AlterUser {
+        username: String,
+        new_password: String,
+    },
     /// DROP USER [IF EXISTS] name
-    DropUser { username: String, if_exists: bool },
+    DropUser {
+        username: String,
+        if_exists: bool,
+    },
     /// EXPLAIN [ANALYZE] SELECT ... — returns the query plan as text.
     Explain {
         query: Box<sqlparser::ast::Query>,
@@ -229,11 +236,17 @@ pub fn bind_nb_statement(
             username: username.clone(),
             password: password.clone(),
         }),
-        NbStatement::AlterUser { username, new_password } => Ok(BoundPlan::AlterUser {
+        NbStatement::AlterUser {
+            username,
+            new_password,
+        } => Ok(BoundPlan::AlterUser {
             username: username.clone(),
             new_password: new_password.clone(),
         }),
-        NbStatement::DropUser { username, if_exists } => Ok(BoundPlan::DropUser {
+        NbStatement::DropUser {
+            username,
+            if_exists,
+        } => Ok(BoundPlan::DropUser {
             username: username.clone(),
             if_exists: *if_exists,
         }),
@@ -247,14 +260,22 @@ pub fn bind_statement(
     match statement {
         Statement::Query(query) => bind_query(query, catalog),
         Statement::Insert(insert) => bind_insert(insert, catalog),
-        Statement::Update { table, assignments, selection, .. } => {
-            bind_update(table, assignments, selection.as_ref(), catalog)
-        }
+        Statement::Update {
+            table,
+            assignments,
+            selection,
+            ..
+        } => bind_update(table, assignments, selection.as_ref(), catalog),
         Statement::Delete(delete) => bind_delete(delete, catalog),
-        Statement::CreateTable { name, columns, if_not_exists, .. } => {
-            bind_create_table(name, columns, *if_not_exists)
-        }
-        Statement::Drop { object_type, names, .. } => {
+        Statement::CreateTable {
+            name,
+            columns,
+            if_not_exists,
+            ..
+        } => bind_create_table(name, columns, *if_not_exists),
+        Statement::Drop {
+            object_type, names, ..
+        } => {
             use sqlparser::ast::ObjectType;
             if *object_type == ObjectType::Table {
                 let name = names.first().map(|n| n.to_string()).unwrap_or_default();
@@ -263,7 +284,9 @@ pub fn bind_statement(
                 Err(BindError::Unsupported)
             }
         }
-        Statement::Explain { analyze, statement, .. } => {
+        Statement::Explain {
+            analyze, statement, ..
+        } => {
             if let Statement::Query(q) = statement.as_ref() {
                 Ok(BoundPlan::Explain {
                     query: q.clone(),
@@ -290,8 +313,7 @@ fn bind_query(
 
     if select.from.is_empty() {
         if select.projection.len() == 1 {
-            if let SelectItem::UnnamedExpr(Expr::Value(Value::Number(s, _))) =
-                &select.projection[0]
+            if let SelectItem::UnnamedExpr(Expr::Value(Value::Number(s, _))) = &select.projection[0]
             {
                 if let Ok(n) = s.parse::<i64>() {
                     return Ok(BoundPlan::SelectConstI64(n));
@@ -377,7 +399,11 @@ fn bind_insert(
     };
 
     for col_name in &columns {
-        if !table.columns.iter().any(|c| c.name.eq_ignore_ascii_case(col_name)) {
+        if !table
+            .columns
+            .iter()
+            .any(|c| c.name.eq_ignore_ascii_case(col_name))
+        {
             return Err(BindError::ColumnNotFound {
                 table: table_name.clone(),
                 column: col_name.clone(),
@@ -413,7 +439,11 @@ fn bind_insert(
         rows.push(row_values);
     }
 
-    Ok(BoundPlan::Insert(InsertPlan { table, columns, rows }))
+    Ok(BoundPlan::Insert(InsertPlan {
+        table,
+        columns,
+        rows,
+    }))
 }
 
 // ── UPDATE binding ────────────────────────────────────────────────────────────
@@ -434,11 +464,11 @@ fn bind_update(
 
     let mut bound_assignments = Vec::with_capacity(assignments.len());
     for a in assignments {
-        let col_name = a.id
-            .last()
-            .map(|i| i.value.as_str())
-            .unwrap_or("")
-            .to_string();
+        let col_name =
+            a.id.last()
+                .map(|i| i.value.as_str())
+                .unwrap_or("")
+                .to_string();
         let col_def = schema
             .columns
             .iter()
@@ -447,7 +477,10 @@ fn bind_update(
                 table: table_name.clone(),
                 column: col_name.clone(),
             })?;
-        bound_assignments.push((col_def.name.clone(), coerce_expr_to_value(&a.value, col_def)?));
+        bound_assignments.push((
+            col_def.name.clone(),
+            coerce_expr_to_value(&a.value, col_def)?,
+        ));
     }
 
     let predicate = selection.and_then(|e| parse_simple_predicate(e, &schema));
@@ -487,7 +520,10 @@ fn bind_delete(
         .as_ref()
         .and_then(|e| parse_simple_predicate(e, &schema));
 
-    Ok(BoundPlan::Delete(DeletePlan { table: schema, predicate }))
+    Ok(BoundPlan::Delete(DeletePlan {
+        table: schema,
+        predicate,
+    }))
 }
 
 // ── CREATE TABLE binding ──────────────────────────────────────────────────────
@@ -516,13 +552,13 @@ fn bind_create_table(
 fn sql_data_type_to_str(dt: &DataType) -> String {
     match dt {
         DataType::Int(_) | DataType::Integer(_) | DataType::Int4(_) => "INT".to_string(),
-        DataType::BigInt(_) | DataType::Int8(_)                     => "BIGINT".to_string(),
-        DataType::Float(_) | DataType::Double | DataType::Real   => "DOUBLE".to_string(),
-        DataType::Decimal(_) | DataType::Numeric(_)                 => "DOUBLE".to_string(),
-        DataType::Date                                               => "DATE".to_string(),
-        DataType::Varchar(_) | DataType::Text | DataType::Char(_)   => "TEXT".to_string(),
-        DataType::Boolean                                            => "INT".to_string(),
-        other                                                        => other.to_string(),
+        DataType::BigInt(_) | DataType::Int8(_) => "BIGINT".to_string(),
+        DataType::Float(_) | DataType::Double | DataType::Real => "DOUBLE".to_string(),
+        DataType::Decimal(_) | DataType::Numeric(_) => "DOUBLE".to_string(),
+        DataType::Date => "DATE".to_string(),
+        DataType::Varchar(_) | DataType::Text | DataType::Char(_) => "TEXT".to_string(),
+        DataType::Boolean => "INT".to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -540,7 +576,7 @@ pub fn coerce_expr_to_value(expr: &Expr, col: &ColumnDef) -> Result<SqlValue, Bi
             Expr::Value(v) => {
                 let sv = coerce_value(v, col)?;
                 match sv {
-                    SqlValue::Int(n)   => Ok(SqlValue::Int(-n)),
+                    SqlValue::Int(n) => Ok(SqlValue::Int(-n)),
                     SqlValue::Float(f) => Ok(SqlValue::Float(-f)),
                     _ => Err(BindError::TypeCoercionFailed {
                         column: col.name.clone(),
@@ -567,22 +603,31 @@ fn coerce_value(v: &Value, col: &ColumnDef) -> Result<SqlValue, BindError> {
         Value::Number(s, _) => {
             let t = col.data_type.to_uppercase();
             if t.contains("INT") || t.contains("BOOL") {
-                s.parse::<i64>().map(SqlValue::Int).map_err(|_| BindError::TypeCoercionFailed {
-                    column: col.name.clone(),
-                    reason: format!("cannot parse '{s}' as integer"),
-                })
-            } else if t.contains("DOUBLE") || t.contains("FLOAT")
-                   || t.contains("REAL") || t.contains("DECIMAL") || t.contains("NUMERIC")
+                s.parse::<i64>()
+                    .map(SqlValue::Int)
+                    .map_err(|_| BindError::TypeCoercionFailed {
+                        column: col.name.clone(),
+                        reason: format!("cannot parse '{s}' as integer"),
+                    })
+            } else if t.contains("DOUBLE")
+                || t.contains("FLOAT")
+                || t.contains("REAL")
+                || t.contains("DECIMAL")
+                || t.contains("NUMERIC")
             {
-                s.parse::<f64>().map(SqlValue::Float).map_err(|_| BindError::TypeCoercionFailed {
-                    column: col.name.clone(),
-                    reason: format!("cannot parse '{s}' as float"),
-                })
+                s.parse::<f64>()
+                    .map(SqlValue::Float)
+                    .map_err(|_| BindError::TypeCoercionFailed {
+                        column: col.name.clone(),
+                        reason: format!("cannot parse '{s}' as float"),
+                    })
             } else if t.contains("DATE") {
-                s.parse::<i32>().map(SqlValue::Date).map_err(|_| BindError::TypeCoercionFailed {
-                    column: col.name.clone(),
-                    reason: format!("cannot parse '{s}' as date integer"),
-                })
+                s.parse::<i32>()
+                    .map(SqlValue::Date)
+                    .map_err(|_| BindError::TypeCoercionFailed {
+                        column: col.name.clone(),
+                        reason: format!("cannot parse '{s}' as date integer"),
+                    })
             } else {
                 Ok(SqlValue::Text(s.clone()))
             }
@@ -591,12 +636,12 @@ fn coerce_value(v: &Value, col: &ColumnDef) -> Result<SqlValue, BindError> {
         Value::SingleQuotedString(s) | Value::DoubleQuotedString(s) => {
             let t = col.data_type.to_uppercase();
             if t.contains("DATE") {
-                date_str_to_epoch_days(s).map(SqlValue::Date).ok_or_else(|| {
-                    BindError::TypeCoercionFailed {
+                date_str_to_epoch_days(s)
+                    .map(SqlValue::Date)
+                    .ok_or_else(|| BindError::TypeCoercionFailed {
                         column: col.name.clone(),
                         reason: format!("cannot parse '{s}' as ISO date (YYYY-MM-DD)"),
-                    }
-                })
+                    })
             } else {
                 Ok(SqlValue::Text(s.clone()))
             }
@@ -627,11 +672,15 @@ fn coerce_value(v: &Value, col: &ColumnDef) -> Result<SqlValue, BindError> {
 /// Returns `None` on parse failure or invalid calendar values.
 pub fn date_str_to_epoch_days(s: &str) -> Option<i32> {
     let parts: Vec<&str> = s.split('-').collect();
-    if parts.len() != 3 { return None; }
+    if parts.len() != 3 {
+        return None;
+    }
     let y: i32 = parts[0].parse().ok()?;
     let m: u32 = parts[1].parse().ok()?;
     let d: u32 = parts[2].parse().ok()?;
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) { return None; }
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
     Some(civil_to_epoch_days(y, m, d))
 }
 
@@ -650,23 +699,31 @@ fn civil_to_epoch_days(y: i32, m: u32, d: u32) -> i32 {
 /// Attempt to extract a simple `col op literal` predicate from a WHERE expr.
 /// Returns `None` for complex expressions → caller performs a full scan.
 fn parse_simple_predicate(expr: &Expr, table: &TableSchema) -> Option<DmlPredicate> {
-    let Expr::BinaryOp { left, op, right } = expr else { return None; };
+    let Expr::BinaryOp { left, op, right } = expr else {
+        return None;
+    };
     let col_name = extract_identifier(left)?;
-    let col_def = table.columns.iter()
+    let col_def = table
+        .columns
+        .iter()
         .find(|c| c.name.eq_ignore_ascii_case(&col_name))?;
 
     let dml_op = match op {
-        BinaryOperator::Eq    => DmlCmpOp::Eq,
+        BinaryOperator::Eq => DmlCmpOp::Eq,
         BinaryOperator::NotEq => DmlCmpOp::Neq,
-        BinaryOperator::Gt    => DmlCmpOp::Gt,
-        BinaryOperator::Lt    => DmlCmpOp::Lt,
-        BinaryOperator::GtEq  => DmlCmpOp::GtEq,
-        BinaryOperator::LtEq  => DmlCmpOp::LtEq,
-        _                     => return None,
+        BinaryOperator::Gt => DmlCmpOp::Gt,
+        BinaryOperator::Lt => DmlCmpOp::Lt,
+        BinaryOperator::GtEq => DmlCmpOp::GtEq,
+        BinaryOperator::LtEq => DmlCmpOp::LtEq,
+        _ => return None,
     };
 
     let sql_value = coerce_expr_to_value(right, col_def).ok()?;
-    Some(DmlPredicate { column: col_def.name.clone(), op: dml_op, value: sql_value })
+    Some(DmlPredicate {
+        column: col_def.name.clone(),
+        op: dml_op,
+        value: sql_value,
+    })
 }
 
 fn extract_identifier(expr: &Expr) -> Option<String> {
@@ -686,8 +743,14 @@ fn make_simple_catalog() -> InMemoryCatalog {
     cat.register_table(TableSchema {
         name: "t".to_string(),
         columns: vec![
-            ColumnDef { name: "id".to_string(),   data_type: "INT".to_string() },
-            ColumnDef { name: "name".to_string(), data_type: "TEXT".to_string() },
+            ColumnDef {
+                name: "id".to_string(),
+                data_type: "INT".to_string(),
+            },
+            ColumnDef {
+                name: "name".to_string(),
+                data_type: "TEXT".to_string(),
+            },
         ],
     });
     cat
@@ -704,7 +767,10 @@ mod tests {
     fn select_const_i64() {
         let stmt = parse_statement("SELECT 42").unwrap();
         let cat = InMemoryCatalog::with_tpch_lineitem();
-        assert_eq!(bind_statement(&stmt, &cat).unwrap(), BoundPlan::SelectConstI64(42));
+        assert_eq!(
+            bind_statement(&stmt, &cat).unwrap(),
+            BoundPlan::SelectConstI64(42)
+        );
     }
 
     #[test]
@@ -712,7 +778,9 @@ mod tests {
         let stmt = parse_statement("SELECT * FROM t").unwrap();
         let cat = make_simple_catalog();
         match bind_statement(&stmt, &cat).unwrap() {
-            BoundPlan::SelectFromTable { projection, table, .. } => {
+            BoundPlan::SelectFromTable {
+                projection, table, ..
+            } => {
                 assert_eq!(table.name, "t");
                 assert_eq!(projection, vec!["id", "name"]);
             }
@@ -725,7 +793,10 @@ mod tests {
         let stmt = parse_statement("SELECT * FROM t WHERE id = 1").unwrap();
         let cat = make_simple_catalog();
         match bind_statement(&stmt, &cat).unwrap() {
-            BoundPlan::SelectFromTable { where_clause: Some(pred), .. } => {
+            BoundPlan::SelectFromTable {
+                where_clause: Some(pred),
+                ..
+            } => {
                 assert_eq!(pred.column, "id");
                 assert_eq!(pred.op, DmlCmpOp::Eq);
                 assert_eq!(pred.value, SqlValue::Int(1));
@@ -753,7 +824,13 @@ mod tests {
         let stmt = parse_statement("INSERT INTO t VALUES (1, 'hello', 'extra')").unwrap();
         let cat = make_simple_catalog();
         let err = bind_statement(&stmt, &cat).unwrap_err();
-        assert!(matches!(err, BindError::ColumnCountMismatch { expected: 2, actual: 3 }));
+        assert!(matches!(
+            err,
+            BindError::ColumnCountMismatch {
+                expected: 2,
+                actual: 3
+            }
+        ));
     }
 
     #[test]
@@ -762,7 +839,10 @@ mod tests {
         let cat = make_simple_catalog();
         match bind_statement(&stmt, &cat).unwrap() {
             BoundPlan::Update(p) => {
-                assert_eq!(p.assignments[0], ("name".to_string(), SqlValue::Text("world".to_string())));
+                assert_eq!(
+                    p.assignments[0],
+                    ("name".to_string(), SqlValue::Text("world".to_string()))
+                );
                 let pred = p.predicate.unwrap();
                 assert_eq!(pred.value, SqlValue::Int(1));
             }
@@ -818,9 +898,10 @@ mod tests {
         let cat = InMemoryCatalog::default();
         cat.register_table(TableSchema {
             name: "events".to_string(),
-            columns: vec![
-                ColumnDef { name: "event_date".to_string(), data_type: "DATE".to_string() },
-            ],
+            columns: vec![ColumnDef {
+                name: "event_date".to_string(),
+                data_type: "DATE".to_string(),
+            }],
         });
         let stmt = parse_statement("INSERT INTO events VALUES ('2024-01-01')").unwrap();
         match bind_statement(&stmt, &cat).unwrap() {
@@ -835,9 +916,16 @@ mod tests {
     fn dml_predicate_matches_int_row() {
         let mut row = std::collections::BTreeMap::new();
         row.insert("id".to_string(), "42".to_string());
-        let pred = DmlPredicate { column: "id".to_string(), op: DmlCmpOp::Eq, value: SqlValue::Int(42) };
+        let pred = DmlPredicate {
+            column: "id".to_string(),
+            op: DmlCmpOp::Eq,
+            value: SqlValue::Int(42),
+        };
         assert!(pred.matches(&row));
-        let pred_ne = DmlPredicate { value: SqlValue::Int(99), ..pred.clone() };
+        let pred_ne = DmlPredicate {
+            value: SqlValue::Int(99),
+            ..pred.clone()
+        };
         assert!(!pred_ne.matches(&row));
     }
 
@@ -845,6 +933,9 @@ mod tests {
     fn insert_table_not_found_is_error() {
         let stmt = parse_statement("INSERT INTO nonexistent VALUES (1)").unwrap();
         let cat = make_simple_catalog();
-        assert!(matches!(bind_statement(&stmt, &cat).unwrap_err(), BindError::TableNotFound(_)));
+        assert!(matches!(
+            bind_statement(&stmt, &cat).unwrap_err(),
+            BindError::TableNotFound(_)
+        ));
     }
 }

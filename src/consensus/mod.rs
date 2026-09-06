@@ -5,14 +5,14 @@
 //   log       — persistent log (PersistentState, RaftPersistenceStore)
 //   raft      — state machine (RaftNode, RaftRole, RaftShared)
 //   rpc       — wire message types
-//   transport — Transport trait + ChannelTransport + TcpTransport
+//   transport — Transport trait + ChannelTransport + TcpTransport + optional TLS
 //
 // Session 13 additions:
 //   - InstallSnapshot RPC support (rpc.rs + raft.rs)
 //   - RaftPersistenceStore trait + MemPersistenceStore (log.rs)
 //   - Membership changes via tagged ClientCommand (raft.rs)
 //
-// CONFIDENCE: raw=0.76 effective=0.68
+// CONFIDENCE: raw=0.78 effective=0.70
 // [HUMAN REVIEW REQUIRED] — see REVIEW_REQUIRED.md §Session13
 
 pub mod log;
@@ -20,7 +20,7 @@ pub mod raft;
 pub mod rpc;
 pub mod transport;
 
-// Re-exports used by integration tests and future query-execution wiring.
+// Re-exports used by integration tests and production cluster wiring.
 #[allow(unused_imports)]
 pub use log::{MemPersistenceStore, PersistentState, RaftPersistenceStore};
 #[allow(unused_imports)]
@@ -34,6 +34,8 @@ pub use rpc::{
     AppendEntriesArgs, AppendEntriesReply, InstallSnapshotArgs, InstallSnapshotReply, LogEntry,
     MembershipChange, NodeId, RaftMessage, RequestVoteArgs, RequestVoteReply,
 };
+#[cfg(feature = "tls")]
 #[allow(unused_imports)]
-pub use transport::{ChannelBus, ChannelTransport, Transport};
-
+pub use transport::TlsTcpTransport;
+#[allow(unused_imports)]
+pub use transport::{ChannelBus, ChannelTransport, TcpTransport, Transport};

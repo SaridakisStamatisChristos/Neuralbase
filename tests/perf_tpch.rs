@@ -1,5 +1,5 @@
-use std::time::Instant;
 use std::sync::OnceLock;
+use std::time::Instant;
 
 use neuralbase::binder::bind_statement;
 use neuralbase::catalog::InMemoryCatalog;
@@ -40,10 +40,7 @@ fn tpch_q1_matches_reference_output() {
     let mut engine_map = std::collections::BTreeMap::new();
     if let (ColumnVector::Utf8(keys), ColumnVector::Float64(vals)) = (key_col, sum_col) {
         for (idx, val) in vals.iter().enumerate().take(out.row_count) {
-            engine_map.insert(
-                keys.get(idx).expect("engine key"),
-                val.expect("engine sum"),
-            );
+            engine_map.insert(keys.get(idx).expect("engine key"), val.expect("engine sum"));
         }
     } else {
         panic!("engine Q1 columns type mismatch");
@@ -52,10 +49,7 @@ fn tpch_q1_matches_reference_output() {
     let mut ref_map = std::collections::BTreeMap::new();
     if let (ColumnVector::Utf8(keys), ColumnVector::Float64(vals)) = (ref_key_col, ref_sum_col) {
         for (idx, val) in vals.iter().enumerate().take(reference.row_count) {
-            ref_map.insert(
-                keys.get(idx).expect("ref key"),
-                val.expect("ref sum"),
-            );
+            ref_map.insert(keys.get(idx).expect("ref key"), val.expect("ref sum"));
         }
     } else {
         panic!("reference Q1 columns type mismatch");
@@ -64,7 +58,10 @@ fn tpch_q1_matches_reference_output() {
     assert_eq!(engine_map.len(), ref_map.len());
     for (k, v) in &engine_map {
         let rv = ref_map.get(k).expect("missing key in reference map");
-        assert!((v - rv).abs() < 1e-6, "Q1 sum mismatch for key {k}: engine={v} ref={rv}");
+        assert!(
+            (v - rv).abs() < 1e-6,
+            "Q1 sum mismatch for key {k}: engine={v} ref={rv}"
+        );
     }
 }
 
@@ -260,10 +257,7 @@ fn q1_reference(lineitem: &RecordBatch) -> RecordBatch {
             "l_returnflag".to_string(),
             ColumnVector::Utf8(Utf8Column::from_options(keys)),
         ),
-        (
-            "sum".to_string(),
-            ColumnVector::Float64(sums),
-        ),
+        ("sum".to_string(), ColumnVector::Float64(sums)),
     ])
     .expect("reference q1 batch")
 }
@@ -327,17 +321,17 @@ fn q6_reference(lineitem: &RecordBatch) -> f64 {
 #[test]
 #[ignore = "slow: allocates ~6M rows; run via `make bench-full`"]
 fn bench_tpch_sf1() {
-    let catalog   = InMemoryCatalog::with_tpch_lineitem();
+    let catalog = InMemoryCatalog::with_tpch_lineitem();
     let scheduler = MorselScheduler::new(16_384);
-    let dataset   = generate_tpch_data(1.0);
+    let dataset = generate_tpch_data(1.0);
 
-    let q1_stmt  = parse_statement(Q1_SQL).expect("q1 parse");
+    let q1_stmt = parse_statement(Q1_SQL).expect("q1 parse");
     let q1_bound = bind_statement(&q1_stmt, &catalog).expect("q1 bind");
-    let q1_plan  = build_physical_plan(&q1_bound);
+    let q1_plan = build_physical_plan(&q1_bound);
 
-    let q6_stmt  = parse_statement(Q6_SQL).expect("q6 parse");
+    let q6_stmt = parse_statement(Q6_SQL).expect("q6 parse");
     let q6_bound = bind_statement(&q6_stmt, &catalog).expect("q6 bind");
-    let q6_plan  = build_physical_plan(&q6_bound);
+    let q6_plan = build_physical_plan(&q6_bound);
 
     let lineitem_rows = dataset.lineitem.row_count;
 
@@ -346,13 +340,13 @@ fn bench_tpch_sf1() {
     let _ = execute_physical_plan(&q6_plan, &dataset, &scheduler, None);
 
     let q1_start = Instant::now();
-    let q1_out   = execute_physical_plan(&q1_plan, &dataset, &scheduler, None)
-        .expect("SF1 Q1 execute");
+    let q1_out =
+        execute_physical_plan(&q1_plan, &dataset, &scheduler, None).expect("SF1 Q1 execute");
     let q1_us = q1_start.elapsed().as_micros();
 
     let q6_start = Instant::now();
-    let _q6_out  = execute_physical_plan(&q6_plan, &dataset, &scheduler, None)
-        .expect("SF1 Q6 execute");
+    let _q6_out =
+        execute_physical_plan(&q6_plan, &dataset, &scheduler, None).expect("SF1 Q6 execute");
     let q6_us = q6_start.elapsed().as_micros();
 
     println!("bench.tpch.sf1.lineitem_rows={lineitem_rows}");
@@ -379,29 +373,29 @@ fn bench_tpch_sf1() {
 #[test]
 #[ignore = "slow: allocates ~60M rows; run via `make bench-full`"]
 fn bench_tpch_sf10() {
-    let catalog   = InMemoryCatalog::with_tpch_lineitem();
+    let catalog = InMemoryCatalog::with_tpch_lineitem();
     let scheduler = MorselScheduler::new(16_384);
-    let dataset   = generate_tpch_data(10.0);
+    let dataset = generate_tpch_data(10.0);
 
-    let q1_stmt  = parse_statement(Q1_SQL).expect("q1 parse");
+    let q1_stmt = parse_statement(Q1_SQL).expect("q1 parse");
     let q1_bound = bind_statement(&q1_stmt, &catalog).expect("q1 bind");
-    let q1_plan  = build_physical_plan(&q1_bound);
+    let q1_plan = build_physical_plan(&q1_bound);
 
-    let q6_stmt  = parse_statement(Q6_SQL).expect("q6 parse");
+    let q6_stmt = parse_statement(Q6_SQL).expect("q6 parse");
     let q6_bound = bind_statement(&q6_stmt, &catalog).expect("q6 bind");
-    let q6_plan  = build_physical_plan(&q6_bound);
+    let q6_plan = build_physical_plan(&q6_bound);
 
     let lineitem_rows = dataset.lineitem.row_count;
 
     // No warm-up for SF=10 — memory pressure makes repeated runs impractical.
     let q1_start = Instant::now();
-    let q1_out   = execute_physical_plan(&q1_plan, &dataset, &scheduler, None)
-        .expect("SF10 Q1 execute");
+    let q1_out =
+        execute_physical_plan(&q1_plan, &dataset, &scheduler, None).expect("SF10 Q1 execute");
     let q1_us = q1_start.elapsed().as_micros();
 
     let q6_start = Instant::now();
-    let _q6_out  = execute_physical_plan(&q6_plan, &dataset, &scheduler, None)
-        .expect("SF10 Q6 execute");
+    let _q6_out =
+        execute_physical_plan(&q6_plan, &dataset, &scheduler, None).expect("SF10 Q6 execute");
     let q6_us = q6_start.elapsed().as_micros();
 
     println!("bench.tpch.sf10.lineitem_rows={lineitem_rows}");

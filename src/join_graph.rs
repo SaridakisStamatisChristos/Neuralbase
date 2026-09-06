@@ -4,7 +4,6 @@
 //! DEPENDS_ON: catalog
 //! RISK: table stats are approximate; selectivity estimates assume independence.
 
-
 use std::collections::{HashMap, HashSet};
 
 // ── Column / Table statistics ────────────────────────────────────────────────

@@ -16,7 +16,6 @@
 
 // Session 5 — not yet wired into query path. Suppress dead_code.
 
-
 use crate::distributed::backpressure::{bounded_channel, BoundedReceiver, BoundedSender};
 
 // ── Row type (opaque bytes for now) ───────────────────────────────────────
@@ -46,11 +45,7 @@ pub struct ShuffleWriter {
 }
 
 impl ShuffleWriter {
-    pub fn new(
-        senders: Vec<BoundedSender<Row>>,
-        key_offset: usize,
-        key_len: usize,
-    ) -> Self {
+    pub fn new(senders: Vec<BoundedSender<Row>>, key_offset: usize, key_len: usize) -> Self {
         Self {
             senders,
             key_offset,
@@ -164,12 +159,11 @@ impl Gather {
         for _ in 0..n {
             let idx = self.current % n;
             self.current += 1;
-            if let Ok(Some(row)) =
-                tokio::time::timeout(
-                    std::time::Duration::from_millis(1),
-                    self.receivers[idx].recv(),
-                )
-                .await
+            if let Ok(Some(row)) = tokio::time::timeout(
+                std::time::Duration::from_millis(1),
+                self.receivers[idx].recv(),
+            )
+            .await
             {
                 return Some(row);
             }
@@ -214,31 +208,19 @@ mod tests {
         writer.write(row_c.clone()).await.unwrap();
 
         // Find which partition has 2 rows.
-        let p0a = tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            readers[0].next(),
-        )
-        .await;
-        let p0b = tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            readers[0].next(),
-        )
-        .await;
-        let p1a = tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            readers[1].next(),
-        )
-        .await;
-        let p1b = tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            readers[1].next(),
-        )
-        .await;
+        let p0a =
+            tokio::time::timeout(std::time::Duration::from_millis(50), readers[0].next()).await;
+        let p0b =
+            tokio::time::timeout(std::time::Duration::from_millis(50), readers[0].next()).await;
+        let p1a =
+            tokio::time::timeout(std::time::Duration::from_millis(50), readers[1].next()).await;
+        let p1b =
+            tokio::time::timeout(std::time::Duration::from_millis(50), readers[1].next()).await;
 
-        let count_p0 = p0a.ok().flatten().is_some() as usize
-            + p0b.ok().flatten().is_some() as usize;
-        let count_p1 = p1a.ok().flatten().is_some() as usize
-            + p1b.ok().flatten().is_some() as usize;
+        let count_p0 =
+            p0a.ok().flatten().is_some() as usize + p0b.ok().flatten().is_some() as usize;
+        let count_p1 =
+            p1a.ok().flatten().is_some() as usize + p1b.ok().flatten().is_some() as usize;
         assert_eq!(count_p0 + count_p1, 3);
     }
 
@@ -248,13 +230,10 @@ mod tests {
         let row = vec![42u8; 8];
         writer.write(row.clone()).await.unwrap();
         for rx in &mut receivers {
-            let received = tokio::time::timeout(
-                std::time::Duration::from_millis(50),
-                rx.recv(),
-            )
-            .await
-            .unwrap()
-            .unwrap();
+            let received = tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
             assert_eq!(received, row);
         }
     }
@@ -274,13 +253,10 @@ mod tests {
         let mut gather = Gather::new(receivers);
         let mut results = vec![];
         for _ in 0..3 {
-            let row = tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                gather.next(),
-            )
-            .await
-            .unwrap()
-            .unwrap();
+            let row = tokio::time::timeout(std::time::Duration::from_millis(100), gather.next())
+                .await
+                .unwrap()
+                .unwrap();
             results.push(row[0]);
         }
         results.sort();

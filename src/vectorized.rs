@@ -61,7 +61,6 @@ impl Utf8Column {
     pub fn is_empty(&self) -> bool {
         self.validity.is_empty()
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -540,13 +539,21 @@ fn apply_predicate_to_indices(
         Predicate::LtI64 { column, value } => {
             apply_i64_indices(input, column, *value, indices, |v, c| v < c)
         }
-        Predicate::BetweenDate32 { column, start, end_exclusive } => {
+        Predicate::BetweenDate32 {
+            column,
+            start,
+            end_exclusive,
+        } => {
             let Some(ColumnVector::Date32(values)) = input.column(column) else {
                 return vec![false; indices.len()];
             };
             indices
                 .iter()
-                .map(|idx| values[*idx].map(|v| v >= *start && v < *end_exclusive).unwrap_or(false))
+                .map(|idx| {
+                    values[*idx]
+                        .map(|v| v >= *start && v < *end_exclusive)
+                        .unwrap_or(false)
+                })
                 .collect()
         }
         Predicate::BetweenFloat64 { column, low, high } => {
@@ -555,7 +562,11 @@ fn apply_predicate_to_indices(
             };
             indices
                 .iter()
-                .map(|idx| values[*idx].map(|v| v >= *low && v <= *high).unwrap_or(false))
+                .map(|idx| {
+                    values[*idx]
+                        .map(|v| v >= *low && v <= *high)
+                        .unwrap_or(false)
+                })
                 .collect()
         }
         Predicate::EqText { column, value } => {
@@ -647,7 +658,11 @@ where
             .collect(),
         Some(ColumnVector::Int32(values)) => indices
             .iter()
-            .map(|idx| values[*idx].map(|v| cmp(v as i64, criterion)).unwrap_or(false))
+            .map(|idx| {
+                values[*idx]
+                    .map(|v| cmp(v as i64, criterion))
+                    .unwrap_or(false)
+            })
             .collect(),
         _ => vec![false; indices.len()],
     }

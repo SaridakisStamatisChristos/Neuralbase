@@ -2,11 +2,20 @@ name: ci
 
 on:
   push:
+    branches: [main]
   pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   checks:
     runs-on: ubuntu-24.04
+    timeout-minutes: 40
     env:
       LIBCLANG_PATH: /usr/lib/llvm-18/lib
       ROCKSDB_INCLUDE_DIR: /usr/include
@@ -27,6 +36,7 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: "1.88.0"
           components: rustfmt, clippy
 
       - name: Cache cargo registry
@@ -38,8 +48,8 @@ jobs:
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
 
-      - name: Run tests
-        run: make test
+      - name: Run core tests
+        run: timeout --signal=TERM --kill-after=30s 30m make test
 
       - name: Run lint
         run: make lint
@@ -49,3 +59,83 @@ jobs:
 
       - name: Run adversarial tests
         run: make adversarial
+
+  tpch-reference:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      LIBCLANG_PATH: /usr/lib/llvm-18/lib
+      ROCKSDB_INCLUDE_DIR: /usr/include
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            llvm-18-dev \
+            libclang-18-dev \
+            clang-18 \
+            librocksdb-dev \
+            nasm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88.0"
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Run PostgreSQL 16 TPC-H reference suite
+        run: timeout --signal=TERM --kill-after=30s 20m make tpch-correctness
+
+      - name: Dump PostgreSQL reference logs on failure
+        if: failure()
+        run: docker logs neuralbase-pg16-ref || true
+
+      - name: Clean PostgreSQL reference container
+        if: always()
+        run: docker rm -f neuralbase-pg16-ref || true
+
+  deployment-manifests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: "v3.16.4"
+
+      - name: Lint Helm chart
+        run: helm lint helm/neuralbase
+
+      - name: Render default Helm chart
+        run: helm template neuralbase helm/neuralbase > /tmp/neuralbase-rendered.yaml
+
+      - name: Render authenticated Helm chart
+        run: >-
+          helm template neuralbase helm/neuralbase
+          --set config.authRequired=true
+          --set auth.existingSecret=neuralbase-users
+          > /tmp/neuralbase-auth-rendered.yaml
+
+      - name: Render TLS Helm chart
+        run: >-
+          helm template neuralbase helm/neuralbase
+          --set tls.enabled=true
+          --set tls.existingSecret=neuralbase-tls
+          > /tmp/neuralbase-tls-rendered.yaml
+
+      - name: Reject unsafe fixed-membership HPA manifest
+        run: test ! -e k8s/hpa.yaml

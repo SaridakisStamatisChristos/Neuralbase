@@ -5,7 +5,6 @@
 //! RISK: cost estimates assume uniform data distributions; skewed data may
 //!       make actual query times diverge significantly from predictions.
 
-
 use crate::join_graph::{JoinGraph, TableStats};
 use std::collections::HashMap;
 

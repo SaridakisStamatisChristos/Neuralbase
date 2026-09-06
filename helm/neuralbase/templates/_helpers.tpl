@@ -31,3 +31,19 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/name: {{ include "neuralbase.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
+
+{{/*
+Build a stable logical-id -> DNS:port map for every StatefulSet replica.
+Example for 3 replicas:
+release-neuralbase-0=release-neuralbase-0.release-neuralbase-headless:7001,...
+*/}}
+{{- define "neuralbase.raftPeers" -}}
+{{- $fullname := include "neuralbase.fullname" . -}}
+{{- $peers := list -}}
+{{- range $i := until (int .Values.replicaCount) -}}
+{{- $id := printf "%s-%d" $fullname $i -}}
+{{- $addr := printf "%s.%s-headless:7001" $id $fullname -}}
+{{- $peers = append $peers (printf "%s=%s" $id $addr) -}}
+{{- end -}}
+{{- join "," $peers -}}
+{{- end }}

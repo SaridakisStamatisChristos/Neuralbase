@@ -6,7 +6,6 @@
 //! RISK: NDV estimation is exact only for the sampled window; large tables
 //!       may undercount distinct values.
 
-
 use crate::join_graph::{ColumnStats, TableStats};
 use crate::vectorized::{ColumnVector, RecordBatch};
 use std::collections::{HashMap, HashSet};

@@ -215,9 +215,7 @@ pub fn parse_startup_username(startup_body: &[u8]) -> String {
 /// Parse a SASLInitialResponse ('p') payload.
 /// Format: mechanism\0 + data_length(i32) + data
 /// Returns (mechanism_name, initial_data).
-pub fn parse_sasl_initial_response(
-    payload: &[u8],
-) -> Result<(String, Vec<u8>), ProtocolError> {
+pub fn parse_sasl_initial_response(payload: &[u8]) -> Result<(String, Vec<u8>), ProtocolError> {
     let null_pos = payload
         .iter()
         .position(|&b| b == 0)

@@ -33,7 +33,11 @@ use neuralbase::vectorized::ColumnVector;
 fn make_executor(
     dir: &TempDir,
     table: TableSchema,
-) -> (Arc<StorageExecutor>, Arc<TransactionManager>, Arc<StorageEngine>) {
+) -> (
+    Arc<StorageExecutor>,
+    Arc<TransactionManager>,
+    Arc<StorageEngine>,
+) {
     let engine = Arc::new(StorageEngine::open(dir.path()).unwrap());
     let clock = Arc::new(HlcClock::new(500));
     let txn_mgr = Arc::new(TransactionManager::new(engine.clone(), clock));
@@ -181,7 +185,9 @@ fn snapshot_isolation_concurrent_insert_not_visible() {
 
             // Scan engine directly at T1 — commit_ts(insert) > T1 → row NOT visible.
             let tid = table_id_for("accounts");
-            let raw_rows = engine_a.scan_table(tid, snap_ts).expect("engine scan at T1");
+            let raw_rows = engine_a
+                .scan_table(tid, snap_ts)
+                .expect("engine scan at T1");
             txn_a.rollback(pre_snap);
 
             *result_a.lock().unwrap() = Some(raw_rows.len());
@@ -194,7 +200,7 @@ fn snapshot_isolation_concurrent_insert_not_visible() {
 
         let thread_b = std::thread::spawn(move || {
             b1_b.wait(); // wait: "A holds T1"
-            // commit_ts = new HLC tick = T2 > T1 (HLC is strictly monotone within a process)
+                         // commit_ts = new HLC tick = T2 > T1 (HLC is strictly monotone within a process)
             let pk = exec_b.next_pk();
             exec_b
                 .insert_row("accounts", &pk, &[("id", "99"), ("balance", "9999")])
@@ -242,9 +248,7 @@ fn delete_removes_only_matching_rows() {
         op: binder::DmlCmpOp::Eq,
         value: binder::SqlValue::Int(2),
     };
-    let deleted = exec
-        .delete_rows("accounts", Some(&pred))
-        .expect("delete");
+    let deleted = exec.delete_rows("accounts", Some(&pred)).expect("delete");
     assert_eq!(deleted, 1, "expected exactly 1 row deleted");
 
     // Verify 2 rows remain.
@@ -254,7 +258,11 @@ fn delete_removes_only_matching_rows() {
     // Verify the deleted row's id is gone.
     if let ColumnVector::Int64(ids) = batch.column("id").unwrap() {
         for val in ids {
-            assert_ne!(*val, Some(2), "id=2 must not appear in results after delete");
+            assert_ne!(
+                *val,
+                Some(2),
+                "id=2 must not appear in results after delete"
+            );
         }
     }
 }
@@ -290,11 +298,7 @@ fn update_modifies_column() {
     let batch = exec.scan_table("accounts").expect("scan");
     assert_eq!(batch.row_count, 1);
     if let ColumnVector::Int64(balances) = batch.column("balance").unwrap() {
-        assert_eq!(
-            balances[0],
-            Some(999),
-            "balance must be 999 after update"
-        );
+        assert_eq!(balances[0], Some(999), "balance must be 999 after update");
     }
 }
 
@@ -341,13 +345,12 @@ fn session9_create_insert_select_drop_roundtrip() {
                 .iter()
                 .zip(row_values)
                 .map(|(col, val)| {
-                    let s = val
-                        .to_storage_string()
-                        .unwrap_or_default();
+                    let s = val.to_storage_string().unwrap_or_default();
                     (col.clone(), s)
                 })
                 .collect();
-            let refs: Vec<(&str, &str)> = kv.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+            let refs: Vec<(&str, &str)> =
+                kv.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
             exec.insert_row("session9_test", &exec.next_pk(), &refs)
                 .expect("insert row");
         }
@@ -357,8 +360,9 @@ fn session9_create_insert_select_drop_roundtrip() {
     let batch = exec.scan_table("session9_test").expect("scan table");
     qcat.add_batch("session9_test", &batch);
 
-    let select_stmt = parse_statement("SELECT * FROM session9_test WHERE amount > 10.0 ORDER BY id")
-        .expect("parse select");
+    let select_stmt =
+        parse_statement("SELECT * FROM session9_test WHERE amount > 10.0 ORDER BY id")
+            .expect("parse select");
     let select_query = match select_stmt {
         sqlparser::ast::Statement::Query(query) => query,
         _ => panic!("expected SELECT query statement"),
@@ -367,36 +371,54 @@ fn session9_create_insert_select_drop_roundtrip() {
     assert_eq!(selected.rows.len(), 2, "expected 2 rows with amount > 10.0");
     assert_eq!(selected.columns.len(), 4, "expected all 4 selected columns");
 
-    let count_stmt = parse_statement("SELECT COUNT(*) AS c FROM session9_test").expect("parse count");
+    let count_stmt =
+        parse_statement("SELECT COUNT(*) AS c FROM session9_test").expect("parse count");
     let count_query = match count_stmt {
         sqlparser::ast::Statement::Query(query) => query,
         _ => panic!("expected COUNT query statement"),
     };
     let counted = execute_select_query(&count_query, &qcat).expect("execute count");
     assert_eq!(counted.rows.len(), 1, "COUNT(*) must return one row");
-    assert_eq!(counted.rows[0][0], neuralbase::query_executor::ScalarVal::Int(3));
+    assert_eq!(
+        counted.rows[0][0],
+        neuralbase::query_executor::ScalarVal::Int(3)
+    );
 
     catalog.drop_table("session9_test");
-    rdb.unregister_table("session9_test").expect("unregister schema");
+    rdb.unregister_table("session9_test")
+        .expect("unregister schema");
     let table_id = table_id_for("session9_test");
     engine.clear_table_data(table_id).expect("clear table data");
 
-    assert!(catalog.get_table("session9_test").is_none(), "catalog entry must be removed");
-    assert!(rdb.get_table("session9_test").is_none(), "persisted catalog entry must be removed");
+    assert!(
+        catalog.get_table("session9_test").is_none(),
+        "catalog entry must be removed"
+    );
+    assert!(
+        rdb.get_table("session9_test").is_none(),
+        "persisted catalog entry must be removed"
+    );
 
     let rows = engine
         .raw_scan_table_versions(table_id)
         .expect("scan dropped table versions");
-    assert!(rows.is_empty(), "RocksDB rows must be removed after DROP TABLE");
+    assert!(
+        rows.is_empty(),
+        "RocksDB rows must be removed after DROP TABLE"
+    );
 
-    let dropped_select_stmt = parse_statement("SELECT * FROM session9_test").expect("parse select after drop");
+    let dropped_select_stmt =
+        parse_statement("SELECT * FROM session9_test").expect("parse select after drop");
     let dropped_select = match dropped_select_stmt {
         sqlparser::ast::Statement::Query(query) => query,
         _ => panic!("expected select query statement"),
     };
     let err = execute_select_query(&dropped_select, &QueryCatalog::new())
         .expect_err("query after drop must fail cleanly");
-    assert!(matches!(err, QueryError::TableNotFound(_)), "expected TableNotFound error, got {err:?}");
+    assert!(
+        matches!(err, QueryError::TableNotFound(_)),
+        "expected TableNotFound error, got {err:?}"
+    );
 }
 
 #[cfg(test)]

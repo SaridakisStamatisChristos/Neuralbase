@@ -6,33 +6,84 @@ on:
       - "v*.*.*"
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: saridakisstamatischristos/neuralbase
 
 jobs:
   test:
-    name: Test
-    runs-on: ubuntu-latest
+    name: Release validation
+    runs-on: ubuntu-24.04
+    env:
+      LIBCLANG_PATH: /usr/lib/llvm-18/lib
+      ROCKSDB_INCLUDE_DIR: /usr/include
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            llvm-18-dev \
+            libclang-18-dev \
+            clang-18 \
+            librocksdb-dev \
+            nasm
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.88.0"
-      - uses: Swatinem/rust-cache@v2
-      - name: Run tests
-        run: cargo test --release --all-targets
+          components: rustfmt, clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-release-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Run correctness suite
+        run: make test
+
+      - name: Run lint
+        run: make lint
+
+      - name: Check confidence boundaries
+        run: make confidence
+
+      - name: Run adversarial suite
+        run: make adversarial
+
+  manifests:
+    name: Deployment manifests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: azure/setup-helm@v4
+        with:
+          version: "v3.16.4"
+      - run: helm lint helm/neuralbase
+      - run: helm template neuralbase helm/neuralbase > /tmp/neuralbase.yaml
+      - run: >-
+          helm template neuralbase helm/neuralbase
+          --set config.authRequired=true
+          --set auth.existingSecret=neuralbase-users
+          > /tmp/neuralbase-auth.yaml
+      - run: test ! -e k8s/hpa.yaml
 
   docker:
-    name: Docker Build & Push
-    needs: test
-    runs-on: ubuntu-latest
+    name: Docker build and push
+    needs: [test, manifests]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
       - uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -54,16 +105,14 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
 
   helm:
-    name: Helm Package
-    needs: test
-    runs-on: ubuntu-latest
+    name: Helm package
+    needs: [test, manifests]
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
       - uses: azure/setup-helm@v4
         with:
           version: "v3.16.4"
-      - name: Lint chart
-        run: helm lint helm/neuralbase
       - name: Package chart
         run: helm package helm/neuralbase --destination ./dist
       - uses: actions/upload-artifact@v4
@@ -74,9 +123,11 @@ jobs:
   release:
     name: GitHub Release
     needs: [docker, helm]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
       - uses: actions/download-artifact@v4
         with:
           name: helm-chart
