@@ -1,3 +1,9 @@
+{{- if and (eq (toString .Values.config.authRequired) "true") (not .Values.auth.existingSecret) -}}
+{{- fail "config.authRequired=true requires auth.existingSecret containing users.json" -}}
+{{- end -}}
+{{- if and .Values.tls.enabled (not .Values.tls.existingSecret) -}}
+{{- fail "tls.enabled=true requires tls.existingSecret containing server.crt and server.key" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -60,16 +66,24 @@ spec:
             - configMapRef:
                 name: {{ include "neuralbase.fullname" . }}-config
           env:
-            - name: NODE_ID
+            - name: NEURALBASE_NODE_ID
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
-            - name: RAFT_ADDR
+            - name: NEURALBASE_RAFT_ADDR
               value: {{ .Values.config.raftAddr | quote }}
-            - name: PEERS
+            - name: NEURALBASE_PEERS
               value: {{ include "neuralbase.raftPeers" . | quote }}
             - name: NEURALBASE_USERS_FILE
               value: {{ printf "%s/users.json" .Values.config.dbPath | quote }}
+            {{- if .Values.tls.enabled }}
+            - name: TLS_ENABLED
+              value: "1"
+            - name: NEURALBASE_TLS_CERT
+              value: {{ .Values.tls.certPath | quote }}
+            - name: NEURALBASE_TLS_KEY
+              value: {{ .Values.tls.keyPath | quote }}
+            {{- end }}
           volumeMounts:
             - name: data
               mountPath: {{ .Values.config.dbPath }}
@@ -109,7 +123,7 @@ spec:
         {{- if .Values.tls.enabled }}
         - name: tls-certs
           secret:
-            secretName: {{ default (printf "%s-tls" (include "neuralbase.fullname" .)) .Values.tls.existingSecret }}
+            secretName: {{ .Values.tls.existingSecret }}
         {{- end }}
         {{- if .Values.auth.existingSecret }}
         - name: users-seed
