@@ -1,25 +1,25 @@
 name: Repair rustfmt
 
 on:
-  pull_request:
-    branches: [main]
+  push:
+    branches:
+      - repair/neuralbase-v1.1-finalization
 
 permissions:
   contents: write
 
 concurrency:
-  group: repair-rustfmt-${{ github.event.pull_request.number }}
+  group: repair-rustfmt-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   format:
-    if: github.head_ref == 'repair/neuralbase-v1.1-finalization'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repair branch
         uses: actions/checkout@v4.2.2
         with:
-          ref: ${{ github.head_ref }}
+          ref: repair/neuralbase-v1.1-finalization
           fetch-depth: 0
 
       - name: Setup Rust toolchain
@@ -42,4 +42,4 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
           git commit -m 'style: apply rustfmt'
-          git push origin HEAD:${{ github.head_ref }}
+          git push origin HEAD:repair/neuralbase-v1.1-finalization
