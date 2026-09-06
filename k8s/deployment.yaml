@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-# NeuralBase StatefulSet — 3-node cluster with persistent RocksDB volumes.
+# NeuralBase StatefulSet — fixed 3-node development topology.
+# SQL state is local to each pod; Raft SQL replication is not implemented yet.
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -65,18 +66,11 @@ spec:
                   fieldPath: metadata.name
             - name: NEURALBASE_PEERS
               value: "neuralbase-0=neuralbase-0.neuralbase-headless:7001,neuralbase-1=neuralbase-1.neuralbase-headless:7001,neuralbase-2=neuralbase-2.neuralbase-headless:7001"
-            - name: NEURALBASE_TLS_CERT
-              value: "/tls/server.crt"
-            - name: NEURALBASE_TLS_KEY
-              value: "/tls/server.key"
             - name: NEURALBASE_USERS_FILE
               value: "/data/neuralbase/users.json"
           volumeMounts:
             - name: data
               mountPath: /data/neuralbase
-            - name: tls
-              mountPath: /tls
-              readOnly: true
             - name: users-seed
               mountPath: /users-seed
               readOnly: true
@@ -115,9 +109,6 @@ spec:
                   - "-c"
                   - "sleep 5"
       volumes:
-        - name: tls
-          secret:
-            secretName: neuralbase-tls
         - name: users-seed
           secret:
             secretName: neuralbase-users
