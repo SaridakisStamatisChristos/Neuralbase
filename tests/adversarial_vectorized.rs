@@ -1,10 +1,10 @@
 use neuralbase::scheduler::MorselScheduler;
-use std::sync::OnceLock;
 use neuralbase::tpch::{self, generate_tpch_data};
-use neuralbase::vectorized::{self,
-    filter, i64_mask_auto, i64_mask_scalar, sort_merge_join, ColumnVector, ComparisonOp, ExecError,
-    Predicate, RecordBatch,
+use neuralbase::vectorized::{
+    self, filter, i64_mask_auto, i64_mask_scalar, sort_merge_join, ColumnVector, ComparisonOp,
+    ExecError, Predicate, RecordBatch,
 };
+use std::sync::OnceLock;
 
 fn tpch_sf01_dataset() -> &'static tpch::TpchDataSet {
     static DS: OnceLock<tpch::TpchDataSet> = OnceLock::new();

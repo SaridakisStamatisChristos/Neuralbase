@@ -20,7 +20,6 @@
 //! CONFIDENCE: raw=0.73 effective=0.68
 //! DEPENDS_ON: join_graph, cost_model
 
-
 use crate::join_graph::JoinGraph;
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -52,28 +51,25 @@ const DEFAULT_SEL: f64 = 0.01;
 //   part=4, partsupp=5, nation=6, region=7
 
 const TPCH_TABLE_NAMES: [&str; MAX_TABLES] = [
-    "lineitem", "orders", "customer", "supplier",
-    "part", "partsupp", "nation", "region",
+    "lineitem", "orders", "customer", "supplier", "part", "partsupp", "nation", "region",
 ];
 
-const TPCH_TABLE_ROWS: [u64; MAX_TABLES] = [
-    600_122, 150_000, 15_000, 1_000, 20_000, 80_000, 25, 5,
-];
+const TPCH_TABLE_ROWS: [u64; MAX_TABLES] = [600_122, 150_000, 15_000, 1_000, 20_000, 80_000, 25, 5];
 
 /// FK selectivity pairs: (global_idx_a, global_idx_b, selectivity).
 /// Values MUST match train.py SELECTIVITY dict exactly — bench formula:
 ///   sel = 1 / max(NDV_left, NDV_right), NDV defaults to row_count.
 const TPCH_FK_SEL: &[(usize, usize, f64)] = &[
-    (1, 0, 1.666_304_755e-6),  // orders(1)   ↔ lineitem(0):   1/600122
-    (2, 1, 6.666_666_667e-6),  // customer(2) ↔ orders(1):     1/150000
-    (6, 3, 1.0e-3),            // nation(6)   ↔ supplier(3):   1/1000
-    (6, 2, 6.666_666_667e-5),  // nation(6)   ↔ customer(2):   1/15000
-    (7, 6, 4.0e-2),            // region(7)   ↔ nation(6):     1/25
-    (4, 5, 1.25e-5),           // part(4)     ↔ partsupp(5):   1/80000
-    (3, 5, 1.25e-5),           // supplier(3) ↔ partsupp(5):   1/80000
-    (0, 3, 1.666_304_755e-6),  // lineitem(0) ↔ supplier(3):   1/600122  [+]
-    (4, 0, 1.666_304_755e-6),  // part(4)     ↔ lineitem(0):   1/600122  [+]
-    (0, 5, 1.666_304_755e-6),  // lineitem(0) ↔ partsupp(5):   1/600122  [+]
+    (1, 0, 1.666_304_755e-6), // orders(1)   ↔ lineitem(0):   1/600122
+    (2, 1, 6.666_666_667e-6), // customer(2) ↔ orders(1):     1/150000
+    (6, 3, 1.0e-3),           // nation(6)   ↔ supplier(3):   1/1000
+    (6, 2, 6.666_666_667e-5), // nation(6)   ↔ customer(2):   1/15000
+    (7, 6, 4.0e-2),           // region(7)   ↔ nation(6):     1/25
+    (4, 5, 1.25e-5),          // part(4)     ↔ partsupp(5):   1/80000
+    (3, 5, 1.25e-5),          // supplier(3) ↔ partsupp(5):   1/80000
+    (0, 3, 1.666_304_755e-6), // lineitem(0) ↔ supplier(3):   1/600122  [+]
+    (4, 0, 1.666_304_755e-6), // part(4)     ↔ lineitem(0):   1/600122  [+]
+    (0, 5, 1.666_304_755e-6), // lineitem(0) ↔ partsupp(5):   1/600122  [+]
 ];
 
 // ── Precomputed selectivity feature matrix ────────────────────────────────────
@@ -145,11 +141,8 @@ impl RlOptimizer {
 
         // Map every table in the query to its global TPC-H index.
         // If any table is unknown (non-TPC-H query), fall back to naive.
-        let global_idxs: Option<Vec<usize>> = graph
-            .tables
-            .iter()
-            .map(|t| tpch_global_idx(t))
-            .collect();
+        let global_idxs: Option<Vec<usize>> =
+            graph.tables.iter().map(|t| tpch_global_idx(t)).collect();
         let global_idxs = match global_idxs {
             Some(v) => v,
             None => {
@@ -312,8 +305,7 @@ impl RlOptimizer {
 
     /// Run one forward pass through the loaded model.
     fn run_step_infer(model: &OnnxRunnable, state: Vec<f32>) -> Option<Vec<f32>> {
-        let input_arr =
-            tract_ndarray::Array2::from_shape_vec((1, STATE_DIM), state).ok()?;
+        let input_arr = tract_ndarray::Array2::from_shape_vec((1, STATE_DIM), state).ok()?;
         let input_tensor: Tensor = input_arr.into();
         let result = model.run(tvec![input_tensor.into()]).ok()?;
         let output_view = result[0].to_array_view::<f32>().ok()?;
@@ -417,8 +409,14 @@ mod tests {
         assert_eq!(sv[0], 0.0, "A[0,0] diagonal must be 0 before any join");
         assert_eq!(sv[9], 0.0, "A[1,1] diagonal must be 0 before any join");
         // Global cardinality features present for both tables
-        assert!(sv[64] > 0.0, "lineitem (global 0) cardinality feature must be set");
-        assert!(sv[65] > 0.0, "orders (global 1) cardinality feature must be set");
+        assert!(
+            sv[64] > 0.0,
+            "lineitem (global 0) cardinality feature must be set"
+        );
+        assert!(
+            sv[65] > 0.0,
+            "orders (global 1) cardinality feature must be set"
+        );
     }
 
     #[test]

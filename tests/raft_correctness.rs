@@ -1,4 +1,4 @@
-     // SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: Apache-2.0
 // Raft correctness tests.
 //
 // Tests the following correctness properties:
@@ -17,8 +17,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use neuralbase::cluster::{ClusterConfig, ConsistentHashRouter, NodeRegistry};
-use neuralbase::consensus::{ChannelTransport, RaftNode, RaftRole, RaftShared, RaftTaskHandle, Transport};
-use neuralbase::distributed::{bounded_channel, DistributedPlanner, PhysicalPlanStub, QueryCoordinator};
+use neuralbase::consensus::{
+    ChannelTransport, RaftNode, RaftRole, RaftShared, RaftTaskHandle, Transport,
+};
+use neuralbase::distributed::{
+    bounded_channel, DistributedPlanner, PhysicalPlanStub, QueryCoordinator,
+};
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -26,21 +30,18 @@ use neuralbase::distributed::{bounded_channel, DistributedPlanner, PhysicalPlanS
 async fn spawn_cluster(
     n: usize,
     election_ms: u64,
-) -> (Vec<Arc<tokio::sync::Mutex<RaftShared>>>, Vec<RaftTaskHandle>) {
+) -> (
+    Vec<Arc<tokio::sync::Mutex<RaftShared>>>,
+    Vec<RaftTaskHandle>,
+) {
     let bus = ChannelTransport::new_bus();
     let node_ids: Vec<String> = (1..=n).map(|i| format!("node{i}")).collect();
     let mut shareds = vec![];
     let mut handles = vec![];
 
     for id in &node_ids {
-        let peers: Vec<String> = node_ids
-            .iter()
-            .filter(|p| p != &id)
-            .cloned()
-            .collect();
-        let transport = Arc::new(
-            ChannelTransport::register(id.clone(), Arc::clone(&bus)).await,
-        );
+        let peers: Vec<String> = node_ids.iter().filter(|p| p != &id).cloned().collect();
+        let transport = Arc::new(ChannelTransport::register(id.clone(), Arc::clone(&bus)).await);
         let mut node = RaftNode::new(id.clone(), peers, transport);
         node.set_election_timeout_ms(election_ms);
         let (_cmd_tx, shared, handle) = node.spawn();
@@ -71,10 +72,7 @@ async fn wait_for_role(
 }
 
 /// Count nodes currently in a given role.
-async fn count_role(
-    shareds: &[Arc<tokio::sync::Mutex<RaftShared>>],
-    role: RaftRole,
-) -> usize {
+async fn count_role(shareds: &[Arc<tokio::sync::Mutex<RaftShared>>], role: RaftRole) -> usize {
     let mut count = 0;
     for s in shareds {
         if s.lock().await.role == role {
@@ -192,7 +190,10 @@ fn coordinator_reroutes_failed_fragment() {
     coord.handle_failure(&mut manifest, 0, "err1".to_string());
     coord.handle_failure(&mut manifest, 0, "err2".to_string());
     let third = coord.handle_failure(&mut manifest, 0, "err3".to_string());
-    assert!(!third, "should be permanently failed after exhausting retries");
+    assert!(
+        !third,
+        "should be permanently failed after exhausting retries"
+    );
 }
 
 // 9. Bounded channel back-pressure: producer doesn't OOM slow consumer.
@@ -231,16 +232,21 @@ async fn leader_elected_after_staggered_startup() {
     let bus = ChannelTransport::new_bus();
     let ids = ["a", "b", "c"];
     let peers_for: Vec<Vec<String>> = (0..3)
-        .map(|i| ids.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, &s)| s.to_string()).collect())
+        .map(|i| {
+            ids.iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, &s)| s.to_string())
+                .collect()
+        })
         .collect();
 
     let mut shareds = vec![];
     let mut _handles = vec![];
     for (i, &id) in ids.iter().enumerate() {
         tokio::time::sleep(Duration::from_millis(20)).await;
-        let transport = Arc::new(
-            ChannelTransport::register(id.to_string(), Arc::clone(&bus)).await,
-        );
+        let transport =
+            Arc::new(ChannelTransport::register(id.to_string(), Arc::clone(&bus)).await);
         let mut node = RaftNode::new(id.to_string(), peers_for[i].clone(), transport);
         node.set_election_timeout_ms(40);
         let (_cmd_tx, shared, handle) = node.spawn();
@@ -308,17 +314,15 @@ async fn s13_restart_recovery_preserves_term() {
     }
 
     let bus = ChannelTransport::new_bus();
-    let transport = Arc::new(
-        ChannelTransport::register("s13_restart".into(), Arc::clone(&bus)).await,
-    );
+    let transport =
+        Arc::new(ChannelTransport::register("s13_restart".into(), Arc::clone(&bus)).await);
     let store_dyn: Arc<dyn RaftPersistenceStore> = store;
-    let mut node = RaftNode::new("s13_restart".into(), vec![], transport)
-        .with_persistence(store_dyn);
+    let mut node =
+        RaftNode::new("s13_restart".into(), vec![], transport).with_persistence(store_dyn);
     node.set_election_timeout_ms(30);
     let (_cmd_tx, shared, _handle) = node.spawn();
 
-    let elected =
-        wait_for_role(&[shared], RaftRole::Leader, Duration::from_millis(500)).await;
+    let elected = wait_for_role(&[shared], RaftRole::Leader, Duration::from_millis(500)).await;
     assert!(elected, "recovered node (term=5) must self-elect as leader");
 }
 
@@ -330,15 +334,13 @@ async fn s13_compact_log_accepted_by_leader() {
     use tokio::sync::oneshot;
 
     let bus = ChannelTransport::new_bus();
-    let transport = Arc::new(
-        ChannelTransport::register("s13_compact".into(), Arc::clone(&bus)).await,
-    );
+    let transport =
+        Arc::new(ChannelTransport::register("s13_compact".into(), Arc::clone(&bus)).await);
     let mut node = RaftNode::new("s13_compact".into(), vec![], transport);
     node.set_election_timeout_ms(30);
     let (cmd_tx, shared, _handle) = node.spawn();
 
-    let elected =
-        wait_for_role(&[shared], RaftRole::Leader, Duration::from_millis(500)).await;
+    let elected = wait_for_role(&[shared], RaftRole::Leader, Duration::from_millis(500)).await;
     assert!(elected, "single node must self-elect");
 
     let (reply_tx, reply_rx) = oneshot::channel::<Result<u64, String>>();
@@ -374,10 +376,12 @@ async fn s13_addnode_membership_change_3node() {
     let mut cmd_txs = vec![];
     let mut _handles = vec![];
     for &id in &ids {
-        let peers: Vec<String> =
-            ids.iter().filter(|&&p| p != id).map(|s| s.to_string()).collect();
-        let transport =
-            Arc::new(ChannelTransport::register(id.into(), Arc::clone(&bus)).await);
+        let peers: Vec<String> = ids
+            .iter()
+            .filter(|&&p| p != id)
+            .map(|s| s.to_string())
+            .collect();
+        let transport = Arc::new(ChannelTransport::register(id.into(), Arc::clone(&bus)).await);
         let mut node = RaftNode::new(id.into(), peers, transport);
         node.set_election_timeout_ms(40);
         let (cmd_tx, shared, handle) = node.spawn();
@@ -386,8 +390,7 @@ async fn s13_addnode_membership_change_3node() {
         _handles.push(handle);
     }
 
-    let elected =
-        wait_for_role(&shareds, RaftRole::Leader, Duration::from_millis(1_000)).await;
+    let elected = wait_for_role(&shareds, RaftRole::Leader, Duration::from_millis(1_000)).await;
     assert!(elected, "3-node cluster must elect a leader");
 
     let mut leader_idx = 0usize;
@@ -401,9 +404,7 @@ async fn s13_addnode_membership_change_3node() {
     let (reply_tx, reply_rx) = oneshot::channel::<Result<u64, String>>();
     cmd_txs[leader_idx]
         .send(ClientCommand {
-            payload: encode_membership_change(&MembershipChange::AddNode(
-                "ms_a4".to_string(),
-            )),
+            payload: encode_membership_change(&MembershipChange::AddNode("ms_a4".to_string())),
             reply: reply_tx,
         })
         .await
@@ -413,7 +414,11 @@ async fn s13_addnode_membership_change_3node() {
         .await
         .expect("AddNode reply within 2s")
         .expect("reply channel not dropped");
-    assert!(result.is_ok(), "AddNode must be accepted by leader: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "AddNode must be accepted by leader: {:?}",
+        result
+    );
 }
 
 // S13-4. RemoveNode membership change is accepted by the leader of a 3-node cluster.
@@ -428,10 +433,12 @@ async fn s13_removenode_membership_change_3node() {
     let mut cmd_txs = vec![];
     let mut _handles = vec![];
     for &id in &ids {
-        let peers: Vec<String> =
-            ids.iter().filter(|&&p| p != id).map(|s| s.to_string()).collect();
-        let transport =
-            Arc::new(ChannelTransport::register(id.into(), Arc::clone(&bus)).await);
+        let peers: Vec<String> = ids
+            .iter()
+            .filter(|&&p| p != id)
+            .map(|s| s.to_string())
+            .collect();
+        let transport = Arc::new(ChannelTransport::register(id.into(), Arc::clone(&bus)).await);
         let mut node = RaftNode::new(id.into(), peers, transport);
         node.set_election_timeout_ms(40);
         let (cmd_tx, shared, handle) = node.spawn();
@@ -440,8 +447,7 @@ async fn s13_removenode_membership_change_3node() {
         _handles.push(handle);
     }
 
-    let elected =
-        wait_for_role(&shareds, RaftRole::Leader, Duration::from_millis(1_000)).await;
+    let elected = wait_for_role(&shareds, RaftRole::Leader, Duration::from_millis(1_000)).await;
     assert!(elected, "3-node cluster must elect a leader");
 
     let mut leader_idx = 0usize;
@@ -455,9 +461,7 @@ async fn s13_removenode_membership_change_3node() {
     let (reply_tx, reply_rx) = oneshot::channel::<Result<u64, String>>();
     cmd_txs[leader_idx]
         .send(ClientCommand {
-            payload: encode_membership_change(&MembershipChange::RemoveNode(
-                "ms_r2".to_string(),
-            )),
+            payload: encode_membership_change(&MembershipChange::RemoveNode("ms_r2".to_string())),
             reply: reply_tx,
         })
         .await
@@ -467,13 +471,19 @@ async fn s13_removenode_membership_change_3node() {
         .await
         .expect("RemoveNode reply within 2s")
         .expect("reply channel not dropped");
-    assert!(result.is_ok(), "RemoveNode must be accepted by leader: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "RemoveNode must be accepted by leader: {:?}",
+        result
+    );
 }
 
 // S13-5. encode_membership_change produces a correctly tagged, JSON-decodable payload.
 #[test]
 fn s13_encode_membership_change_roundtrip() {
-    use neuralbase::consensus::{encode_membership_change, MembershipChange, MEMBERSHIP_CHANGE_TAG};
+    use neuralbase::consensus::{
+        encode_membership_change, MembershipChange, MEMBERSHIP_CHANGE_TAG,
+    };
 
     let change = MembershipChange::AddNode("node_X".to_string());
     let payload = encode_membership_change(&change);
@@ -481,10 +491,12 @@ fn s13_encode_membership_change_roundtrip() {
         payload.starts_with(MEMBERSHIP_CHANGE_TAG),
         "payload must start with MEMBERSHIP_CHANGE_TAG"
     );
-    let decoded: MembershipChange =
-        serde_json::from_slice(&payload[MEMBERSHIP_CHANGE_TAG.len()..])
-            .expect("payload tail must decode as MembershipChange");
-    assert_eq!(decoded, change, "encode/decode must be a lossless round-trip");
+    let decoded: MembershipChange = serde_json::from_slice(&payload[MEMBERSHIP_CHANGE_TAG.len()..])
+        .expect("payload tail must decode as MembershipChange");
+    assert_eq!(
+        decoded, change,
+        "encode/decode must be a lossless round-trip"
+    );
 }
 
 // ── Session 13: LeaderTransfer tests ───────────────────────────────────────
@@ -500,10 +512,12 @@ async fn s13_transfer_leadership_to_follower_succeeds() {
     let mut _handles = vec![];
     let mut transports = vec![];
     for &id in &ids {
-        let peers: Vec<String> =
-            ids.iter().filter(|&&p| p != id).map(|s| s.to_string()).collect();
-        let transport =
-            Arc::new(ChannelTransport::register(id.into(), Arc::clone(&bus)).await);
+        let peers: Vec<String> = ids
+            .iter()
+            .filter(|&&p| p != id)
+            .map(|s| s.to_string())
+            .collect();
+        let transport = Arc::new(ChannelTransport::register(id.into(), Arc::clone(&bus)).await);
         transports.push(Arc::clone(&transport));
         let mut node = RaftNode::new(id.into(), peers, transport);
         node.set_election_timeout_ms(40);
@@ -528,12 +542,12 @@ async fn s13_transfer_leadership_to_follower_succeeds() {
     let target_id = ids[target_idx].to_string();
 
     // Use a spy transport to send the LeaderTransfer RPC to the leader.
-    let spy = Arc::new(
-        ChannelTransport::register("lt_spy".into(), Arc::clone(&bus)).await,
-    );
+    let spy = Arc::new(ChannelTransport::register("lt_spy".into(), Arc::clone(&bus)).await);
     spy.send(
         &leader_id,
-        RaftMessage::LeaderTransfer { target: target_id.clone() },
+        RaftMessage::LeaderTransfer {
+            target: target_id.clone(),
+        },
     )
     .await;
     drop(spy);
@@ -565,14 +579,8 @@ async fn s13_transfer_leadership_times_out_gracefully() {
 
     let bus = ChannelTransport::new_bus();
     // Single-node cluster (no real peers to transfer to, but we add a phantom peer).
-    let transport = Arc::new(
-        ChannelTransport::register("lto1".into(), Arc::clone(&bus)).await,
-    );
-    let mut node = RaftNode::new(
-        "lto1".into(),
-        vec!["lto_phantom".into()],
-        transport,
-    );
+    let transport = Arc::new(ChannelTransport::register("lto1".into(), Arc::clone(&bus)).await);
+    let mut node = RaftNode::new("lto1".into(), vec!["lto_phantom".into()], transport);
     node.set_election_timeout_ms(30);
     let (cmd_tx, shared, _handle) = node.spawn();
 
@@ -602,16 +610,21 @@ async fn s13_transfer_leadership_times_out_gracefully() {
     node.set_election_timeout_ms(30);
     let (cmd_tx, shared, _handle) = node.spawn();
 
-    let elected = wait_for_role(std::slice::from_ref(&shared), RaftRole::Leader, Duration::from_millis(500)).await;
+    let elected = wait_for_role(
+        std::slice::from_ref(&shared),
+        RaftRole::Leader,
+        Duration::from_millis(500),
+    )
+    .await;
     assert!(elected, "single node must self-elect");
 
     // Try to transfer to an unknown node — must return error.
-    let spy3 = Arc::new(
-        ChannelTransport::register("lto_spy".into(), Arc::clone(&bus3)).await,
-    );
+    let spy3 = Arc::new(ChannelTransport::register("lto_spy".into(), Arc::clone(&bus3)).await);
     spy3.send(
         &"lto_s".to_string(),
-        RaftMessage::LeaderTransfer { target: "nonexistent".into() },
+        RaftMessage::LeaderTransfer {
+            target: "nonexistent".into(),
+        },
     )
     .await;
     drop(spy3);
@@ -620,14 +633,20 @@ async fn s13_transfer_leadership_times_out_gracefully() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     let (reply_tx, reply_rx) = oneshot::channel::<Result<u64, String>>();
     cmd_tx
-        .send(ClientCommand { payload: b"data_after_rejected_transfer".to_vec(), reply: reply_tx })
+        .send(ClientCommand {
+            payload: b"data_after_rejected_transfer".to_vec(),
+            reply: reply_tx,
+        })
         .await
         .expect("channel open");
     let result = tokio::time::timeout(Duration::from_millis(500), reply_rx)
         .await
         .expect("reply within 500ms")
         .expect("channel open");
-    assert!(result.is_ok(), "leader must still accept commands after rejected transfer: {result:?}");
+    assert!(
+        result.is_ok(),
+        "leader must still accept commands after rejected transfer: {result:?}"
+    );
 }
 
 // S13-8. Transfer to unknown node returns error via LeaderTransferReply.
@@ -649,7 +668,9 @@ async fn s13_transfer_to_unknown_node_returns_error() {
     // Send LeaderTransfer for a nonexistent node.
     spy.send(
         &"tun1".to_string(),
-        RaftMessage::LeaderTransfer { target: "ghost_node".into() },
+        RaftMessage::LeaderTransfer {
+            target: "ghost_node".into(),
+        },
     )
     .await;
 
@@ -682,10 +703,12 @@ async fn s13_client_commands_rejected_during_transfer() {
     let mut cmd_txs = vec![];
     let mut _handles = vec![];
     for &id in &ids {
-        let peers: Vec<String> =
-            ids.iter().filter(|&&p| p != id).map(|s| s.to_string()).collect();
-        let transport =
-            Arc::new(ChannelTransport::register(id.into(), Arc::clone(&bus)).await);
+        let peers: Vec<String> = ids
+            .iter()
+            .filter(|&&p| p != id)
+            .map(|s| s.to_string())
+            .collect();
+        let transport = Arc::new(ChannelTransport::register(id.into(), Arc::clone(&bus)).await);
         let mut node = RaftNode::new(id.into(), peers, transport);
         node.set_election_timeout_ms(40);
         let (cmd_tx, shared, handle) = node.spawn();
@@ -715,9 +738,7 @@ async fn s13_client_commands_rejected_during_transfer() {
     // Actually, the real nodes are already running.  Instead, just send the
     // LeaderTransfer and immediately try a client command before the target
     // wins election.
-    let spy = Arc::new(
-        ChannelTransport::register("clt_spy".into(), Arc::clone(&bus)).await,
-    );
+    let spy = Arc::new(ChannelTransport::register("clt_spy".into(), Arc::clone(&bus)).await);
     spy.send(
         &leader_id,
         RaftMessage::LeaderTransfer { target: target_id },
@@ -729,7 +750,10 @@ async fn s13_client_commands_rejected_during_transfer() {
     tokio::time::sleep(Duration::from_millis(20)).await;
     let (reply_tx, reply_rx) = oneshot::channel::<Result<u64, String>>();
     cmd_txs[leader_idx]
-        .send(ClientCommand { payload: b"should_be_rejected".to_vec(), reply: reply_tx })
+        .send(ClientCommand {
+            payload: b"should_be_rejected".to_vec(),
+            reply: reply_tx,
+        })
         .await
         .expect("channel open");
     let result = tokio::time::timeout(Duration::from_millis(500), reply_rx)

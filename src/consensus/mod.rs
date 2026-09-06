@@ -34,8 +34,8 @@ pub use rpc::{
     AppendEntriesArgs, AppendEntriesReply, InstallSnapshotArgs, InstallSnapshotReply, LogEntry,
     MembershipChange, NodeId, RaftMessage, RequestVoteArgs, RequestVoteReply,
 };
-#[allow(unused_imports)]
-pub use transport::{ChannelBus, ChannelTransport, TcpTransport, Transport};
 #[cfg(feature = "tls")]
 #[allow(unused_imports)]
 pub use transport::TlsTcpTransport;
+#[allow(unused_imports)]
+pub use transport::{ChannelBus, ChannelTransport, TcpTransport, Transport};

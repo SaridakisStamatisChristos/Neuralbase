@@ -129,13 +129,23 @@ pub enum RaftMessage {
     /// Admin → leader: single-step cluster membership change.
     MembershipChangeCmd(MembershipChange),
     /// Leader → admin: result of membership change.
-    MembershipChangeCmdReply { success: bool, error: Option<String> },
+    MembershipChangeCmdReply {
+        success: bool,
+        error: Option<String>,
+    },
     /// Admin → leader: request leadership transfer to a specific follower (Raft §3.10).
-    LeaderTransfer { target: NodeId },
+    LeaderTransfer {
+        target: NodeId,
+    },
     /// Leader → admin: result of a leadership transfer request.
-    LeaderTransferReply { success: bool, error: Option<String> },
+    LeaderTransferReply {
+        success: bool,
+        error: Option<String>,
+    },
     /// Leader → target follower: skip election timeout and start election now.
-    TimeoutNow { term: u64 },
+    TimeoutNow {
+        term: u64,
+    },
 }
 
 /// A node identifier — a string such as "node1:7000".

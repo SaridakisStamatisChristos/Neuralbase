@@ -26,9 +26,7 @@
 
 /// Load PEM-encoded X.509 certificates from a file.
 #[cfg(feature = "tls")]
-pub fn load_certs(
-    path: &str,
-) -> std::io::Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
+pub fn load_certs(path: &str) -> std::io::Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
     let file = std::fs::File::open(path)?;
     let mut reader = std::io::BufReader::new(file);
     rustls_pemfile::certs(&mut reader)
@@ -38,15 +36,16 @@ pub fn load_certs(
 
 /// Load a PEM-encoded private key (PKCS#8 or RSA) from a file.
 #[cfg(feature = "tls")]
-pub fn load_key(
-    path: &str,
-) -> std::io::Result<rustls::pki_types::PrivateKeyDer<'static>> {
+pub fn load_key(path: &str) -> std::io::Result<rustls::pki_types::PrivateKeyDer<'static>> {
     let file = std::fs::File::open(path)?;
     let mut reader = std::io::BufReader::new(file);
     rustls_pemfile::private_key(&mut reader)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
         .ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "no private key found in file")
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "no private key found in file",
+            )
         })
 }
 
@@ -56,16 +55,18 @@ pub fn load_key(
 /// Returns `None` if TLS is not requested via environment variables.
 #[cfg(feature = "tls")]
 pub mod acceptor {
+    use rustls::ServerConfig;
     use std::sync::Arc;
     use tokio_rustls::TlsAcceptor;
-    use rustls::ServerConfig;
 
     /// Build a TLS acceptor from environment variables.
     ///
     /// Returns `Some(acceptor)` when `TLS_ENABLED=1` or `TLS_CERT_PATH` is set.
     /// Returns `None` when TLS is not configured (plaintext mode).
     pub fn build_acceptor() -> std::io::Result<Option<TlsAcceptor>> {
-        let enabled = std::env::var("TLS_ENABLED").map(|v| v == "1").unwrap_or(false);
+        let enabled = std::env::var("TLS_ENABLED")
+            .map(|v| v == "1")
+            .unwrap_or(false);
         let cert_var = std::env::var("TLS_CERT_PATH")
             .or_else(|_| std::env::var("NEURALBASE_TLS_CERT"))
             .ok();
@@ -121,9 +122,9 @@ pub mod acceptor {
 ///   NEURALBASE_TLS_CA_CERT  — cluster CA certificate   (default: certs/ca.crt)
 #[cfg(feature = "tls")]
 pub mod node_tls {
-    use std::sync::Arc;
-    use rustls::{ClientConfig, RootCertStore, ServerConfig};
     use rustls::pki_types::ServerName;
+    use rustls::{ClientConfig, RootCertStore, ServerConfig};
+    use std::sync::Arc;
     use tokio_rustls::{TlsAcceptor, TlsConnector};
 
     fn cert_path() -> String {
@@ -157,10 +158,9 @@ pub mod node_tls {
         let key = crate::tls::load_key(&key_path())?;
         let root_store = build_root_store()?;
 
-        let client_verifier =
-            rustls::server::WebPkiClientVerifier::builder(Arc::new(root_store))
-                .build()
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let client_verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(root_store))
+            .build()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
         let config = ServerConfig::builder()
             .with_client_cert_verifier(client_verifier)

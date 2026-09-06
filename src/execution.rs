@@ -252,5 +252,3 @@ pub fn mock_const_batch(value: i64) -> RecordBatch {
     )])
     .expect("const batch must build")
 }
-
-

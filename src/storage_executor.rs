@@ -86,9 +86,7 @@ pub fn decode_row(bytes: &[u8]) -> Option<BTreeMap<String, String>> {
         if pos + 4 > bytes.len() {
             return None;
         }
-        let val_len = u32::from_le_bytes(
-            bytes[pos..pos + 4].try_into().ok()?
-        ) as usize;
+        let val_len = u32::from_le_bytes(bytes[pos..pos + 4].try_into().ok()?) as usize;
         pos += 4;
         // val bytes
         if pos + val_len > bytes.len() {
@@ -224,8 +222,8 @@ impl StorageExecutor {
             .iter()
             .map(|&(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        let encoded = encode_row_typed(&schema.columns, &row_map)
-            .unwrap_or_else(|| encode_row(cols));
+        let encoded =
+            encode_row_typed(&schema.columns, &row_map).unwrap_or_else(|| encode_row(cols));
         txn.write(tid, pk.to_vec(), encoded);
 
         self.txn_mgr
@@ -267,7 +265,9 @@ impl StorageExecutor {
 
         for (pk_bytes, val_bytes) in &rows {
             // NB v2: try typed codec first; fall back to NB v1.
-            let Some(mut row) = decode_any_row(val_bytes) else { continue };
+            let Some(mut row) = decode_any_row(val_bytes) else {
+                continue;
+            };
 
             // Apply predicate if present.
             if let Some(pred) = predicate {
@@ -285,10 +285,15 @@ impl StorageExecutor {
             let pairs: Vec<(&str, &str)> = schema
                 .columns
                 .iter()
-                .map(|c| (c.name.as_str(), row.get(&c.name).map(|s| s.as_str()).unwrap_or("")))
+                .map(|c| {
+                    (
+                        c.name.as_str(),
+                        row.get(&c.name).map(|s| s.as_str()).unwrap_or(""),
+                    )
+                })
                 .collect();
-            let encoded = encode_row_typed(&schema.columns, &row)
-                .unwrap_or_else(|| encode_row(&pairs));
+            let encoded =
+                encode_row_typed(&schema.columns, &row).unwrap_or_else(|| encode_row(&pairs));
             write_txn.write(tid, pk_bytes.clone(), encoded);
             count += 1;
         }
@@ -334,7 +339,9 @@ impl StorageExecutor {
 
         for (pk_bytes, val_bytes) in &rows {
             // NB v2: try typed codec first; fall back to NB v1.
-            let Some(row) = decode_any_row(val_bytes) else { continue };
+            let Some(row) = decode_any_row(val_bytes) else {
+                continue;
+            };
 
             if let Some(pred) = predicate {
                 if !pred.matches(&row) {
@@ -408,7 +415,11 @@ fn string_to_col_vector(data_type: &str, val_str: &str) -> ColumnVector {
         }
         "DATE" | "DATE32" => ColumnVector::Date32(vec![val_str.parse().ok()]),
         _ => {
-            let opt = if val_str.is_empty() { None } else { Some(val_str) };
+            let opt = if val_str.is_empty() {
+                None
+            } else {
+                Some(val_str)
+            };
             ColumnVector::Utf8(Utf8Column::from_options(vec![opt]))
         }
     }
@@ -423,11 +434,11 @@ fn batch_row_to_map(batch: &RecordBatch) -> BTreeMap<String, String> {
     }
     for (name, col) in &batch.columns {
         let val = match col {
-            ColumnVector::Int32(v)   => v[0].map(|n| n.to_string()).unwrap_or_default(),
-            ColumnVector::Int64(v)   => v[0].map(|n| n.to_string()).unwrap_or_default(),
+            ColumnVector::Int32(v) => v[0].map(|n| n.to_string()).unwrap_or_default(),
+            ColumnVector::Int64(v) => v[0].map(|n| n.to_string()).unwrap_or_default(),
             ColumnVector::Float64(v) => v[0].map(|n| n.to_string()).unwrap_or_default(),
-            ColumnVector::Date32(v)  => v[0].map(|n| n.to_string()).unwrap_or_default(),
-            ColumnVector::Utf8(u)    => u.get(0).unwrap_or_default(),
+            ColumnVector::Date32(v) => v[0].map(|n| n.to_string()).unwrap_or_default(),
+            ColumnVector::Utf8(u) => u.get(0).unwrap_or_default(),
         };
         map.insert(name.clone(), val);
     }
@@ -468,8 +479,7 @@ fn build_record_batch_from_rows(
                     .collect();
                 ColumnVector::Int32(vals)
             }
-            "DOUBLE" | "FLOAT8" | "FLOAT64" | "REAL" | "FLOAT" | "DECIMAL"
-            | "NUMERIC" => {
+            "DOUBLE" | "FLOAT8" | "FLOAT64" | "REAL" | "FLOAT" | "DECIMAL" | "NUMERIC" => {
                 let vals: Vec<Option<f64>> = decoded
                     .iter()
                     .map(|row| row.get(&col.name).and_then(|v| v.parse().ok()))
@@ -580,7 +590,11 @@ mod tests {
         // Binary layout: 3-byte magic + 2-byte num_cols + per-col (2-byte key_len + key + 4-byte val_len + val).
         // For these 3 columns totals 76 bytes — comparable to JSON (~71 bytes) but with decodable
         // structure without a parser. Assert a generous upper bound to catch accidental bloat.
-        assert!(binary.len() < 100, "binary codec should be compact: {} bytes", binary.len());
+        assert!(
+            binary.len() < 100,
+            "binary codec should be compact: {} bytes",
+            binary.len()
+        );
         // Decode must round-trip.
         let dec = decode_row(&binary).unwrap();
         assert_eq!(dec.get("l_returnflag").map(String::as_str), Some("N"));

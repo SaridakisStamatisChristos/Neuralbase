@@ -6,13 +6,13 @@
 //   Phase 1B — CTEs, UNION/INTERSECT/EXCEPT, Window functions, EXPLAIN
 //   Phase 2  — Plan cache (unit), Extended query protocol (P/B/E)
 
+use neuralbase::binder::{bind_nb_statement, BoundPlan};
 use neuralbase::catalog::InMemoryCatalog;
+use neuralbase::protocol::STARTUP_PROTOCOL_V3;
 use neuralbase::query_executor::{execute_select_query, QueryCatalog, ScalarVal};
 use neuralbase::server;
 use neuralbase::server::PlanCache;
-use neuralbase::binder::{bind_nb_statement, BoundPlan};
 use neuralbase::sql::parse_nb_statement;
-use neuralbase::protocol::STARTUP_PROTOCOL_V3;
 use neuralbase::storage;
 use neuralbase::storage_executor;
 use std::sync::Arc;
@@ -52,9 +52,7 @@ async fn read_until_ready(stream: &mut TcpStream) {
     }
 }
 
-async fn read_one_message(
-    stream: &mut TcpStream,
-) -> std::io::Result<(u8, Vec<u8>)> {
+async fn read_one_message(stream: &mut TcpStream) -> std::io::Result<(u8, Vec<u8>)> {
     let mut tag = [0_u8; 1];
     stream.read_exact(&mut tag).await?;
     let mut len_bytes = [0_u8; 4];
@@ -77,10 +75,14 @@ async fn read_one_message(
 async fn read_messages_until_ready(stream: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
     let mut msgs = Vec::new();
     loop {
-        let m = read_one_message(stream).await.expect("read_messages_until_ready");
+        let m = read_one_message(stream)
+            .await
+            .expect("read_messages_until_ready");
         let done = m.0 == b'Z';
         msgs.push(m);
-        if done { break; }
+        if done {
+            break;
+        }
     }
     msgs
 }
@@ -88,13 +90,21 @@ async fn read_messages_until_ready(stream: &mut TcpStream) -> Vec<(u8, Vec<u8>)>
 /// Non-panicking message reader — returns None on EOF or any IO error.
 async fn try_read_one_message(stream: &mut TcpStream) -> Option<(u8, Vec<u8>)> {
     let mut tag = [0_u8; 1];
-    if stream.read_exact(&mut tag).await.is_err() { return None; }
+    if stream.read_exact(&mut tag).await.is_err() {
+        return None;
+    }
     let mut len_bytes = [0_u8; 4];
-    if stream.read_exact(&mut len_bytes).await.is_err() { return None; }
+    if stream.read_exact(&mut len_bytes).await.is_err() {
+        return None;
+    }
     let len = i32::from_be_bytes(len_bytes);
-    if len < 4 { return None; }
+    if len < 4 {
+        return None;
+    }
     let mut payload = vec![0_u8; (len - 4) as usize];
-    if stream.read_exact(&mut payload).await.is_err() { return None; }
+    if stream.read_exact(&mut payload).await.is_err() {
+        return None;
+    }
     Some((tag[0], payload))
 }
 
@@ -104,7 +114,9 @@ async fn read_msgs_until_close_or_ready(stream: &mut TcpStream) -> Vec<(u8, Vec<
     while let Some(m) = try_read_one_message(stream).await {
         let done = m.0 == b'Z';
         msgs.push(m);
-        if done { break; }
+        if done {
+            break;
+        }
     }
     msgs
 }
@@ -127,7 +139,8 @@ async fn per_user_connection_limit_rejects_excess() {
             None::<Arc<storage_executor::StorageExecutor>>,
             None,
             None::<Arc<storage::StorageEngine>>,
-        ).await;
+        )
+        .await;
     });
 
     // First two connections should be accepted.
@@ -144,12 +157,15 @@ async fn per_user_connection_limit_rejects_excess() {
     write_startup_message(&mut c3).await;
     // After auth succeeds the per-user guard is checked; the rejection
     // message arrives before ReadyForQuery.
-    let msgs = timeout(Duration::from_secs(5), read_msgs_until_close_or_ready(&mut c3))
-        .await
-        .unwrap_or_default();
-    let rejected = msgs.iter().any(|(tag, payload)| {
-        *tag == b'E' && String::from_utf8_lossy(payload).contains("53300")
-    });
+    let msgs = timeout(
+        Duration::from_secs(5),
+        read_msgs_until_close_or_ready(&mut c3),
+    )
+    .await
+    .unwrap_or_default();
+    let rejected = msgs
+        .iter()
+        .any(|(tag, payload)| *tag == b'E' && String::from_utf8_lossy(payload).contains("53300"));
     assert!(
         rejected,
         "third connection should be rejected with SQLSTATE 53300; got: {:?}",
@@ -201,8 +217,7 @@ fn cte_multi_step_is_resolved_in_order() {
 #[test]
 fn union_all_produces_two_rows() {
     let cat = QueryCatalog::new();
-    let stmt = neuralbase::sql::parse_statement("SELECT 1 UNION ALL SELECT 2")
-        .expect("parse");
+    let stmt = neuralbase::sql::parse_statement("SELECT 1 UNION ALL SELECT 2").expect("parse");
     let query = match stmt {
         sqlparser::ast::Statement::Query(q) => q,
         _ => panic!("expected query"),
@@ -214,8 +229,7 @@ fn union_all_produces_two_rows() {
 #[test]
 fn union_distinct_deduplicates_rows() {
     let cat = QueryCatalog::new();
-    let stmt = neuralbase::sql::parse_statement("SELECT 1 UNION SELECT 1")
-        .expect("parse");
+    let stmt = neuralbase::sql::parse_statement("SELECT 1 UNION SELECT 1").expect("parse");
     let query = match stmt {
         sqlparser::ast::Statement::Query(q) => q,
         _ => panic!("expected query"),
@@ -227,8 +241,9 @@ fn union_distinct_deduplicates_rows() {
 #[test]
 fn union_all_with_different_values() {
     let cat = QueryCatalog::new();
-    let stmt = neuralbase::sql::parse_statement("SELECT 10 UNION ALL SELECT 20 UNION ALL SELECT 30")
-        .expect("parse");
+    let stmt =
+        neuralbase::sql::parse_statement("SELECT 10 UNION ALL SELECT 20 UNION ALL SELECT 30")
+            .expect("parse");
     let query = match stmt {
         sqlparser::ast::Statement::Query(q) => q,
         _ => panic!("expected query"),
@@ -240,48 +255,56 @@ fn union_all_with_different_values() {
 #[test]
 fn intersect_returns_common_rows() {
     let cat = QueryCatalog::new();
-    let stmt = neuralbase::sql::parse_statement("SELECT 1 INTERSECT SELECT 1")
-        .expect("parse");
+    let stmt = neuralbase::sql::parse_statement("SELECT 1 INTERSECT SELECT 1").expect("parse");
     let query = match stmt {
         sqlparser::ast::Statement::Query(q) => q,
         _ => panic!("expected query"),
     };
     let result = execute_select_query(&query, &cat).expect("execute");
-    assert_eq!(result.rows.len(), 1, "INTERSECT should return the common row");
+    assert_eq!(
+        result.rows.len(),
+        1,
+        "INTERSECT should return the common row"
+    );
 }
 
 #[test]
 fn intersect_empty_when_no_common_rows() {
     let cat = QueryCatalog::new();
-    let stmt = neuralbase::sql::parse_statement("SELECT 1 INTERSECT SELECT 2")
-        .expect("parse");
+    let stmt = neuralbase::sql::parse_statement("SELECT 1 INTERSECT SELECT 2").expect("parse");
     let query = match stmt {
         sqlparser::ast::Statement::Query(q) => q,
         _ => panic!("expected query"),
     };
     let result = execute_select_query(&query, &cat).expect("execute");
-    assert_eq!(result.rows.len(), 0, "INTERSECT should be empty when no common rows");
+    assert_eq!(
+        result.rows.len(),
+        0,
+        "INTERSECT should be empty when no common rows"
+    );
 }
 
 #[test]
 fn except_returns_difference() {
     let cat = QueryCatalog::new();
-    let stmt = neuralbase::sql::parse_statement("SELECT 1 EXCEPT SELECT 2")
-        .expect("parse");
+    let stmt = neuralbase::sql::parse_statement("SELECT 1 EXCEPT SELECT 2").expect("parse");
     let query = match stmt {
         sqlparser::ast::Statement::Query(q) => q,
         _ => panic!("expected query"),
     };
     let result = execute_select_query(&query, &cat).expect("execute");
-    assert_eq!(result.rows.len(), 1, "EXCEPT should return rows from left not in right");
+    assert_eq!(
+        result.rows.len(),
+        1,
+        "EXCEPT should return rows from left not in right"
+    );
     assert_eq!(result.rows[0][0], ScalarVal::Int(1));
 }
 
 #[test]
 fn except_removes_matching_row() {
     let cat = QueryCatalog::new();
-    let stmt = neuralbase::sql::parse_statement("SELECT 1 EXCEPT SELECT 1")
-        .expect("parse");
+    let stmt = neuralbase::sql::parse_statement("SELECT 1 EXCEPT SELECT 1").expect("parse");
     let query = match stmt {
         sqlparser::ast::Statement::Query(q) => q,
         _ => panic!("expected query"),
@@ -309,8 +332,13 @@ fn row_number_window_function_assigns_sequential_ranks() {
     // Row numbers should be 1, 2, 3, 4, 5 in ascending order
     for (i, row) in result.rows.iter().enumerate() {
         // rn column is the second one
-        assert_eq!(row[1], ScalarVal::Int(i as i64 + 1),
-            "ROW_NUMBER expected {}, got {:?}", i + 1, row[1]);
+        assert_eq!(
+            row[1],
+            ScalarVal::Int(i as i64 + 1),
+            "ROW_NUMBER expected {}, got {:?}",
+            i + 1,
+            row[1]
+        );
     }
 }
 
@@ -330,8 +358,12 @@ fn rank_window_function_with_ties_same_rank() {
     assert!(!result.rows.is_empty(), "should return rows");
     // All rows have the same ORDER BY value (1), so all should have rank 1.
     for row in &result.rows {
-        assert_eq!(row[1], ScalarVal::Int(1),
-            "all ties should have RANK=1, got {:?}", row[1]);
+        assert_eq!(
+            row[1],
+            ScalarVal::Int(1),
+            "all ties should have RANK=1, got {:?}",
+            row[1]
+        );
     }
 }
 
@@ -350,12 +382,17 @@ fn lag_window_function_returns_previous_row_value() {
     let result = execute_select_query(&query, &cat).expect("execute");
     assert!(!result.rows.is_empty(), "should return rows");
     // First row has no previous → NULL
-    assert_eq!(result.rows[0][1], ScalarVal::Null,
-        "first LAG should be NULL");
+    assert_eq!(
+        result.rows[0][1],
+        ScalarVal::Null,
+        "first LAG should be NULL"
+    );
     // Second row's prev should equal first row's key
     if result.rows.len() >= 2 {
-        assert_eq!(result.rows[1][1], result.rows[0][0],
-            "second row LAG should equal first row value");
+        assert_eq!(
+            result.rows[1][1], result.rows[0][0],
+            "second row LAG should equal first row value"
+        );
     }
 }
 
@@ -376,8 +413,10 @@ fn lead_window_function_returns_next_row_value() {
     // Last returned row has no next (or LIMIT cuts it off) → NULL
     if result.rows.len() >= 2 {
         // First row's LEAD should equal second row's key
-        assert_eq!(result.rows[0][1], result.rows[1][0],
-            "first row LEAD should equal second row value");
+        assert_eq!(
+            result.rows[0][1], result.rows[1][0],
+            "first row LEAD should equal second row value"
+        );
     }
 }
 
@@ -398,8 +437,12 @@ fn row_number_with_partition_by() {
     assert!(!result.rows.is_empty());
     // Row numbers should be 1, 2, 3, ...
     for (i, row) in result.rows.iter().enumerate() {
-        assert_eq!(row[1], ScalarVal::Int(i as i64 + 1),
-            "ROW_NUMBER with PARTITION BY 1 expected {}", i + 1);
+        assert_eq!(
+            row[1],
+            ScalarVal::Int(i as i64 + 1),
+            "ROW_NUMBER with PARTITION BY 1 expected {}",
+            i + 1
+        );
     }
 }
 
@@ -418,7 +461,8 @@ async fn explain_select_returns_plan_text() {
             None::<Arc<storage_executor::StorageExecutor>>,
             None,
             None::<Arc<storage::StorageEngine>>,
-        ).await;
+        )
+        .await;
     });
 
     let mut client = TcpStream::connect(addr).await.expect("connect");
@@ -430,8 +474,11 @@ async fn explain_select_returns_plan_text() {
 
     // Should include RowDescription ('T') and at least one DataRow ('D')
     let has_row = msgs.iter().any(|(tag, _)| *tag == b'D');
-    assert!(has_row, "EXPLAIN should return at least one data row; got: {:?}",
-        msgs.iter().map(|(t, _)| *t as char).collect::<Vec<_>>());
+    assert!(
+        has_row,
+        "EXPLAIN should return at least one data row; got: {:?}",
+        msgs.iter().map(|(t, _)| *t as char).collect::<Vec<_>>()
+    );
 
     // Should NOT include error response
     let has_error = msgs.iter().any(|(tag, _)| *tag == b'E');
@@ -454,7 +501,8 @@ async fn explain_analyze_select_returns_timing_info() {
             None::<Arc<storage_executor::StorageExecutor>>,
             None,
             None::<Arc<storage::StorageEngine>>,
-        ).await;
+        )
+        .await;
     });
 
     let mut client = TcpStream::connect(addr).await.expect("connect");
@@ -472,7 +520,10 @@ async fn explain_analyze_select_returns_timing_info() {
     let timing_found = msgs.iter().any(|(tag, payload)| {
         *tag == b'D' && String::from_utf8_lossy(payload).contains("Actual time")
     });
-    assert!(timing_found, "EXPLAIN ANALYZE should include 'Actual time' in output");
+    assert!(
+        timing_found,
+        "EXPLAIN ANALYZE should include 'Actual time' in output"
+    );
 
     let _ = client.shutdown().await;
     server_task.abort();
@@ -560,9 +611,18 @@ fn plan_cache_lru_evicts_least_recently_used() {
     // Insert select 3: should evict select 1 (LRU).
     cache.insert("select 3".to_string(), plan3);
 
-    assert!(cache.get("select 1").is_none(), "LRU entry should be evicted");
-    assert!(cache.get("select 2").is_some(), "MRU entry should be retained");
-    assert!(cache.get("select 3").is_some(), "newest entry should be present");
+    assert!(
+        cache.get("select 1").is_none(),
+        "LRU entry should be evicted"
+    );
+    assert!(
+        cache.get("select 2").is_some(),
+        "MRU entry should be retained"
+    );
+    assert!(
+        cache.get("select 3").is_some(),
+        "newest entry should be present"
+    );
 }
 
 #[test]
@@ -578,7 +638,10 @@ fn plan_cache_invalidate_all_clears_entries() {
 
     cache.invalidate_all();
     // Reset hit/miss stats by checking again
-    assert!(cache.get("select 1").is_none(), "cache should be empty after invalidate_all");
+    assert!(
+        cache.get("select 1").is_none(),
+        "cache should be empty after invalidate_all"
+    );
 }
 
 // ── Phase 2: Extended query protocol (P/B/E/S) ──────────────────────────────
@@ -649,7 +712,8 @@ async fn extended_protocol_parse_bind_execute_select_const() {
             None::<Arc<storage_executor::StorageExecutor>>,
             None,
             None::<Arc<storage::StorageEngine>>,
-        ).await;
+        )
+        .await;
     });
 
     let mut client = TcpStream::connect(addr).await.expect("connect");
@@ -657,11 +721,20 @@ async fn extended_protocol_parse_bind_execute_select_const() {
     read_until_ready(&mut client).await;
 
     // Prepare "SELECT 42"
-    client.write_all(&build_parse_message("s1", "SELECT 42")).await.expect("parse");
+    client
+        .write_all(&build_parse_message("s1", "SELECT 42"))
+        .await
+        .expect("parse");
     // Bind to unnamed portal
-    client.write_all(&build_bind_message("p1", "s1")).await.expect("bind");
+    client
+        .write_all(&build_bind_message("p1", "s1"))
+        .await
+        .expect("bind");
     // Execute portal
-    client.write_all(&build_execute_message("p1", 0)).await.expect("execute");
+    client
+        .write_all(&build_execute_message("p1", 0))
+        .await
+        .expect("execute");
     // Sync
     client.write_all(&build_sync_message()).await.expect("sync");
 
@@ -679,8 +752,11 @@ async fn extended_protocol_parse_bind_execute_select_const() {
     let has_no_error = !msgs.iter().any(|(t, _)| *t == b'E');
     let has_ready = msgs.iter().any(|(t, _)| *t == b'Z');
 
-    assert!(has_parse_complete, "should get ParseComplete; got {:?}",
-        msgs.iter().map(|(t, _)| *t as char).collect::<Vec<_>>());
+    assert!(
+        has_parse_complete,
+        "should get ParseComplete; got {:?}",
+        msgs.iter().map(|(t, _)| *t as char).collect::<Vec<_>>()
+    );
     assert!(has_bind_complete, "should get BindComplete");
     assert!(has_no_error, "should not get error");
     assert!(has_ready, "should get ReadyForQuery");
@@ -702,7 +778,8 @@ async fn extended_protocol_execute_cached_plan_multiple_times() {
             None::<Arc<storage_executor::StorageExecutor>>,
             None,
             None::<Arc<storage::StorageEngine>>,
-        ).await;
+        )
+        .await;
     });
 
     let mut client = TcpStream::connect(addr).await.expect("connect");
@@ -710,28 +787,49 @@ async fn extended_protocol_execute_cached_plan_multiple_times() {
     read_until_ready(&mut client).await;
 
     // Prepare once, execute 3 times (exercising plan reuse via portal re-bind).
-    client.write_all(&build_parse_message("s1", "SELECT 1")).await.expect("parse");
+    client
+        .write_all(&build_parse_message("s1", "SELECT 1"))
+        .await
+        .expect("parse");
     let (parse_tag, _) = read_one_message(&mut client).await.expect("ParseComplete");
     assert_eq!(parse_tag, b'1', "expected ParseComplete");
 
     for i in 0..3 {
         let portal = format!("p{i}");
-        client.write_all(&build_bind_message(&portal, "s1")).await.expect("bind");
+        client
+            .write_all(&build_bind_message(&portal, "s1"))
+            .await
+            .expect("bind");
         let (_bind_tag, _) = read_one_message(&mut client).await.expect("BindComplete");
 
-        client.write_all(&build_execute_message(&portal, 0)).await.expect("execute");
+        client
+            .write_all(&build_execute_message(&portal, 0))
+            .await
+            .expect("execute");
         // Collect until we get a CommandComplete ('C')
         let mut got_command = false;
         for _ in 0..10 {
-            let (tag, _) = read_one_message(&mut client).await.expect("read during execute");
-            if tag == b'C' { got_command = true; break; }
-            if tag == b'E' { panic!("got error on iteration {i}"); }
+            let (tag, _) = read_one_message(&mut client)
+                .await
+                .expect("read during execute");
+            if tag == b'C' {
+                got_command = true;
+                break;
+            }
+            if tag == b'E' {
+                panic!("got error on iteration {i}");
+            }
         }
         assert!(got_command, "expected CommandComplete on iteration {i}");
 
         client.write_all(&build_sync_message()).await.expect("sync");
-        let (sync_tag, _) = read_one_message(&mut client).await.expect("ReadyForQuery after Sync");
-        assert_eq!(sync_tag, b'Z', "expected ReadyForQuery after Sync on iteration {i}");
+        let (sync_tag, _) = read_one_message(&mut client)
+            .await
+            .expect("ReadyForQuery after Sync");
+        assert_eq!(
+            sync_tag, b'Z',
+            "expected ReadyForQuery after Sync on iteration {i}"
+        );
     }
 
     let _ = client.shutdown().await;

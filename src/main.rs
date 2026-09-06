@@ -1,8 +1,8 @@
 use neuralbase::catalog::{Catalog, InMemoryCatalog, MutableCatalog};
 use neuralbase::consensus::raft::RaftTaskHandle;
-use neuralbase::consensus::{RaftNode, TcpTransport, Transport};
 #[cfg(feature = "tls")]
 use neuralbase::consensus::TlsTcpTransport;
+use neuralbase::consensus::{RaftNode, TcpTransport, Transport};
 use neuralbase::gc::GarbageCollector;
 use neuralbase::hlc::HlcClock;
 use neuralbase::mvcc::TransactionManager;
@@ -162,12 +162,8 @@ async fn start_raft_node() -> io::Result<Option<RaftTaskHandle>> {
     #[cfg(feature = "tls")]
     if raft_tls_enabled() {
         let transport = Arc::new(
-            TlsTcpTransport::listen_with_peers(
-                node_id.clone(),
-                &raft_addr,
-                peer_addrs.clone(),
-            )
-            .await?,
+            TlsTcpTransport::listen_with_peers(node_id.clone(), &raft_addr, peer_addrs.clone())
+                .await?,
         );
         return Ok(Some(spawn_raft(
             node_id,
@@ -185,9 +181,8 @@ async fn start_raft_node() -> io::Result<Option<RaftTaskHandle>> {
         ));
     }
 
-    let transport = Arc::new(
-        TcpTransport::listen_with_peers(node_id.clone(), &raft_addr, peer_addrs).await?,
-    );
+    let transport =
+        Arc::new(TcpTransport::listen_with_peers(node_id.clone(), &raft_addr, peer_addrs).await?);
     Ok(Some(spawn_raft(
         node_id,
         peers,
@@ -360,12 +355,8 @@ mod tests {
 
     #[test]
     fn peer_config_rejects_duplicate_ids() {
-        let err = parse_peer_config(
-            "node2=a:7001,node2=b:7001",
-            "node1",
-            "0.0.0.0:7001",
-        )
-        .unwrap_err();
+        let err =
+            parse_peer_config("node2=a:7001,node2=b:7001", "node1", "0.0.0.0:7001").unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 }

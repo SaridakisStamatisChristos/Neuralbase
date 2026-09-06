@@ -11,8 +11,7 @@
 //   • users.json file loading via serde_json
 
 use neuralbase::auth::{
-    IpConnectionTracker, create_scram_user, create_md5_user,
-    StoredCredential, UserRegistry,
+    create_md5_user, create_scram_user, IpConnectionTracker, StoredCredential, UserRegistry,
 };
 use neuralbase::binder::{bind_nb_statement, BoundPlan};
 use neuralbase::catalog::InMemoryCatalog;
@@ -51,7 +50,10 @@ fn parse_create_user_uppercase_keyword() {
 fn parse_alter_user_basic() {
     let stmt = parse_nb_statement("ALTER USER alice WITH PASSWORD 'newpass'").unwrap();
     match stmt {
-        NbStatement::AlterUser { username, new_password } => {
+        NbStatement::AlterUser {
+            username,
+            new_password,
+        } => {
             assert_eq!(username, "alice");
             assert_eq!(new_password, "newpass");
         }
@@ -63,7 +65,10 @@ fn parse_alter_user_basic() {
 fn parse_drop_user_basic() {
     let stmt = parse_nb_statement("DROP USER alice").unwrap();
     match stmt {
-        NbStatement::DropUser { username, if_exists } => {
+        NbStatement::DropUser {
+            username,
+            if_exists,
+        } => {
             assert_eq!(username, "alice");
             assert!(!if_exists);
         }
@@ -75,7 +80,10 @@ fn parse_drop_user_basic() {
 fn parse_drop_user_if_exists() {
     let stmt = parse_nb_statement("DROP USER IF EXISTS carol").unwrap();
     match stmt {
-        NbStatement::DropUser { username, if_exists } => {
+        NbStatement::DropUser {
+            username,
+            if_exists,
+        } => {
             assert_eq!(username, "carol");
             assert!(if_exists);
         }
@@ -115,7 +123,10 @@ fn bind_alter_user_produces_correct_plan() {
     let nb = parse_nb_statement("ALTER USER alice WITH PASSWORD 'newpw'").unwrap();
     let plan = bind_nb_statement(&nb, cat.as_ref()).unwrap();
     match plan {
-        BoundPlan::AlterUser { username, new_password } => {
+        BoundPlan::AlterUser {
+            username,
+            new_password,
+        } => {
             assert_eq!(username, "alice");
             assert_eq!(new_password, "newpw");
         }
@@ -129,7 +140,10 @@ fn bind_drop_user_produces_correct_plan() {
     let nb = parse_nb_statement("DROP USER IF EXISTS alice").unwrap();
     let plan = bind_nb_statement(&nb, cat.as_ref()).unwrap();
     match plan {
-        BoundPlan::DropUser { username, if_exists } => {
+        BoundPlan::DropUser {
+            username,
+            if_exists,
+        } => {
             assert_eq!(username, "alice");
             assert!(if_exists);
         }
@@ -192,10 +206,8 @@ fn scram_keys_are_nondeterministic_across_calls() {
     // Each call uses a fresh random salt — stored_key bytes should differ.
     let u1 = create_scram_user("alice", "pw");
     let u2 = create_scram_user("alice", "pw");
-    if let (
-        StoredCredential::ScramSha256(k1),
-        StoredCredential::ScramSha256(k2),
-    ) = (&u1.credential, &u2.credential)
+    if let (StoredCredential::ScramSha256(k1), StoredCredential::ScramSha256(k2)) =
+        (&u1.credential, &u2.credential)
     {
         // Same password but different salts → different stored_key values
         // (probabilistically; collision probability = 2^-128).
@@ -240,7 +252,7 @@ fn md5_hash_is_32_hex_chars() {
 fn md5_hash_is_function_of_password_and_username() {
     // Two users with same password but different usernames must have different hashes.
     let u1 = create_md5_user("alice", "same_pw");
-    let u2 = create_md5_user("bob",   "same_pw");
+    let u2 = create_md5_user("bob", "same_pw");
     if let (
         StoredCredential::Md5 { password_hash: h1 },
         StoredCredential::Md5 { password_hash: h2 },
@@ -305,8 +317,8 @@ fn load_users_json_missing_file_is_empty_registry() {
 
 #[test]
 fn load_users_json_scram_user() {
-    use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD as B64;
+    use base64::Engine as _;
     use neuralbase::auth::derive_scram_keys;
     use std::io::Write;
 

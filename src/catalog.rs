@@ -40,13 +40,34 @@ impl InMemoryCatalog {
         catalog.register_table(TableSchema {
             name: "lineitem".to_string(),
             columns: vec![
-                ColumnDef { name: "l_orderkey".to_string(),     data_type: "BIGINT".to_string() },
-                ColumnDef { name: "l_partkey".to_string(),      data_type: "BIGINT".to_string() },
-                ColumnDef { name: "l_quantity".to_string(),     data_type: "DOUBLE".to_string() },
-                ColumnDef { name: "l_extendedprice".to_string(),data_type: "DOUBLE".to_string() },
-                ColumnDef { name: "l_discount".to_string(),     data_type: "DOUBLE".to_string() },
-                ColumnDef { name: "l_shipdate".to_string(),     data_type: "DATE".to_string()   },
-                ColumnDef { name: "l_returnflag".to_string(),   data_type: "TEXT".to_string()   },
+                ColumnDef {
+                    name: "l_orderkey".to_string(),
+                    data_type: "BIGINT".to_string(),
+                },
+                ColumnDef {
+                    name: "l_partkey".to_string(),
+                    data_type: "BIGINT".to_string(),
+                },
+                ColumnDef {
+                    name: "l_quantity".to_string(),
+                    data_type: "DOUBLE".to_string(),
+                },
+                ColumnDef {
+                    name: "l_extendedprice".to_string(),
+                    data_type: "DOUBLE".to_string(),
+                },
+                ColumnDef {
+                    name: "l_discount".to_string(),
+                    data_type: "DOUBLE".to_string(),
+                },
+                ColumnDef {
+                    name: "l_shipdate".to_string(),
+                    data_type: "DATE".to_string(),
+                },
+                ColumnDef {
+                    name: "l_returnflag".to_string(),
+                    data_type: "TEXT".to_string(),
+                },
             ],
         });
         catalog
@@ -82,18 +103,86 @@ impl InMemoryCatalog {
     pub fn with_tpch_all_tables() -> Self {
         let catalog = Self::with_tpch_lineitem();
         let extra: &[(&str, &[(&str, &str)])] = &[
-            ("orders",   &[("o_orderkey","BIGINT"),("o_custkey","BIGINT"),("o_orderstatus","TEXT"),("o_totalprice","DOUBLE"),("o_orderdate","DATE"),("o_orderpriority","TEXT"),("o_shippriority","INT"),("o_comment","TEXT")]),
-            ("customer", &[("c_custkey","BIGINT"),("c_name","TEXT"),("c_nationkey","BIGINT"),("c_mktsegment","TEXT"),("c_acctbal","DOUBLE"),("c_phone","TEXT"),("c_address","TEXT"),("c_comment","TEXT")]),
-            ("nation",   &[("n_nationkey","BIGINT"),("n_name","TEXT"),("n_regionkey","BIGINT")]),
-            ("region",   &[("r_regionkey","BIGINT"),("r_name","TEXT")]),
-            ("part",     &[("p_partkey","BIGINT"),("p_name","TEXT"),("p_mfgr","TEXT"),("p_brand","TEXT"),("p_type","TEXT"),("p_size","INT"),("p_container","TEXT"),("p_retailprice","DOUBLE")]),
-            ("supplier", &[("s_suppkey","BIGINT"),("s_name","TEXT"),("s_nationkey","BIGINT"),("s_acctbal","DOUBLE"),("s_address","TEXT"),("s_phone","TEXT"),("s_comment","TEXT")]),
-            ("partsupp", &[("ps_partkey","BIGINT"),("ps_suppkey","BIGINT"),("ps_availqty","INT"),("ps_supplycost","DOUBLE")]),
+            (
+                "orders",
+                &[
+                    ("o_orderkey", "BIGINT"),
+                    ("o_custkey", "BIGINT"),
+                    ("o_orderstatus", "TEXT"),
+                    ("o_totalprice", "DOUBLE"),
+                    ("o_orderdate", "DATE"),
+                    ("o_orderpriority", "TEXT"),
+                    ("o_shippriority", "INT"),
+                    ("o_comment", "TEXT"),
+                ],
+            ),
+            (
+                "customer",
+                &[
+                    ("c_custkey", "BIGINT"),
+                    ("c_name", "TEXT"),
+                    ("c_nationkey", "BIGINT"),
+                    ("c_mktsegment", "TEXT"),
+                    ("c_acctbal", "DOUBLE"),
+                    ("c_phone", "TEXT"),
+                    ("c_address", "TEXT"),
+                    ("c_comment", "TEXT"),
+                ],
+            ),
+            (
+                "nation",
+                &[
+                    ("n_nationkey", "BIGINT"),
+                    ("n_name", "TEXT"),
+                    ("n_regionkey", "BIGINT"),
+                ],
+            ),
+            ("region", &[("r_regionkey", "BIGINT"), ("r_name", "TEXT")]),
+            (
+                "part",
+                &[
+                    ("p_partkey", "BIGINT"),
+                    ("p_name", "TEXT"),
+                    ("p_mfgr", "TEXT"),
+                    ("p_brand", "TEXT"),
+                    ("p_type", "TEXT"),
+                    ("p_size", "INT"),
+                    ("p_container", "TEXT"),
+                    ("p_retailprice", "DOUBLE"),
+                ],
+            ),
+            (
+                "supplier",
+                &[
+                    ("s_suppkey", "BIGINT"),
+                    ("s_name", "TEXT"),
+                    ("s_nationkey", "BIGINT"),
+                    ("s_acctbal", "DOUBLE"),
+                    ("s_address", "TEXT"),
+                    ("s_phone", "TEXT"),
+                    ("s_comment", "TEXT"),
+                ],
+            ),
+            (
+                "partsupp",
+                &[
+                    ("ps_partkey", "BIGINT"),
+                    ("ps_suppkey", "BIGINT"),
+                    ("ps_availqty", "INT"),
+                    ("ps_supplycost", "DOUBLE"),
+                ],
+            ),
         ];
         for (tname, cols) in extra {
             catalog.register_table(TableSchema {
                 name: tname.to_string(),
-                columns: cols.iter().map(|(n, t)| ColumnDef { name: n.to_string(), data_type: t.to_string() }).collect(),
+                columns: cols
+                    .iter()
+                    .map(|(n, t)| ColumnDef {
+                        name: n.to_string(),
+                        data_type: t.to_string(),
+                    })
+                    .collect(),
             });
         }
         catalog

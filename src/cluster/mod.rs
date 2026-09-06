@@ -9,10 +9,10 @@
 
 // Session 5 — not yet wired into query path. Suppress dead_code.
 
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use std::cmp::Reverse;
 
 use crate::consensus::rpc::NodeId;
 
@@ -119,8 +119,7 @@ impl NodeRegistry {
     /// Run failure detection: mark nodes that have not sent a heartbeat
     /// within `heartbeat_interval * miss_threshold` as unavailable.
     pub fn check_failures(&self) {
-        let threshold = self.config.heartbeat_interval
-            * self.config.heartbeat_miss_threshold;
+        let threshold = self.config.heartbeat_interval * self.config.heartbeat_miss_threshold;
         if let Ok(mut guard) = self.nodes.write() {
             for node in guard.values_mut() {
                 if node.alive && node.last_heartbeat.elapsed() > threshold {
@@ -187,13 +186,11 @@ impl ConsistentHashRouter {
             return None;
         }
         // Rendezvous: for each node, hash(shard_id || node_id); pick highest.
-        alive
-            .into_iter()
-            .max_by_key(|n| {
-                let mut input = shard_id.to_be_bytes().to_vec();
-                input.extend_from_slice(n.id.as_bytes());
-                fnv1a(&input)
-            })
+        alive.into_iter().max_by_key(|n| {
+            let mut input = shard_id.to_be_bytes().to_vec();
+            input.extend_from_slice(n.id.as_bytes());
+            fnv1a(&input)
+        })
     }
 
     /// Return all nodes that should hold a replica of `shard_id`
@@ -233,7 +230,10 @@ mod tests {
         let config = ClusterConfig::default_3node();
         let registry = Arc::new(NodeRegistry::new(config));
         let router = ConsistentHashRouter::new(Arc::clone(&registry));
-        assert_eq!(router.key_to_shard(b"user:42"), router.key_to_shard(b"user:42"));
+        assert_eq!(
+            router.key_to_shard(b"user:42"),
+            router.key_to_shard(b"user:42")
+        );
     }
 
     #[test]

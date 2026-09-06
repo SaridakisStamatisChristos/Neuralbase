@@ -2,12 +2,12 @@
 // Session 15: Production Hardening — load test, dead-code audit, metrics.
 
 use neuralbase::catalog::InMemoryCatalog;
+use neuralbase::protocol::STARTUP_PROTOCOL_V3;
 use neuralbase::server;
 use neuralbase::storage;
 use neuralbase::storage_executor;
-use neuralbase::protocol::STARTUP_PROTOCOL_V3;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{timeout, Duration};
@@ -43,9 +43,7 @@ async fn read_one_msg(stream: &mut TcpStream) -> std::io::Result<(u8, Vec<u8>)> 
     let plen = raw
         .checked_sub(4)
         .and_then(|n| if n <= 65536 { Some(n as usize) } else { None })
-        .ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "bad length")
-        })?;
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "bad length"))?;
     let mut payload = vec![0u8; plen];
     stream.read_exact(&mut payload).await?;
     Ok((tag[0], payload))
@@ -54,7 +52,9 @@ async fn read_one_msg(stream: &mut TcpStream) -> std::io::Result<(u8, Vec<u8>)> 
 async fn read_until_ready(stream: &mut TcpStream) {
     loop {
         let (tag, _) = read_one_msg(stream).await.expect("ready read");
-        if tag == b'Z' { break; }
+        if tag == b'Z' {
+            break;
+        }
     }
 }
 
@@ -78,7 +78,8 @@ async fn load_test_1000_concurrent_connections() {
             None::<Arc<storage_executor::StorageExecutor>>,
             None,
             None::<Arc<storage::StorageEngine>>,
-        ).await;
+        )
+        .await;
     });
 
     // Allow server to start accepting.
@@ -116,11 +117,14 @@ async fn load_test_1000_concurrent_connections() {
 
                     let _ = stream.shutdown().await;
                     Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-                }).await;
+                })
+                .await;
 
                 match result {
                     Ok(Ok(())) => {}
-                    _ => { e_count.fetch_add(1, Ordering::Relaxed); }
+                    _ => {
+                        e_count.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }));
         }
@@ -187,12 +191,7 @@ fn collect_dead_code_violations(dir: &std::path::Path, out: &mut Vec<String>) {
                     in_cfg_test = true;
                 }
                 if !in_cfg_test && trimmed.contains("#[allow(dead_code)]") {
-                    out.push(format!(
-                        "  {}:{}: {}",
-                        path.display(),
-                        line_no + 1,
-                        trimmed
-                    ));
+                    out.push(format!("  {}:{}: {}", path.display(), line_no + 1, trimmed));
                 }
             }
         }

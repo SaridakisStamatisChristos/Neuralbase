@@ -17,7 +17,9 @@ use std::time::Duration;
 
 use neuralbase::cluster::{ClusterConfig, ConsistentHashRouter, NodeRegistry};
 use neuralbase::consensus::{ChannelTransport, RaftNode, RaftRole, RaftShared, RaftTaskHandle};
-use neuralbase::distributed::{bounded_channel, DistributedPlanner, PhysicalPlanStub, QueryCoordinator};
+use neuralbase::distributed::{
+    bounded_channel, DistributedPlanner, PhysicalPlanStub, QueryCoordinator,
+};
 
 use proptest::prelude::*;
 
@@ -122,7 +124,10 @@ fn all_single_byte_keys_valid() {
     let router = default_router(&reg);
     for b in 0u8..=255 {
         let shard = router.key_to_shard(&[b]);
-        assert!(shard < reg.shard_count(), "byte {b} \u{2192} shard out of range");
+        assert!(
+            shard < reg.shard_count(),
+            "byte {b} \u{2192} shard out of range"
+        );
     }
 }
 
@@ -207,7 +212,11 @@ async fn two_of_three_form_quorum() {
     let mut _handles: Vec<RaftTaskHandle> = vec![];
     // Only register n1 and n2; n3 drops all incoming messages.
     for &id in &ids[..2] {
-        let peers: Vec<String> = ids.iter().filter(|&&p| p != id).map(|s| s.to_string()).collect();
+        let peers: Vec<String> = ids
+            .iter()
+            .filter(|&&p| p != id)
+            .map(|s| s.to_string())
+            .collect();
         let transport = Arc::new(ChannelTransport::register(id.into(), Arc::clone(&bus)).await);
         let mut node = RaftNode::new(id.into(), peers, transport);
         node.set_election_timeout_ms(40);
@@ -231,7 +240,11 @@ async fn rapid_reelection_never_split_brain() {
     let mut shareds = vec![];
     let mut _handles: Vec<RaftTaskHandle> = vec![];
     for &id in &ids {
-        let peers: Vec<String> = ids.iter().filter(|&&p| p != id).map(|s| s.to_string()).collect();
+        let peers: Vec<String> = ids
+            .iter()
+            .filter(|&&p| p != id)
+            .map(|s| s.to_string())
+            .collect();
         let transport = Arc::new(ChannelTransport::register(id.into(), Arc::clone(&bus)).await);
         let mut node = RaftNode::new(id.into(), peers, transport);
         node.set_election_timeout_ms(1); // adversarial: 1 ms
@@ -344,7 +357,10 @@ fn reroute_assigns_different_node() {
         // the new fragment has a node (possibly different).
         if let Some(rf) = rerouted {
             // Must be same shard.
-            assert_eq!(rf.shard_id, frag.shard_id, "shard must not change on reroute");
+            assert_eq!(
+                rf.shard_id, frag.shard_id,
+                "shard must not change on reroute"
+            );
             // Node may differ; either value is valid (cluster could have only 1 live node).
             let _ = rf.assigned_node; // accessing it must not panic
             let _ = original_node;
@@ -366,7 +382,10 @@ async fn sender_receives_error_when_receiver_dropped() {
             errors += 1;
         }
     }
-    assert!(errors > 0, "sender should observe error after receiver drop");
+    assert!(
+        errors > 0,
+        "sender should observe error after receiver drop"
+    );
 }
 
 /// Zero-capacity channel: every send blocks until recv happens.
@@ -375,9 +394,7 @@ async fn zero_capacity_channel_rendezvous() {
     let (tx, mut rx) = bounded_channel::<u32>(1, 0);
     let tx = Arc::new(tx);
     let tx2 = Arc::clone(&tx);
-    let recv_task = tokio::spawn(async move {
-        rx.recv().await
-    });
+    let recv_task = tokio::spawn(async move { rx.recv().await });
     tx2.send(42).await.unwrap();
     let v = recv_task.await.unwrap();
     assert_eq!(v, Some(42));
@@ -431,7 +448,11 @@ async fn follower_state_stable_after_leader_elected() {
     let mut shareds = vec![];
     let mut _handles: Vec<RaftTaskHandle> = vec![];
     for &id in &ids {
-        let peers: Vec<String> = ids.iter().filter(|&&p| p != id).map(|s| s.to_string()).collect();
+        let peers: Vec<String> = ids
+            .iter()
+            .filter(|&&p| p != id)
+            .map(|s| s.to_string())
+            .collect();
         let transport = Arc::new(ChannelTransport::register(id.into(), Arc::clone(&bus)).await);
         let mut node = RaftNode::new(id.into(), peers, transport);
         node.set_election_timeout_ms(40);
@@ -451,7 +472,10 @@ async fn follower_state_stable_after_leader_elected() {
             candidates += 1;
         }
     }
-    assert_eq!(candidates, 0, "no nodes should be stuck in Candidate after heartbeats");
+    assert_eq!(
+        candidates, 0,
+        "no nodes should be stuck in Candidate after heartbeats"
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -466,12 +490,10 @@ async fn s13_stale_snapshot_rejected_by_follower() {
     use neuralbase::consensus::{InstallSnapshotArgs, RaftMessage, Transport};
 
     let bus = ChannelTransport::new_bus();
-    let follower_transport = Arc::new(
-        ChannelTransport::register("s13_follower".into(), Arc::clone(&bus)).await,
-    );
-    let spy_transport = Arc::new(
-        ChannelTransport::register("s13_spy".into(), Arc::clone(&bus)).await,
-    );
+    let follower_transport =
+        Arc::new(ChannelTransport::register("s13_follower".into(), Arc::clone(&bus)).await);
+    let spy_transport =
+        Arc::new(ChannelTransport::register("s13_spy".into(), Arc::clone(&bus)).await);
 
     // Node has "s13_spy" as a peer; can't form quorum alone so stays in
     // Candidate/Follower.  Give it a long timeout so it doesn't immediately
@@ -532,9 +554,11 @@ fn s13_compact_log_payload_header_correct() {
         "payload must start with COMPACT_LOG_TAG (got {:?})",
         &payload[..2]
     );
-    let encoded_idx =
-        u64::from_be_bytes(payload[2..10].try_into().expect("must be 8 bytes"));
-    assert_eq!(encoded_idx, 9_999, "last_index must round-trip as big-endian u64");
+    let encoded_idx = u64::from_be_bytes(payload[2..10].try_into().expect("must be 8 bytes"));
+    assert_eq!(
+        encoded_idx, 9_999,
+        "last_index must round-trip as big-endian u64"
+    );
     assert_eq!(
         &payload[10..],
         snap_data,
@@ -552,9 +576,8 @@ async fn s13_data_cmd_rejected_while_membership_change_in_progress() {
     use tokio::sync::oneshot;
 
     let bus = ChannelTransport::new_bus();
-    let transport = Arc::new(
-        ChannelTransport::register("s13_mc_solo".into(), Arc::clone(&bus)).await,
-    );
+    let transport =
+        Arc::new(ChannelTransport::register("s13_mc_solo".into(), Arc::clone(&bus)).await);
     let mut node = RaftNode::new("s13_mc_solo".into(), vec![], transport);
     node.set_election_timeout_ms(30);
     let (cmd_tx, shared, _handle) = node.spawn();
@@ -567,9 +590,7 @@ async fn s13_data_cmd_rejected_while_membership_change_in_progress() {
     let (tx1, rx1) = oneshot::channel::<Result<u64, String>>();
     cmd_tx
         .send(ClientCommand {
-            payload: encode_membership_change(&MembershipChange::AddNode(
-                "extra_node".to_string(),
-            )),
+            payload: encode_membership_change(&MembershipChange::AddNode("extra_node".to_string())),
             reply: tx1,
         })
         .await
@@ -617,10 +638,12 @@ async fn s13_apply_tx_backpressure_does_not_drop_entries() {
     // Attach a small bounded apply channel (capacity 4) to each node.
     let mut apply_rxs = vec![];
     for &id in &ids {
-        let peers: Vec<String> =
-            ids.iter().filter(|&&p| p != id).map(|s| s.to_string()).collect();
-        let transport =
-            Arc::new(ChannelTransport::register(id.into(), Arc::clone(&bus)).await);
+        let peers: Vec<String> = ids
+            .iter()
+            .filter(|&&p| p != id)
+            .map(|s| s.to_string())
+            .collect();
+        let transport = Arc::new(ChannelTransport::register(id.into(), Arc::clone(&bus)).await);
         let mut node = RaftNode::new(id.into(), peers, transport);
         node.set_election_timeout_ms(80);
         let (atx, arx) = tokio::sync::mpsc::channel(4);
@@ -685,7 +708,10 @@ async fn s13_apply_tx_backpressure_does_not_drop_entries() {
 
     let (_, received) = tokio::join!(producer, consumer);
     let received = received.expect("consumer task must not panic");
-    assert_eq!(received, count, "all {count} entries must be delivered, got {received}");
+    assert_eq!(
+        received, count,
+        "all {count} entries must be delivered, got {received}"
+    );
 }
 
 // [S13-E] Bounded apply channel does not panic or crash when full — it slows
@@ -704,10 +730,12 @@ async fn s13_apply_tx_full_slows_commit_not_crashes() {
     // Capacity 2: even a few commits will saturate the channel on the leader.
     let mut apply_rxs = vec![];
     for &id in &ids {
-        let peers: Vec<String> =
-            ids.iter().filter(|&&p| p != id).map(|s| s.to_string()).collect();
-        let transport =
-            Arc::new(ChannelTransport::register(id.into(), Arc::clone(&bus)).await);
+        let peers: Vec<String> = ids
+            .iter()
+            .filter(|&&p| p != id)
+            .map(|s| s.to_string())
+            .collect();
+        let transport = Arc::new(ChannelTransport::register(id.into(), Arc::clone(&bus)).await);
         let mut node = RaftNode::new(id.into(), peers, transport);
         node.set_election_timeout_ms(40);
         let (atx, arx) = tokio::sync::mpsc::channel(2);

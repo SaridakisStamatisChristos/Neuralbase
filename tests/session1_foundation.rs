@@ -20,7 +20,9 @@ fn parses_select_where_limit() {
 
     match plan {
         BoundPlan::SelectFromTable {
-            where_clause, limit, ..
+            where_clause,
+            limit,
+            ..
         } => {
             assert!(where_clause.is_some());
             assert_eq!(limit, Some(5));
@@ -37,7 +39,10 @@ fn catalog_missing_table_routes_to_query_executor() {
     let catalog = InMemoryCatalog::with_tpch_lineitem();
     let result = bind_statement(&stmt, &catalog);
     // Binding succeeds; the query routes to the row-oriented executor.
-    assert!(result.is_ok(), "bind should succeed and route to SelectQuery");
+    assert!(
+        result.is_ok(),
+        "bind should succeed and route to SelectQuery"
+    );
 }
 
 #[tokio::test]
@@ -49,7 +54,14 @@ async fn malformed_sql_returns_pg_error_response() {
     let catalog = Arc::new(InMemoryCatalog::with_tpch_lineitem());
 
     let server_task = tokio::spawn(async move {
-        let _ = server::run(listener, catalog, None::<std::sync::Arc<storage_executor::StorageExecutor>>, None, None::<std::sync::Arc<storage::StorageEngine>>).await;
+        let _ = server::run(
+            listener,
+            catalog,
+            None::<std::sync::Arc<storage_executor::StorageExecutor>>,
+            None,
+            None::<std::sync::Arc<storage::StorageEngine>>,
+        )
+        .await;
     });
 
     let mut client = TcpStream::connect(addr).await.expect("connect server");
@@ -124,7 +136,9 @@ async fn admission_control_rejects_when_capacity_exceeded_and_recovers() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     for _ in 0..10 {
-        let mut conn = TcpStream::connect(addr).await.expect("connect post-release");
+        let mut conn = TcpStream::connect(addr)
+            .await
+            .expect("connect post-release");
         write_startup_message(&mut conn).await;
         read_until_ready(&mut conn).await;
         let _ = conn.shutdown().await;
