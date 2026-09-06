@@ -192,14 +192,47 @@ impl UserRegistry {
         UserRegistryFile { users }
     }
 
-    pub fn save_to_file(&self, path: &str) -> std::io::Result<()> {
+    /// Atomically persist the registry. If persistence fails, restore the
+    /// in-memory users from the last durable file so SQL user DDL cannot
+    /// report an error while leaving a transient mutation active.
+    pub fn save_to_file(&mut self, path: &str) -> std::io::Result<()> {
+        use std::io::Write;
+
+        let persisted_users = Self::load_from_file(path).users;
         let doc = self.to_file_model();
         let json = serde_json::to_vec_pretty(&doc)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-
         let tmp_path = format!("{path}.tmp");
-        std::fs::write(&tmp_path, json)?;
-        std::fs::rename(&tmp_path, path)?;
+
+        let persist_result = (|| -> std::io::Result<()> {
+            let mut options = std::fs::OpenOptions::new();
+            options.create(true).truncate(true).write(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+
+            let mut file = options.open(&tmp_path)?;
+            file.write_all(&json)?;
+            file.sync_all()?;
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600))?;
+            }
+
+            std::fs::rename(&tmp_path, path)?;
+            Ok(())
+        })();
+
+        if let Err(error) = persist_result {
+            self.users = persisted_users;
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(error);
+        }
+
         Ok(())
     }
 
@@ -522,6 +555,78 @@ mod tests {
         create_md5_user(username, password)
     }
 
+    #[test]
+    fn user_registry_persistence_round_trips_scram_and_md5() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("users.json");
+        let path = path.to_str().unwrap();
+
+        let mut reg = UserRegistry::new();
+        reg.add_user(create_scram_user("alice", "secret"));
+        reg.add_user(create_md5_user("bob", "legacy"));
+        reg.save_to_file(path).unwrap();
+
+        let loaded = UserRegistry::load_from_file(path);
+        assert!(matches!(
+            &loaded.get_user("alice").unwrap().credential,
+            StoredCredential::ScramSha256(_)
+        ));
+        assert!(matches!(
+            &loaded.get_user("bob").unwrap().credential,
+            StoredCredential::Md5 { .. }
+        ));
+    }
+
+    #[test]
+    fn user_registry_save_failure_restores_last_durable_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("users.json");
+        let path_str = path.to_str().unwrap();
+
+        let mut reg = UserRegistry::new();
+        reg.add_user(create_scram_user("durable", "secret"));
+        reg.save_to_file(path_str).unwrap();
+
+        let tmp_path = format!("{path_str}.tmp");
+        std::fs::create_dir(&tmp_path).unwrap();
+        reg.add_user(create_scram_user("transient", "secret"));
+
+        assert!(reg.save_to_file(path_str).is_err());
+        assert!(reg.get_user("durable").is_some());
+        assert!(reg.get_user("transient").is_none());
+
+        let durable = UserRegistry::load_from_file(path_str);
+        assert!(durable.get_user("durable").is_some());
+        assert!(durable.get_user("transient").is_none());
+        std::fs::remove_dir(&tmp_path).unwrap();
+    }
+
+    #[test]
+    fn user_registry_serialization_is_deterministic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("users.json");
+        let path_str = path.to_str().unwrap();
+
+        let mut reg = UserRegistry::new();
+        reg.add_user(create_md5_user("zeta", "z"));
+        reg.add_user(create_md5_user("alpha", "a"));
+        reg.save_to_file(path_str).unwrap();
+
+        let json = std::fs::read_to_string(path_str).unwrap();
+        assert!(json.find("alpha").unwrap() < json.find("zeta").unwrap());
+    }
+
+    #[test]
+    fn user_registry_missing_parent_failure_rolls_back_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing").join("users.json");
+        let path_str = path.to_str().unwrap();
+
+        let mut reg = UserRegistry::new();
+        reg.add_user(create_scram_user("transient", "secret"));
+        assert!(reg.save_to_file(path_str).is_err());
+        assert!(reg.get_user("transient").is_none());
+    }
     #[test]
     fn scram_key_derivation_is_deterministic() {
         let salt = b"fixed_salt_01234";
