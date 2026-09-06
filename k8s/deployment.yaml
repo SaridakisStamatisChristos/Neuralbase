@@ -45,7 +45,7 @@ spec:
               readOnly: true
       containers:
         - name: neuralbase
-          image: ghcr.io/saridakisstamatischristos/neuralbase:1.0.0
+          image: ghcr.io/saridakisstamatischristos/neuralbase:0.1.0
           imagePullPolicy: IfNotPresent
           ports:
             - name: sql
