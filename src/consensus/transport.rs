@@ -9,21 +9,20 @@
 // Wire format (Tcp/TlsTcpTransport):
 //   [4-byte big-endian length][JSON payload bytes]
 //
-// Node-to-node TLS:
-//   1. Install NASM on Windows and ensure it is on PATH.
-//   2. Uncomment the TLS deps in Cargo.toml.
-//   3. Set NEURALBASE_TLS_CERT, NEURALBASE_TLS_KEY, NEURALBASE_TLS_CA_CERT.
-//   4. Run `make gen-cluster-certs` to generate CA + per-node certs.
-//   5. `cargo build --features tls`
+// Production transports keep Raft's logical NodeId separate from the socket
+// address used to reach that node.  This matters in Docker/Kubernetes where a
+// stable Raft identity (for example "node2") is not itself a connectable
+// host:port.  `listen_with_peers` accepts the explicit NodeId -> address map;
+// the legacy `listen` API is retained and falls back to treating NodeId as an
+// address for backward compatibility and focused transport tests.
 //
-// CONFIDENCE: raw=0.82 effective=0.72
+// CONFIDENCE: raw=0.84 effective=0.76
 // DEPENDS_ON: rpc
 // [HUMAN REVIEW REQUIRED] — see REVIEW_REQUIRED.md §Raft
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use serde_json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -33,7 +32,7 @@ use crate::consensus::rpc::{NodeId, RaftMessage};
 
 // ── Transport trait ────────────────────────────────────────────────────────
 
-/// Abstraction over message delivery.  `send` is fire-and-forget.
+/// Abstraction over message delivery. `send` is fire-and-forget.
 /// Replies are received via the node's own `recv_channel`.
 #[async_trait::async_trait]
 pub trait Transport: Send + Sync + 'static {
@@ -100,31 +99,39 @@ impl Transport for ChannelTransport {
 /// Each node listens on its own TCP port and connects to peers on demand.
 pub struct TcpTransport {
     pub id: NodeId,
+    peer_addrs: Arc<HashMap<NodeId, String>>,
     rx: Arc<Mutex<mpsc::Receiver<(NodeId, RaftMessage)>>>,
     shutdown_tx: Option<oneshot::Sender<()>>,
     accept_task: Option<JoinHandle<()>>,
 }
 
 impl TcpTransport {
-    /// Start listening on `addr`.  Incoming messages are enqueued for `recv()`.
+    /// Backward-compatible listener. Node IDs are treated as socket addresses.
     pub async fn listen(id: NodeId, addr: &str) -> std::io::Result<Self> {
+        Self::listen_with_peers(id, addr, HashMap::new()).await
+    }
+
+    /// Start listening on `addr` with an explicit logical-peer address map.
+    pub async fn listen_with_peers(
+        id: NodeId,
+        addr: &str,
+        peer_addrs: HashMap<NodeId, String>,
+    ) -> std::io::Result<Self> {
         let listener = TcpListener::bind(addr).await?;
         let (tx, rx) = mpsc::channel::<(NodeId, RaftMessage)>(TCP_TRANSPORT_INBOX_CAPACITY);
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
         let tx_clone = tx.clone();
-        // Spawn accept loop.
         let accept_task = tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    _ = &mut shutdown_rx => {
-                        break;
-                    }
+                    _ = &mut shutdown_rx => break,
                     accepted = listener.accept() => {
-                        if let Ok((stream, _peer)) = accepted {
-                            let tx2 = tx_clone.clone();
-                            tokio::spawn(Self::accept_conn(stream, tx2));
-                        } else {
-                            break;
+                        match accepted {
+                            Ok((stream, _peer)) => {
+                                let tx2 = tx_clone.clone();
+                                tokio::spawn(Self::accept_conn(stream, tx2));
+                            }
+                            Err(_) => break,
                         }
                     }
                 }
@@ -132,20 +139,23 @@ impl TcpTransport {
         });
         Ok(Self {
             id,
+            peer_addrs: Arc::new(peer_addrs),
             rx: Arc::new(Mutex::new(rx)),
             shutdown_tx: Some(shutdown_tx),
             accept_task: Some(accept_task),
         })
     }
 
-    async fn accept_conn(
-        mut stream: TcpStream,
-        tx: mpsc::Sender<(NodeId, RaftMessage)>,
-    ) {
+    fn peer_addr(&self, to: &NodeId) -> String {
+        self.peer_addrs
+            .get(to)
+            .cloned()
+            .unwrap_or_else(|| to.clone())
+    }
+
+    async fn accept_conn(mut stream: TcpStream, tx: mpsc::Sender<(NodeId, RaftMessage)>) {
         while let Ok(Some(bytes)) = read_frame(&mut stream).await {
-            if let Ok(envelope) =
-                serde_json::from_slice::<(NodeId, RaftMessage)>(&bytes)
-            {
+            if let Ok(envelope) = serde_json::from_slice::<(NodeId, RaftMessage)>(&bytes) {
                 if tx.send(envelope).await.is_err() {
                     break;
                 }
@@ -168,11 +178,13 @@ impl Drop for TcpTransport {
 #[async_trait::async_trait]
 impl Transport for TcpTransport {
     async fn send(&self, to: &NodeId, msg: RaftMessage) {
-        // Attempt to connect; fire-and-forget errors.
-        if let Ok(mut stream) = TcpStream::connect(to).await {
+        let addr = self.peer_addr(to);
+        if let Ok(mut stream) = TcpStream::connect(&addr).await {
             if let Ok(payload) = serde_json::to_vec(&(self.id.clone(), msg)) {
                 let _ = write_frame(&mut stream, &payload).await;
             }
+        } else {
+            tracing::debug!(peer = %to, %addr, "Raft TCP peer unavailable");
         }
     }
 
@@ -190,7 +202,7 @@ async fn write_frame(stream: &mut TcpStream, payload: &[u8]) -> std::io::Result<
     stream.write_all(payload).await
 }
 
-/// Read a length-prefixed frame.  Returns `None` on clean EOF.
+/// Read a length-prefixed frame. Returns `None` on clean EOF.
 async fn read_frame(stream: &mut TcpStream) -> std::io::Result<Option<Vec<u8>>> {
     let mut len_buf = [0u8; 4];
     match stream.read_exact(&mut len_buf).await {
@@ -204,8 +216,6 @@ async fn read_frame(stream: &mut TcpStream) -> std::io::Result<Option<Vec<u8>>> 
     Ok(Some(buf))
 }
 
-/// Generic write frame for any `AsyncWrite + Unpin` (used by TlsTcpTransport).
-/// Only compiled when the `tls` feature is active — no dead_code warning otherwise.
 #[cfg(feature = "tls")]
 async fn write_frame_generic<W>(w: &mut W, payload: &[u8]) -> std::io::Result<()>
 where
@@ -216,8 +226,6 @@ where
     w.write_all(payload).await
 }
 
-/// Generic read frame for any `AsyncRead + Unpin` (used by TlsTcpTransport).
-/// Only compiled when the `tls` feature is active — no dead_code warning otherwise.
 #[cfg(feature = "tls")]
 async fn read_frame_generic<R>(r: &mut R) -> std::io::Result<Option<Vec<u8>>>
 where
@@ -236,14 +244,11 @@ where
 }
 
 // ── TlsTcpTransport (feature = "tls") ─────────────────────────────────────
-//
-// Raft node-to-node transport with TLS 1.3 mutual authentication.
-// Requires cluster certs from `make gen-cluster-certs`.
-// Inactive until `--features tls` is passed and NASM is installed (Windows).
 
 #[cfg(feature = "tls")]
 pub struct TlsTcpTransport {
     pub id: NodeId,
+    peer_addrs: Arc<HashMap<NodeId, String>>,
     connector: tokio_rustls::TlsConnector,
     server_name: tokio_rustls::rustls::pki_types::ServerName<'static>,
     rx: Arc<Mutex<mpsc::Receiver<(NodeId, RaftMessage)>>>,
@@ -253,11 +258,17 @@ pub struct TlsTcpTransport {
 
 #[cfg(feature = "tls")]
 impl TlsTcpTransport {
-    /// Start a TLS Raft listener on `addr`.
-    ///
-    /// Reads NEURALBASE_TLS_CERT, NEURALBASE_TLS_KEY, NEURALBASE_TLS_CA_CERT
-    /// from environment. See `make gen-cluster-certs` for cert generation.
+    /// Backward-compatible TLS listener. Node IDs are treated as addresses.
     pub async fn listen(id: NodeId, addr: &str) -> std::io::Result<Self> {
+        Self::listen_with_peers(id, addr, HashMap::new()).await
+    }
+
+    /// Start a TLS Raft listener with an explicit logical-peer address map.
+    pub async fn listen_with_peers(
+        id: NodeId,
+        addr: &str,
+        peer_addrs: HashMap<NodeId, String>,
+    ) -> std::io::Result<Self> {
         let acceptor = crate::tls::node_tls::build_raft_acceptor()?;
         let (connector, server_name) = crate::tls::node_tls::build_raft_connector()?;
 
@@ -303,12 +314,20 @@ impl TlsTcpTransport {
 
         Ok(Self {
             id,
+            peer_addrs: Arc::new(peer_addrs),
             connector,
             server_name,
             rx: Arc::new(Mutex::new(rx)),
             shutdown_tx: Some(shutdown_tx),
             accept_task: Some(accept_task),
         })
+    }
+
+    fn peer_addr(&self, to: &NodeId) -> String {
+        self.peer_addrs
+            .get(to)
+            .cloned()
+            .unwrap_or_else(|| to.clone())
     }
 }
 
@@ -328,7 +347,8 @@ impl Drop for TlsTcpTransport {
 #[async_trait::async_trait]
 impl Transport for TlsTcpTransport {
     async fn send(&self, to: &NodeId, msg: RaftMessage) {
-        if let Ok(tcp) = TcpStream::connect(to).await {
+        let addr = self.peer_addr(to);
+        if let Ok(tcp) = TcpStream::connect(&addr).await {
             let sn = self.server_name.clone();
             match self.connector.connect(sn, tcp).await {
                 Ok(mut tls) => {
@@ -337,9 +357,11 @@ impl Transport for TlsTcpTransport {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(peer = %to, error = %e, "Raft TLS connect failed");
+                    tracing::warn!(peer = %to, %addr, error = %e, "Raft TLS connect failed");
                 }
             }
+        } else {
+            tracing::debug!(peer = %to, %addr, "Raft TLS peer unavailable");
         }
     }
 
