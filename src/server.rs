@@ -70,6 +70,25 @@ fn replicated_sql_gateway() -> Option<Arc<ReplicatedSqlGateway>> {
         .and_then(|slot| slot.lock().ok().and_then(|gateway| gateway.clone()))
 }
 
+/// Classify the persistent table-mutation subset before binding. The binder
+/// depends on local catalog state, so after failover a current-term Raft barrier
+/// must be applied before it resolves table names. User/auth statements are
+/// intentionally excluded because they remain per-node in this phase.
+fn is_persistent_table_mutation_sql(sql: &str) -> bool {
+    let mut words = sql.split_whitespace();
+    let Some(first) = words.next() else {
+        return false;
+    };
+    let first = first.to_ascii_lowercase();
+    match first.as_str() {
+        "insert" | "update" | "delete" => true,
+        "create" | "drop" => words
+            .next()
+            .is_some_and(|second| second.eq_ignore_ascii_case("table")),
+        _ => false,
+    }
+}
+
 #[cfg(feature = "tls")]
 pub type TlsAcceptorOpt = Option<tokio_rustls::TlsAcceptor>;
 #[cfg(not(feature = "tls"))]
@@ -903,6 +922,18 @@ where
         }
     };
 
+    // A newly elected leader may have the committed schema/data in its Raft
+    // log before its local state machine has applied it. Commit a current-term
+    // barrier before the binder reads catalog state for persistent mutations.
+    if is_persistent_table_mutation_sql(sql) {
+        if let Some(gateway) = replicated_sql_gateway() {
+            if let Err(error) = gateway.prepare_mutation().await {
+                write_replicated_error(socket, &error).await?;
+                return Ok(());
+            }
+        }
+    }
+
     let norm = normalize_sql(sql);
     let cached_plan = {
         let mut cache = plan_cache.lock().unwrap();
@@ -1250,8 +1281,6 @@ where
                 Some(leader) => format!("not Raft leader; retry write on leader {leader}"),
                 None => "not Raft leader; leader currently unknown".to_string(),
             };
-            // Explicit follower-write rejection. NeuralBase does not proxy writes
-            // in this phase, so clients must retry against the reported leader.
             write_error_and_ready(socket, &message, "25006").await
         }
         _ => write_error_and_ready(
