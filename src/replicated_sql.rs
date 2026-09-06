@@ -3,8 +3,8 @@
 //!
 //! The state-machine apply path must never re-plan SQL or consult a local wall
 //! clock. Leaders therefore materialize SQL mutations into this representation
-//! before proposing them to Raft. DML commands carry concrete primary keys and
-//! already-encoded row values; followers only apply those bytes in Raft order.
+//! before proposing them to Raft. DML commands carry concrete primary keys,
+//! exact encoded row values, and one leader-chosen commit timestamp.
 
 use crate::catalog::{ColumnDef, TableSchema};
 use thiserror::Error;
@@ -35,16 +35,19 @@ pub enum ReplicatedMutation {
     InsertRows {
         table: String,
         table_id: u32,
+        commit_ts: u64,
         rows: Vec<ReplicatedRowWrite>,
     },
     UpdateRows {
         table: String,
         table_id: u32,
+        commit_ts: u64,
         rows: Vec<ReplicatedRowWrite>,
     },
     DeleteRows {
         table: String,
         table_id: u32,
+        commit_ts: u64,
         primary_keys: Vec<Vec<u8>>,
     },
 }
@@ -67,6 +70,8 @@ pub enum MutationCodecError {
     TooManyItems,
     #[error("replicated mutation contains an empty table name")]
     EmptyTableName,
+    #[error("replicated DML commit timestamp must be non-zero")]
+    ZeroCommitTimestamp,
     #[error("replicated row keys must be strictly increasing and unique")]
     NonCanonicalRowOrder,
     #[error("replicated mutation has trailing bytes")]
@@ -105,26 +110,45 @@ impl ReplicatedMutation {
             Self::InsertRows {
                 table,
                 table_id,
+                commit_ts,
                 rows,
             } => {
-                encode_row_writes(&mut out, OP_INSERT_ROWS, table, *table_id, rows)?;
+                encode_row_writes(
+                    &mut out,
+                    OP_INSERT_ROWS,
+                    table,
+                    *table_id,
+                    *commit_ts,
+                    rows,
+                )?;
             }
             Self::UpdateRows {
                 table,
                 table_id,
+                commit_ts,
                 rows,
             } => {
-                encode_row_writes(&mut out, OP_UPDATE_ROWS, table, *table_id, rows)?;
+                encode_row_writes(
+                    &mut out,
+                    OP_UPDATE_ROWS,
+                    table,
+                    *table_id,
+                    *commit_ts,
+                    rows,
+                )?;
             }
             Self::DeleteRows {
                 table,
                 table_id,
+                commit_ts,
                 primary_keys,
             } => {
                 validate_table_name(table)?;
+                validate_commit_ts(*commit_ts)?;
                 out.push(OP_DELETE_ROWS);
                 put_string(&mut out, table)?;
                 out.extend_from_slice(&table_id.to_be_bytes());
+                out.extend_from_slice(&commit_ts.to_be_bytes());
                 let mut keys = primary_keys.clone();
                 keys.sort();
                 ensure_strict_key_order(&keys)?;
@@ -182,6 +206,8 @@ impl ReplicatedMutation {
                 let table = reader.string()?;
                 validate_table_name(&table)?;
                 let table_id = reader.u32()?;
+                let commit_ts = reader.u64()?;
+                validate_commit_ts(commit_ts)?;
                 let count = reader.count()?;
                 let mut rows = Vec::with_capacity(count);
                 for _ in 0..count {
@@ -195,12 +221,14 @@ impl ReplicatedMutation {
                     Self::InsertRows {
                         table,
                         table_id,
+                        commit_ts,
                         rows,
                     }
                 } else {
                     Self::UpdateRows {
                         table,
                         table_id,
+                        commit_ts,
                         rows,
                     }
                 }
@@ -209,6 +237,8 @@ impl ReplicatedMutation {
                 let table = reader.string()?;
                 validate_table_name(&table)?;
                 let table_id = reader.u32()?;
+                let commit_ts = reader.u64()?;
+                validate_commit_ts(commit_ts)?;
                 let count = reader.count()?;
                 let mut primary_keys = Vec::with_capacity(count);
                 for _ in 0..count {
@@ -218,6 +248,7 @@ impl ReplicatedMutation {
                 Self::DeleteRows {
                     table,
                     table_id,
+                    commit_ts,
                     primary_keys,
                 }
             }
@@ -249,6 +280,19 @@ impl ReplicatedMutation {
             Self::CreateTable { .. } | Self::DropTable { .. } => None,
         }
     }
+
+    pub fn commit_ts(&self) -> Option<u64> {
+        match self {
+            Self::InsertRows { commit_ts, .. }
+            | Self::UpdateRows { commit_ts, .. }
+            | Self::DeleteRows { commit_ts, .. } => Some(*commit_ts),
+            Self::CreateTable { .. } | Self::DropTable { .. } => None,
+        }
+    }
+}
+
+pub fn is_replicated_mutation(bytes: &[u8]) -> bool {
+    bytes.starts_with(MAGIC)
 }
 
 fn encode_row_writes(
@@ -256,12 +300,15 @@ fn encode_row_writes(
     opcode: u8,
     table: &str,
     table_id: u32,
+    commit_ts: u64,
     rows: &[ReplicatedRowWrite],
 ) -> Result<(), MutationCodecError> {
     validate_table_name(table)?;
+    validate_commit_ts(commit_ts)?;
     out.push(opcode);
     put_string(out, table)?;
     out.extend_from_slice(&table_id.to_be_bytes());
+    out.extend_from_slice(&commit_ts.to_be_bytes());
 
     let mut canonical = rows.to_vec();
     canonical.sort_by(|a, b| a.primary_key.cmp(&b.primary_key));
@@ -295,6 +342,14 @@ fn ensure_strict_key_order(keys: &[Vec<u8>]) -> Result<(), MutationCodecError> {
 fn validate_table_name(table: &str) -> Result<(), MutationCodecError> {
     if table.is_empty() {
         Err(MutationCodecError::EmptyTableName)
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_commit_ts(commit_ts: u64) -> Result<(), MutationCodecError> {
+    if commit_ts == 0 {
+        Err(MutationCodecError::ZeroCommitTimestamp)
     } else {
         Ok(())
     }
@@ -355,6 +410,14 @@ impl<'a> Reader<'a> {
         Ok(u32::from_be_bytes(raw))
     }
 
+    fn u64(&mut self) -> Result<u64, MutationCodecError> {
+        let raw: [u8; 8] = self
+            .take(8)?
+            .try_into()
+            .map_err(|_| MutationCodecError::UnexpectedEof)?;
+        Ok(u64::from_be_bytes(raw))
+    }
+
     fn count(&mut self) -> Result<usize, MutationCodecError> {
         let count = self.u32()? as usize;
         if count > MAX_ITEMS {
@@ -413,16 +476,19 @@ mod tests {
             ReplicatedMutation::InsertRows {
                 table: "orders".to_string(),
                 table_id: 7,
+                commit_ts: 42,
                 rows: vec![row(b"b", b"two"), row(b"a", b"one")],
             },
             ReplicatedMutation::UpdateRows {
                 table: "orders".to_string(),
                 table_id: 7,
+                commit_ts: 43,
                 rows: vec![row(b"a", b"changed")],
             },
             ReplicatedMutation::DeleteRows {
                 table: "orders".to_string(),
                 table_id: 7,
+                commit_ts: 44,
                 primary_keys: vec![b"b".to_vec(), b"a".to_vec()],
             },
         ];
@@ -430,8 +496,6 @@ mod tests {
         for mutation in mutations {
             let encoded = mutation.encode().unwrap();
             let decoded = ReplicatedMutation::decode(&encoded).unwrap();
-            // Encoding canonicalizes DML row order; compare encoded bytes instead
-            // of source object ordering.
             assert_eq!(decoded.encode().unwrap(), encoded);
         }
     }
@@ -441,11 +505,13 @@ mod tests {
         let a = ReplicatedMutation::InsertRows {
             table: "t".to_string(),
             table_id: 1,
+            commit_ts: 99,
             rows: vec![row(b"b", b"2"), row(b"a", b"1")],
         };
         let b = ReplicatedMutation::InsertRows {
             table: "t".to_string(),
             table_id: 1,
+            commit_ts: 99,
             rows: vec![row(b"a", b"1"), row(b"b", b"2")],
         };
         assert_eq!(a.encode().unwrap(), b.encode().unwrap());
@@ -456,11 +522,26 @@ mod tests {
         let mutation = ReplicatedMutation::UpdateRows {
             table: "t".to_string(),
             table_id: 1,
+            commit_ts: 99,
             rows: vec![row(b"same", b"1"), row(b"same", b"2")],
         };
         assert_eq!(
             mutation.encode().unwrap_err(),
             MutationCodecError::NonCanonicalRowOrder
+        );
+    }
+
+    #[test]
+    fn zero_commit_timestamp_is_rejected() {
+        let mutation = ReplicatedMutation::DeleteRows {
+            table: "t".to_string(),
+            table_id: 1,
+            commit_ts: 0,
+            primary_keys: vec![b"a".to_vec()],
+        };
+        assert_eq!(
+            mutation.encode().unwrap_err(),
+            MutationCodecError::ZeroCommitTimestamp
         );
     }
 
@@ -503,6 +584,20 @@ mod tests {
     }
 
     #[test]
+    fn insert_has_stable_golden_encoding() {
+        let mutation = ReplicatedMutation::InsertRows {
+            table: "t".to_string(),
+            table_id: 0x0102_0304,
+            commit_ts: 0x0102_0304_0506_0708,
+            rows: vec![row(b"k", b"v")],
+        };
+        assert_eq!(
+            hex::encode(mutation.encode().unwrap()),
+            "4e42524d0103000000017401020304010203040506070800000001000000016b0000000176"
+        );
+    }
+
+    #[test]
     fn unknown_version_is_rejected() {
         let mut bytes = ReplicatedMutation::DropTable {
             table: "t".to_string(),
@@ -537,14 +632,12 @@ mod tests {
         let canonical = ReplicatedMutation::InsertRows {
             table: "t".to_string(),
             table_id: 1,
+            commit_ts: 99,
             rows: vec![row(b"a", b"1"), row(b"b", b"2")],
         }
         .encode()
         .unwrap();
 
-        // Locate the one-byte key payloads and swap only their values, leaving
-        // lengths untouched. The resulting byte stream is structurally valid
-        // but no longer canonical.
         let first_a = canonical.iter().position(|b| *b == b'a').unwrap();
         let last_b = canonical.iter().rposition(|b| *b == b'b').unwrap();
         let mut noncanonical = canonical.clone();
