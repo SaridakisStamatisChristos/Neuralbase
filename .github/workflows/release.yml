@@ -21,7 +21,7 @@ jobs:
       LIBCLANG_PATH: /usr/lib/llvm-18/lib
       ROCKSDB_INCLUDE_DIR: /usr/include
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v5
 
       - name: Install system dependencies
         run: |
@@ -38,7 +38,7 @@ jobs:
           toolchain: "1.88.0"
           components: rustfmt, clippy
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -62,7 +62,7 @@ jobs:
     name: Deployment manifests
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v5
       - uses: azure/setup-helm@v4
         with:
           version: "v3.16.4"
@@ -83,7 +83,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v5
       - uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -109,7 +109,7 @@ jobs:
     needs: [test, manifests]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v5
       - uses: azure/setup-helm@v4
         with:
           version: "v3.16.4"
@@ -127,7 +127,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
         with:
           name: helm-chart
