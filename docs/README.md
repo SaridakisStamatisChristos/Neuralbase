@@ -14,13 +14,16 @@ This directory contains the technical documentation for NeuralBase. The root `RE
 | [THREAT_MODEL.md](THREAT_MODEL.md) | Security reviewers | Threats, trust boundaries, mitigations |
 | [TSAN.md](TSAN.md) | Contributors | ThreadSanitizer workflow and caveats |
 
-Repository-level policy and project files:
+Repository-level policy and operational material:
 
 - [`../ROADMAP.md`](../ROADMAP.md) — prioritized engineering roadmap.
 - [`../CONTRIBUTING.md`](../CONTRIBUTING.md) — contributor setup and quality gates.
 - [`../SECURITY.md`](../SECURITY.md) — vulnerability reporting policy.
 - [`../CONFIDENCE.md`](../CONFIDENCE.md) / [`../CONFIDENCE.yaml`](../CONFIDENCE.yaml) — evidence-scoped confidence model.
 - [`../CHANGELOG.md`](../CHANGELOG.md) — current development changelog.
+- [`../ops/RUNBOOK.md`](../ops/RUNBOOK.md) — development operations and diagnostics.
+- [`../observability/README.md`](../observability/README.md) — metrics and current tracing boundary.
+- [`../tests/perf/README.md`](../tests/perf/README.md) — benchmark interpretation and reproducibility rules.
 
 ## Documentation rule
 
