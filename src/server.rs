@@ -3,19 +3,7 @@
 //
 // Accepts client connections and processes simple Query ('Q') messages.
 // All internal functions are generic over `S: AsyncRead + AsyncWrite + Unpin`
-// so the same code path handles both plaintext TcpStream and TLS-wrapped
-// TlsStream<TcpStream> (Session 7: TLS added via `tls` Cargo feature).
-//
-// TLS activation:
-//   Set TLS_ENABLED=1 (self-signed dev cert auto-generated via rcgen), or
-//   set TLS_CERT_PATH + TLS_KEY_PATH to load a real cert.
-//   Plaintext is the default when TLS_ENABLED is unset.
-//
-// Authentication (Session 11):
-//   Enable auth:  NEURALBASE_AUTH_REQUIRED=1
-//   User file:    NEURALBASE_USERS_FILE=users.json  (default: "users.json")
-//   Per-IP limit: NEURALBASE_MAX_CONNECTIONS_PER_IP (default 10)
-//   Methods:      SCRAM-SHA-256 (primary), MD5 (legacy fallback)
+// so the same code path handles plaintext and TLS streams.
 
 use crate::auth::{
     create_scram_user, read_max_per_ip, IpConnectionTracker, Md5State, ScramServer,
@@ -36,6 +24,7 @@ use crate::protocol::{
     ProtocolError, SSL_REQUEST_CODE, STARTUP_PROTOCOL_V3,
 };
 use crate::query_executor::{query_result_to_batch, QueryCatalog};
+use crate::replicated_gateway::{ReplicatedGatewayError, ReplicatedSqlGateway};
 use crate::rocksdb_catalog::RocksDbCatalog;
 use crate::scheduler::MorselScheduler;
 use crate::sql::{parse_nb_statement, parse_statement};
@@ -48,7 +37,7 @@ use sqlparser::ast::{Expr, SetExpr, Statement, TableFactor};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
@@ -59,16 +48,33 @@ const CONNECTION_ACQUIRE_TIMEOUT_MS: u64 = 500;
 const PLAN_CACHE_MAX_SIZE: usize = 500;
 const STMT_CACHE_MAX_SIZE: usize = 100;
 
-// TLS acceptor type alias (conditional on `tls` feature).
+/// Optional replicated-SQL write gateway for clustered runtime.
+///
+/// `server::run` keeps its existing public signature for compatibility with
+/// local/single-node callers and integration tests. `main` installs a gateway
+/// only when a durable Raft node is configured. Mutating SQL checks this slot:
+/// `None` means the historical local path; `Some` means every persistent table
+/// mutation must go through the Raft leader and wait for confirmed apply.
+static REPLICATED_SQL_GATEWAY: OnceLock<Mutex<Option<Arc<ReplicatedSqlGateway>>>> = OnceLock::new();
+
+pub fn configure_replicated_sql_gateway(gateway: Option<Arc<ReplicatedSqlGateway>>) {
+    let slot = REPLICATED_SQL_GATEWAY.get_or_init(|| Mutex::new(None));
+    *slot
+        .lock()
+        .expect("replicated SQL gateway mutex poisoned") = gateway;
+}
+
+fn replicated_sql_gateway() -> Option<Arc<ReplicatedSqlGateway>> {
+    REPLICATED_SQL_GATEWAY
+        .get()
+        .and_then(|slot| slot.lock().ok().and_then(|gateway| gateway.clone()))
+}
+
 #[cfg(feature = "tls")]
 pub type TlsAcceptorOpt = Option<tokio_rustls::TlsAcceptor>;
 #[cfg(not(feature = "tls"))]
 pub type TlsAcceptorOpt = Option<std::convert::Infallible>;
 
-// ── Per-user connection tracker (Phase 1A, Session 14) ────────────────────────
-
-/// Tracks active connection count per authenticated username.
-/// Limit: NEURALBASE_MAX_CONNECTIONS_PER_USER (default: unlimited).
 #[derive(Clone)]
 struct UserConnectionTracker {
     inner: Arc<Mutex<HashMap<String, usize>>>,
@@ -112,7 +118,6 @@ fn read_max_per_user() -> usize {
         .unwrap_or(usize::MAX)
 }
 
-/// RAII guard — releases per-user slot on drop.
 struct UserConnectionGuard {
     tracker: UserConnectionTracker,
     username: String,
@@ -124,10 +129,7 @@ impl Drop for UserConnectionGuard {
     }
 }
 
-// ── Query plan cache (Phase 2, Session 14) ────────────────────────────────────
-
 /// LRU query plan cache shared across all connections.
-/// Key: normalized SQL string. Max size: PLAN_CACHE_MAX_SIZE.
 pub struct PlanCache {
     entries: HashMap<String, BoundPlan>,
     order: VecDeque<String>,
@@ -150,7 +152,6 @@ impl PlanCache {
     pub fn get(&mut self, sql: &str) -> Option<&BoundPlan> {
         if self.entries.contains_key(sql) {
             self.hits += 1;
-            // Promote to front (most recently used).
             self.order.retain(|k| k != sql);
             self.order.push_front(sql.to_string());
             self.entries.get(sql)
@@ -173,7 +174,6 @@ impl PlanCache {
         self.entries.insert(sql, plan);
     }
 
-    /// Invalidate all entries (called on DDL).
     pub fn invalidate_all(&mut self) {
         self.entries.clear();
         self.order.clear();
@@ -193,7 +193,6 @@ impl PlanCache {
     }
 }
 
-/// Normalize SQL for plan cache key: lowercase, collapse whitespace.
 fn normalize_sql(sql: &str) -> String {
     sql.split_whitespace()
         .collect::<Vec<_>>()
@@ -201,15 +200,11 @@ fn normalize_sql(sql: &str) -> String {
         .to_lowercase()
 }
 
-// ── Prepared statements (extended query protocol) ─────────────────────────────
-
-/// A cached prepared statement (from Parse 'P' message).
 #[derive(Clone)]
 struct PreparedStatement {
     sql: String,
 }
 
-/// A bound portal (from Bind 'B' message): statement with substituted params.
 #[derive(Clone)]
 struct Portal {
     sql: String,
@@ -226,9 +221,7 @@ struct ClientSessionContext {
     advisor_inflight: Arc<AtomicBool>,
     registry: Arc<RwLock<UserRegistry>>,
     users_file: Arc<String>,
-    /// Per-user connection tracker (Phase 1A).
     user_tracker: UserConnectionTracker,
-    /// Shared query plan cache (Phase 2).
     plan_cache: Arc<Mutex<PlanCache>>,
 }
 
@@ -239,7 +232,6 @@ pub async fn run(
     tls_acceptor: TlsAcceptorOpt,
     storage_engine: Option<Arc<StorageEngine>>,
 ) -> std::io::Result<()> {
-    // ── Shared server-wide state ───────────────────────────────────────────
     let advisor = Arc::new(IndexAdvisor::new(Arc::clone(&catalog) as Arc<dyn Catalog>));
     let executor = Arc::new(IndexExecutor::new());
     let query_count = Arc::new(AtomicU64::new(0));
@@ -250,12 +242,9 @@ pub async fn run(
     let user_tracker = UserConnectionTracker::new(read_max_per_user());
     let plan_cache = Arc::new(Mutex::new(PlanCache::new(PLAN_CACHE_MAX_SIZE)));
 
-    // ── Authentication registry (Session 11) ──────────────────────────────
     let users_file =
         std::env::var("NEURALBASE_USERS_FILE").unwrap_or_else(|_| "users.json".to_string());
     let registry = Arc::new(RwLock::new(UserRegistry::load_from_file(&users_file)));
-
-    // ── Per-IP connection tracking (Session 11) ───────────────────────────
     let ip_tracker = IpConnectionTracker::new(read_max_per_ip());
 
     let require_auth = registry.read().await.require_auth;
@@ -269,8 +258,6 @@ pub async fn run(
 
     loop {
         let (mut socket, peer_addr) = listener.accept().await?;
-
-        // ── Per-IP gate ────────────────────────────────────────────────────
         let peer_ip = peer_addr.ip();
         if !ip_tracker.try_acquire(peer_ip) {
             counter!("rejected_connections_ip_total").increment(1);
@@ -283,7 +270,6 @@ pub async fn run(
             continue;
         }
 
-        // ── Global semaphore gate ──────────────────────────────────────────
         let permit = match timeout(
             Duration::from_millis(CONNECTION_ACQUIRE_TIMEOUT_MS),
             Arc::clone(&semaphore).acquire_owned(),
@@ -332,19 +318,13 @@ pub async fn run(
             let ctx = ctx.clone();
             tokio::spawn(async move {
                 let _permit = permit_guard;
-                // PostgreSQL STARTTLS handshake:
-                // 1. Client sends 8-byte SSLRequest (length=8, code=80877103).
-                // 2. Server responds 'S' (accept) or 'N' (decline).
-                // 3. Client begins TLS ClientHello after 'S'.
                 let mut ssl_req = [0u8; 8];
                 if socket.read_exact(&mut ssl_req).await.is_err() {
                     return;
                 }
                 let is_ssl_request = ssl_req == [0, 0, 0, 8, 4, 0xd2, 0x16, 0x2f];
                 if !is_ssl_request {
-                    // Non-TLS connection when TLS is required — reject.
                     tracing::warn!(%peer_addr, "Rejecting plaintext connection (TLS required, send sslmode=require)");
-                    // Write a well-formed ErrorResponse then close.
                     let err_bytes = build_error_response(
                         "plaintext connections not accepted -- reconnect with sslmode=require",
                         "28000",
@@ -352,7 +332,6 @@ pub async fn run(
                     let _ = socket.write_all(&err_bytes).await;
                     return;
                 }
-                // Respond 'S' — SSL accepted.
                 if socket.write_all(b"S").await.is_err() {
                     return;
                 }
@@ -369,7 +348,6 @@ pub async fn run(
             continue;
         }
 
-        // Suppress unused variable warning when tls feature is off.
         #[cfg(not(feature = "tls"))]
         let _ = &tls_acceptor;
 
@@ -442,13 +420,11 @@ async fn handle_client_stream<S>(mut socket: S, ctx: ClientSessionContext) -> st
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    // startup_and_auth sends AuthOk (or an error) internally.
     let username = match startup_and_auth(&mut socket, &ctx.registry).await {
         Ok(u) => u,
         Err(_) => return Ok(()),
     };
 
-    // Per-user connection limit (Phase 1A, Session 14).
     if !ctx.user_tracker.try_acquire(&username) {
         counter!("rejected_connections_per_user_total").increment(1);
         tracing::warn!(%username, "rejecting connection: per-user limit exceeded");
@@ -475,7 +451,6 @@ where
     socket.write_all(&build_backend_key_data(42, 7)).await?;
     socket.write_all(&build_ready_for_query()).await?;
 
-    // Per-connection prepared-statement and portal caches.
     let mut stmt_cache: HashMap<String, PreparedStatement> = HashMap::new();
     let mut portal_cache: HashMap<String, Portal> = HashMap::new();
 
@@ -526,12 +501,10 @@ where
                 .await?;
                 let elapsed_us = start.elapsed().as_micros() as u64;
 
-                // Feed the workload monitor — drives self-tuning index recommendations.
                 if let Some(pattern) = extract_query_pattern(&sql_text, elapsed_us) {
                     ctx.advisor.record_query(pattern);
                     let n = ctx.query_count.fetch_add(1, Ordering::Relaxed) + 1;
                     if n.is_multiple_of(100) {
-                        // Fire-and-forget: advise() + DDL is CPU-only, non-blocking.
                         let adv = Arc::clone(&ctx.advisor);
                         let exec = Arc::clone(&ctx.executor);
                         let eng = ctx.storage_engine.clone();
@@ -543,20 +516,16 @@ where
                             let inflight_task = Arc::clone(&ctx.advisor_inflight);
                             tokio::spawn(async move {
                                 let decisions = adv.advise();
-
                                 if let Some(engine) = eng {
-                                    // Sync existing index CFs so advisor tracks their age.
                                     if let Ok(cfs) = engine.list_index_cfs() {
                                         for cf in cfs {
                                             adv.register_index(cf);
                                         }
                                     }
-                                    // Apply create/drop decisions as real RocksDB DDL.
                                     let results = exec.apply(&decisions, &engine);
                                     for result in &results {
                                         match result {
                                             DdlResult::Created { index_name } => {
-                                                // Newly created index: reset its drop-TTL clock.
                                                 adv.touch_index(index_name);
                                                 tracing::info!(index_name, "index created");
                                             }
@@ -564,18 +533,10 @@ where
                                                 tracing::info!(index_name, "index dropped");
                                             }
                                             DdlResult::Skipped { index_name, reason } => {
-                                                tracing::debug!(
-                                                    index_name,
-                                                    reason,
-                                                    "index ddl skipped"
-                                                );
+                                                tracing::debug!(index_name, reason, "index ddl skipped");
                                             }
                                             DdlResult::Failed { index_name, error } => {
-                                                tracing::warn!(
-                                                    index_name,
-                                                    error,
-                                                    "index ddl failed"
-                                                );
+                                                tracing::warn!(index_name, error, "index ddl failed");
                                             }
                                         }
                                     }
@@ -585,7 +546,6 @@ where
                                     );
                                 }
 
-                                // Log all recommendations with full structured detail.
                                 for d in &decisions {
                                     match d {
                                         IndexDecision::Create {
@@ -624,9 +584,7 @@ where
 
                 socket.write_all(&build_ready_for_query()).await?;
             }
-            // ── Extended query protocol (Phase 2, Session 14) ──────────────────
             b'P' => {
-                // Parse: name\0 sql\0 num_param_types:i16 [oid:i32...]
                 let mut cursor = 0usize;
                 let name = read_cstring(&payload, &mut cursor);
                 let sql = read_cstring(&payload, &mut cursor);
@@ -650,16 +608,14 @@ where
                         cursor += 4;
                     }
                 }
-                let max_stmts = STMT_CACHE_MAX_SIZE;
-                if stmt_cache.len() >= max_stmts {
-                    stmt_cache.clear(); // Simple eviction: flush all when full
+                if stmt_cache.len() >= STMT_CACHE_MAX_SIZE {
+                    stmt_cache.clear();
                 }
-                let _ = ptypes; // type OIDs from client; engine does not enforce param types
+                let _ = ptypes;
                 stmt_cache.insert(name, PreparedStatement { sql });
                 socket.write_all(&build_parse_complete()).await?;
             }
             b'B' => {
-                // Bind: portal_name\0 stmt_name\0 ...
                 let mut cursor = 0usize;
                 let portal_name = read_cstring(&payload, &mut cursor);
                 let stmt_name = read_cstring(&payload, &mut cursor);
@@ -671,11 +627,9 @@ where
                 socket.write_all(&build_bind_complete()).await?;
             }
             b'D' => {
-                // Describe: 'P'/'S' + name\0  — return NoData (full metadata TBD)
                 socket.write_all(&build_no_data()).await?;
             }
             b'E' => {
-                // Execute: portal_name\0 max_rows:i32
                 let mut cursor = 0usize;
                 let portal_name = read_cstring(&payload, &mut cursor);
                 let sql = portal_cache
@@ -704,11 +658,9 @@ where
                 }
             }
             b'S' => {
-                // Sync: flush and send ReadyForQuery
                 socket.write_all(&build_ready_for_query()).await?;
             }
             b'C' => {
-                // Close: 'P'/'S' + name\0  — acknowledge unconditionally
                 socket.write_all(&build_close_complete()).await?;
             }
             b'X' => return Ok(()),
@@ -726,14 +678,10 @@ async fn startup_and_auth<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    // ── Phase 1: read startup message ─────────────────────────────────────
     let (username, payload) = read_startup_message(socket).await?;
-
-    // ── Phase 2: authentication ───────────────────────────────────────────
     let cred = {
         let reg = registry.read().await;
         if !reg.require_auth {
-            // Dev/test mode: accept without challenge.
             drop(reg);
             socket
                 .write_all(&build_auth_ok())
@@ -765,8 +713,6 @@ where
     }
 }
 
-/// Read the startup message, handling SSL requests transparently.
-/// Returns (username, raw_startup_body).
 async fn read_startup_message<S>(socket: &mut S) -> Result<(String, Vec<u8>), ProtocolError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -810,40 +756,31 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let mut scram = ScramServer::new(keys);
-
-    // Send AuthenticationSASL.
     socket
         .write_all(&build_auth_sasl_request(&["SCRAM-SHA-256"]))
         .await
         .map_err(|_| ProtocolError::InvalidLength(0))?;
 
-    // Read SASLInitialResponse ('p' message).
     let client_first = read_frontend_message_payload(socket).await?;
     let (_, initial_data) =
         parse_sasl_initial_response(&client_first).map_err(|_| ProtocolError::InvalidLength(0))?;
     let client_first_str =
         String::from_utf8(initial_data).map_err(|_| ProtocolError::InvalidLength(0))?;
-
     let server_first = scram
         .process_client_first(&client_first_str)
         .map_err(|_| ProtocolError::InvalidLength(0))?;
 
-    // Send AuthenticationSASLContinue.
     socket
         .write_all(&build_auth_sasl_continue(server_first.as_bytes()))
         .await
         .map_err(|_| ProtocolError::InvalidLength(0))?;
-
-    // Read SASLResponse ('p' message).
     let client_final_payload = read_frontend_message_payload(socket).await?;
     let client_final =
         String::from_utf8(client_final_payload).map_err(|_| ProtocolError::InvalidLength(0))?;
-
     let server_sig = scram
         .process_client_final(&client_final)
         .map_err(|_| ProtocolError::InvalidLength(0))?;
 
-    // Send AuthenticationSASLFinal then AuthenticationOk.
     let final_msg = format!("v={server_sig}");
     socket
         .write_all(&build_auth_sasl_final(final_msg.as_bytes()))
@@ -853,7 +790,6 @@ where
         .write_all(&build_auth_ok())
         .await
         .map_err(|_| ProtocolError::InvalidLength(0))?;
-
     Ok(username)
 }
 
@@ -866,14 +802,10 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let md5_state = Md5State::new(password_hash);
-
-    // Send AuthenticationMD5Password.
     socket
         .write_all(&build_auth_md5_request(&md5_state.salt))
         .await
         .map_err(|_| ProtocolError::InvalidLength(0))?;
-
-    // Read PasswordMessage ('p' message).
     let pw_payload = read_frontend_message_payload(socket).await?;
     let response = String::from_utf8(
         pw_payload
@@ -899,8 +831,6 @@ where
     Ok(username)
 }
 
-/// Read one frontend message and return its payload (type byte discarded).
-/// Used for 'p' (PasswordMessage / SASLInitialResponse / SASLResponse) messages.
 async fn read_frontend_message_payload<S>(socket: &mut S) -> Result<Vec<u8>, ProtocolError>
 where
     S: AsyncRead + Unpin,
@@ -925,7 +855,6 @@ where
     Ok(payload)
 }
 
-/// Read a null-terminated string from `buf` starting at `*cursor`; advance cursor past the null.
 fn read_cstring(buf: &[u8], cursor: &mut usize) -> String {
     let start = *cursor;
     while *cursor < buf.len() && buf[*cursor] != 0 {
@@ -933,12 +862,11 @@ fn read_cstring(buf: &[u8], cursor: &mut usize) -> String {
     }
     let s = String::from_utf8_lossy(&buf[start..*cursor]).to_string();
     if *cursor < buf.len() {
-        *cursor += 1; // skip null terminator
+        *cursor += 1;
     }
     s
 }
 
-/// Build a single-column RecordBatch of text rows for EXPLAIN output.
 fn explain_text_to_batch(text: &str) -> crate::vectorized::RecordBatch {
     use crate::vectorized::{ColumnVector, RecordBatch, Utf8Column};
     let lines: Vec<Option<String>> = text.lines().map(|l| Some(l.to_string())).collect();
@@ -975,7 +903,6 @@ where
         }
     };
 
-    // Plan cache lookup (read-only plans are cached by normalized SQL key).
     let norm = normalize_sql(sql);
     let cached_plan = {
         let mut cache = plan_cache.lock().unwrap();
@@ -1000,10 +927,7 @@ where
                 | BoundPlan::Explain { .. } => {
                     cache.insert(norm, p.clone());
                 }
-                // DDL and DML: invalidate the whole cache.
-                _ => {
-                    cache.invalidate_all();
-                }
+                _ => cache.invalidate_all(),
             }
         }
         p
@@ -1020,15 +944,12 @@ where
             let scheduler = MorselScheduler::new(16_384);
             match execute_physical_plan(&physical_plan, &dataset, &scheduler, storage) {
                 Ok(batch) => write_batch(socket, &batch).await?,
-                Err(err) => {
-                    write_error_and_ready(socket, &err.to_string(), "22000").await?;
-                }
+                Err(err) => write_error_and_ready(socket, &err.to_string(), "22000").await?,
             }
         }
         BoundPlan::SelectQuery(query) => {
             let dataset = generate_tpch_data(0.1);
             let mut qcat = QueryCatalog::from_tpch(&dataset);
-            // Inject any user-defined tables from the in-memory catalog.
             for schema in catalog.all_tables() {
                 if !qcat.tables.contains_key(&schema.name.to_lowercase()) {
                     if let Some(scanner) = storage {
@@ -1039,127 +960,176 @@ where
                 }
             }
             match crate::query_executor::execute_select_query(&query, &qcat) {
-                Ok(result) => {
-                    let batch = query_result_to_batch(result);
-                    write_batch(socket, &batch).await?;
-                }
-                Err(err) => {
-                    write_error_and_ready(socket, &err.to_string(), "22000").await?;
-                }
+                Ok(result) => write_batch(socket, &query_result_to_batch(result)).await?,
+                Err(err) => write_error_and_ready(socket, &err.to_string(), "22000").await?,
             }
         }
         BoundPlan::DropTable { name } => {
-            catalog.drop_table(&name);
-            if let Some(engine) = storage_engine {
-                let rdb = RocksDbCatalog::new(engine.clone());
-                if let Err(e) = rdb.unregister_table(&name) {
-                    tracing::warn!(error = %e, table = %name, "failed to remove persisted schema entry");
+            if let Some(gateway) = replicated_sql_gateway() {
+                match gateway.drop_table(&name).await {
+                    Ok(_) => socket
+                        .write_all(&build_command_complete("DROP TABLE"))
+                        .await?,
+                    Err(error) => write_replicated_error(socket, &error).await?,
                 }
-                if let Err(e) = engine.clear_table_data(table_id_for(&name)) {
-                    tracing::warn!(error = %e, table = %name, "failed to clear dropped table data");
+            } else {
+                catalog.drop_table(&name);
+                if let Some(engine) = storage_engine {
+                    let rdb = RocksDbCatalog::new(engine.clone());
+                    if let Err(e) = rdb.unregister_table(&name) {
+                        tracing::warn!(error = %e, table = %name, "failed to remove persisted schema entry");
+                    }
+                    if let Err(e) = engine.clear_table_data(table_id_for(&name)) {
+                        tracing::warn!(error = %e, table = %name, "failed to clear dropped table data");
+                    }
                 }
+                socket
+                    .write_all(&build_command_complete("DROP TABLE"))
+                    .await?;
             }
-            socket
-                .write_all(&build_command_complete("DROP TABLE"))
-                .await?;
         }
         BoundPlan::CreateTable(create_plan) => {
             let schema = create_plan.to_table_schema();
-            catalog.create_table(schema.clone());
-            // Persist to RocksDB so CREATE TABLE survives process restart.
-            if let Some(engine) = storage_engine {
-                let rdb = RocksDbCatalog::new(engine.clone());
-                if let Err(e) = rdb.register_table(&schema) {
-                    tracing::warn!(error = %e, "Failed to persist schema to RocksDB");
+            if let Some(gateway) = replicated_sql_gateway() {
+                match gateway.create_table(schema).await {
+                    Ok(_) => socket
+                        .write_all(&build_command_complete("CREATE TABLE"))
+                        .await?,
+                    Err(error) => write_replicated_error(socket, &error).await?,
                 }
-            }
-            socket
-                .write_all(&build_command_complete("CREATE TABLE"))
-                .await?;
-        }
-        BoundPlan::Insert(insert_plan) => {
-            let Some(exec) = dml_exec else {
-                write_error_and_ready(socket, "storage not available (DB_PATH not set)", "55000")
-                    .await?;
-                return Ok(());
-            };
-            let mut count = 0u64;
-            for row_values in &insert_plan.rows {
-                // Build (col, val_string) pairs for encode_row.
-                let pairs: Vec<(String, String)> = insert_plan
-                    .columns
-                    .iter()
-                    .zip(row_values)
-                    .map(|(col, val)| {
-                        let s = val.to_storage_string().unwrap_or_default();
-                        (col.clone(), s)
-                    })
-                    .collect();
-                let str_pairs: Vec<(&str, &str)> = pairs
-                    .iter()
-                    .map(|(k, v)| (k.as_str(), v.as_str()))
-                    .collect();
-                // PK = HLC bytes from the txn manager's clock (unique monotone key).
-                let pk = exec.next_pk();
-                match exec.insert_row(&insert_plan.table.name, &pk, &str_pairs) {
-                    Ok(()) => count += 1,
-                    Err(e) => {
-                        write_error_and_ready(socket, &e.to_string(), "22000").await?;
-                        return Ok(());
+            } else {
+                catalog.create_table(schema.clone());
+                if let Some(engine) = storage_engine {
+                    let rdb = RocksDbCatalog::new(engine.clone());
+                    if let Err(e) = rdb.register_table(&schema) {
+                        tracing::warn!(error = %e, "Failed to persist schema to RocksDB");
                     }
                 }
+                socket
+                    .write_all(&build_command_complete("CREATE TABLE"))
+                    .await?;
             }
-            socket
-                .write_all(&build_command_complete(&format!("INSERT 0 {count}")))
-                .await?;
+        }
+        BoundPlan::Insert(insert_plan) => {
+            if let Some(gateway) = replicated_sql_gateway() {
+                match gateway.insert(&insert_plan).await {
+                    Ok(ack) => {
+                        let count = ack.affected_rows.unwrap_or(0);
+                        socket
+                            .write_all(&build_command_complete(&format!("INSERT 0 {count}")))
+                            .await?;
+                    }
+                    Err(error) => write_replicated_error(socket, &error).await?,
+                }
+            } else {
+                let Some(exec) = dml_exec else {
+                    write_error_and_ready(
+                        socket,
+                        "storage not available (DB_PATH not set)",
+                        "55000",
+                    )
+                    .await?;
+                    return Ok(());
+                };
+                let mut count = 0u64;
+                for row_values in &insert_plan.rows {
+                    let pairs: Vec<(String, String)> = insert_plan
+                        .columns
+                        .iter()
+                        .zip(row_values)
+                        .map(|(col, val)| {
+                            (col.clone(), val.to_storage_string().unwrap_or_default())
+                        })
+                        .collect();
+                    let str_pairs: Vec<(&str, &str)> = pairs
+                        .iter()
+                        .map(|(k, v)| (k.as_str(), v.as_str()))
+                        .collect();
+                    let pk = exec.next_pk();
+                    match exec.insert_row(&insert_plan.table.name, &pk, &str_pairs) {
+                        Ok(()) => count += 1,
+                        Err(e) => {
+                            write_error_and_ready(socket, &e.to_string(), "22000").await?;
+                            return Ok(());
+                        }
+                    }
+                }
+                socket
+                    .write_all(&build_command_complete(&format!("INSERT 0 {count}")))
+                    .await?;
+            }
         }
         BoundPlan::Update(update_plan) => {
-            let Some(exec) = dml_exec else {
-                write_error_and_ready(socket, "storage not available (DB_PATH not set)", "55000")
-                    .await?;
-                return Ok(());
-            };
-            let assignments: Vec<(String, String)> = update_plan
-                .assignments
-                .iter()
-                .map(|(col, val)| {
-                    let s = val.to_storage_string().unwrap_or_default();
-                    (col.clone(), s)
-                })
-                .collect();
-            match exec.update_rows(
-                &update_plan.table.name,
-                &assignments,
-                update_plan.predicate.as_ref(),
-            ) {
-                Ok(n) => {
-                    socket
-                        .write_all(&build_command_complete(&format!("UPDATE {n}")))
-                        .await?;
+            if let Some(gateway) = replicated_sql_gateway() {
+                match gateway.update(&update_plan).await {
+                    Ok(ack) => {
+                        let count = ack.affected_rows.unwrap_or(0);
+                        socket
+                            .write_all(&build_command_complete(&format!("UPDATE {count}")))
+                            .await?;
+                    }
+                    Err(error) => write_replicated_error(socket, &error).await?,
                 }
-                Err(e) => {
-                    write_error_and_ready(socket, &e.to_string(), "22000").await?;
+            } else {
+                let Some(exec) = dml_exec else {
+                    write_error_and_ready(
+                        socket,
+                        "storage not available (DB_PATH not set)",
+                        "55000",
+                    )
+                    .await?;
+                    return Ok(());
+                };
+                let assignments: Vec<(String, String)> = update_plan
+                    .assignments
+                    .iter()
+                    .map(|(col, val)| {
+                        (col.clone(), val.to_storage_string().unwrap_or_default())
+                    })
+                    .collect();
+                match exec.update_rows(
+                    &update_plan.table.name,
+                    &assignments,
+                    update_plan.predicate.as_ref(),
+                ) {
+                    Ok(n) => socket
+                        .write_all(&build_command_complete(&format!("UPDATE {n}")))
+                        .await?,
+                    Err(e) => write_error_and_ready(socket, &e.to_string(), "22000").await?,
                 }
             }
         }
         BoundPlan::Delete(delete_plan) => {
-            let Some(exec) = dml_exec else {
-                write_error_and_ready(socket, "storage not available (DB_PATH not set)", "55000")
-                    .await?;
-                return Ok(());
-            };
-            match exec.delete_rows(&delete_plan.table.name, delete_plan.predicate.as_ref()) {
-                Ok(n) => {
-                    socket
-                        .write_all(&build_command_complete(&format!("DELETE {n}")))
-                        .await?;
+            if let Some(gateway) = replicated_sql_gateway() {
+                match gateway.delete(&delete_plan).await {
+                    Ok(ack) => {
+                        let count = ack.affected_rows.unwrap_or(0);
+                        socket
+                            .write_all(&build_command_complete(&format!("DELETE {count}")))
+                            .await?;
+                    }
+                    Err(error) => write_replicated_error(socket, &error).await?,
                 }
-                Err(e) => {
-                    write_error_and_ready(socket, &e.to_string(), "22000").await?;
+            } else {
+                let Some(exec) = dml_exec else {
+                    write_error_and_ready(
+                        socket,
+                        "storage not available (DB_PATH not set)",
+                        "55000",
+                    )
+                    .await?;
+                    return Ok(());
+                };
+                match exec.delete_rows(&delete_plan.table.name, delete_plan.predicate.as_ref()) {
+                    Ok(n) => socket
+                        .write_all(&build_command_complete(&format!("DELETE {n}")))
+                        .await?,
+                    Err(e) => write_error_and_ready(socket, &e.to_string(), "22000").await?,
                 }
             }
         }
         BoundPlan::CreateUser { username, password } => {
+            // User/auth replication is intentionally a later mutation class.
             let new_record = create_scram_user(&username, &password);
             {
                 let mut reg = registry.write().await;
@@ -1254,19 +1224,43 @@ where
                     }
                 }
                 let elapsed_ms = match crate::query_executor::execute_select_query(&query, &qcat) {
-                    Ok(_) => start.elapsed().as_millis(),
-                    Err(_) => start.elapsed().as_millis(),
+                    Ok(_) | Err(_) => start.elapsed().as_millis(),
                 };
                 format!("{plan_text}\nActual time: {elapsed_ms}ms")
             } else {
                 plan_text
             };
-            let batch = explain_text_to_batch(&explain_text);
-            write_batch(socket, &batch).await?;
+            write_batch(socket, &explain_text_to_batch(&explain_text)).await?;
         }
     }
 
     Ok(())
+}
+
+async fn write_replicated_error<S>(
+    socket: &mut S,
+    error: &ReplicatedGatewayError,
+) -> std::io::Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
+    match error {
+        ReplicatedGatewayError::NotLeader { leader } => {
+            let message = match leader {
+                Some(leader) => format!("not Raft leader; retry write on leader {leader}"),
+                None => "not Raft leader; leader currently unknown".to_string(),
+            };
+            // Explicit follower-write rejection. NeuralBase does not proxy writes
+            // in this phase, so clients must retry against the reported leader.
+            write_error_and_ready(socket, &message, "25006").await
+        }
+        _ => write_error_and_ready(
+            socket,
+            &format!("replicated SQL mutation failed: {error}"),
+            "58030",
+        )
+        .await,
+    }
 }
 
 async fn write_batch<S>(
@@ -1303,13 +1297,6 @@ where
     Ok(())
 }
 
-// ── Index advisor helpers ─────────────────────────────────────────────────
-
-/// Build a `QueryPattern` from raw SQL text for the workload monitor.
-///
-/// Parses the SQL, extracts table names from the FROM clause and column
-/// references from the WHERE clause.  Returns `None` for non-SELECT
-/// statements or parse errors — the advisor is best-effort only.
 fn extract_query_pattern(sql: &str, elapsed_us: u64) -> Option<QueryPattern> {
     let stmt = parse_statement(sql).ok()?;
     let Statement::Query(q) = &stmt else {
@@ -1335,7 +1322,6 @@ fn extract_query_pattern(sql: &str, elapsed_us: u64) -> Option<QueryPattern> {
         return None;
     }
 
-    // Extract predicate column references for the primary table.
     let primary_table = &tables[0];
     let predicate_columns = extract_where_columns(&sel.selection, primary_table);
 
@@ -1350,8 +1336,6 @@ fn extract_query_pattern(sql: &str, elapsed_us: u64) -> Option<QueryPattern> {
     })
 }
 
-/// Collect `(table, column)` pairs from a WHERE expression.
-/// Best-effort: handles `BinaryOp`, `Identifier`, `CompoundIdentifier`, `Nested`.
 fn extract_where_columns(expr: &Option<Expr>, table: &str) -> Vec<(String, String)> {
     let Some(e) = expr else {
         return vec![];
