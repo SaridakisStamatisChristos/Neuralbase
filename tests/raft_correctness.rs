@@ -356,7 +356,7 @@ async fn s13_compact_log_accepted_by_leader() {
         .await
         .expect("compact_log reply must arrive within 500 ms")
         .expect("reply channel must not close");
-    assert!(result.is_ok(), "compact_log must not error: {:?}", result);
+    assert!(result.is_ok(), "compact_log must not error: {result:?}");
     assert_eq!(
         result.unwrap(),
         0,
@@ -416,8 +416,7 @@ async fn s13_addnode_membership_change_3node() {
         .expect("reply channel not dropped");
     assert!(
         result.is_ok(),
-        "AddNode must be accepted by leader: {:?}",
-        result
+        "AddNode must be accepted by leader: {result:?}"
     );
 }
 
@@ -473,8 +472,7 @@ async fn s13_removenode_membership_change_3node() {
         .expect("reply channel not dropped");
     assert!(
         result.is_ok(),
-        "RemoveNode must be accepted by leader: {:?}",
-        result
+        "RemoveNode must be accepted by leader: {result:?}"
     );
 }
 
