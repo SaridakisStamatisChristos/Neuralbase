@@ -2,7 +2,15 @@ name: ci
 
 on:
   push:
+    branches: [main]
   pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   checks:
@@ -27,6 +35,7 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: "1.88.0"
           components: rustfmt, clippy
 
       - name: Cache cargo registry
@@ -49,3 +58,30 @@ jobs:
 
       - name: Run adversarial tests
         run: make adversarial
+
+  deployment-manifests:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: "v3.16.4"
+
+      - name: Lint Helm chart
+        run: helm lint helm/neuralbase
+
+      - name: Render default Helm chart
+        run: helm template neuralbase helm/neuralbase > /tmp/neuralbase-rendered.yaml
+
+      - name: Render authenticated Helm chart
+        run: >-
+          helm template neuralbase helm/neuralbase
+          --set config.authRequired=true
+          --set auth.existingSecret=neuralbase-users
+          > /tmp/neuralbase-auth-rendered.yaml
+
+      - name: Reject unsafe fixed-membership HPA manifest
+        run: test ! -e k8s/hpa.yaml
