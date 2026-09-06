@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/SaridakisStamatisChristos/Neuralbase/security
+    about: Please use private security reporting for vulnerabilities; do not publish exploit details in an issue.

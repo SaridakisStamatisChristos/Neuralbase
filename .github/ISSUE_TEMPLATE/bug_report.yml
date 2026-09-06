@@ -1,0 +1,69 @@
+name: Bug report
+description: Report a reproducible NeuralBase defect
+title: "[bug] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a defect. Please do not include secrets or undisclosed security vulnerabilities here; use SECURITY.md for security reports.
+  - type: input
+    id: commit
+    attributes:
+      label: Commit or version
+      description: Exact commit SHA is preferred.
+      placeholder: 6c699556...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - SQL / binder / executor
+        - Storage / MVCC / RocksDB
+        - Raft / transport / distributed semantics
+        - Authentication / TLS
+        - Docker / Kubernetes / Helm
+        - CI / tests / benchmarks
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Minimal commands, SQL, configuration, and data needed to reproduce.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Rust version, Docker/Kubernetes version if relevant, enabled Cargo features.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Redact credentials, keys, tokens, and private data.
+      render: text
+  - type: checkboxes
+    id: boundary
+    attributes:
+      label: Distributed-semantics check
+      options:
+        - label: I understand the current multi-node topology does not yet provide replicated SQL storage/automatic SQL HA.

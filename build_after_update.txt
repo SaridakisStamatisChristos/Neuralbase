@@ -1,8 +1,0 @@
-error: rustc 1.85.0 is not supported by the following packages:
-  time@0.3.47 requires rustc 1.88.0
-  time-core@0.1.8 requires rustc 1.88.0
-  time-macros@0.2.27 requires rustc 1.88.0
-Either upgrade rustc or select compatible dependency versions with
-`cargo update <name>@<current-ver> --precise <compatible-ver>`
-where `<compatible-ver>` is the latest version supporting rustc 1.85.0
-
