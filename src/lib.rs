@@ -16,6 +16,7 @@ pub mod optimizer;
 pub mod protocol;
 pub mod query_executor;
 pub mod raft_persistence;
+pub mod replicated_gateway;
 pub mod replicated_sql;
 pub mod replicated_state_machine;
 pub mod rocksdb_catalog;
