@@ -19,9 +19,14 @@ use tokio::net::TcpListener;
 
 const DEFAULT_RAFT_PORT: u16 = 7001;
 
-fn read_node_id() -> Option<String> {
-    std::env::var("NODE_ID")
+fn env_with_legacy(primary: &str, legacy: &str) -> Option<String> {
+    std::env::var(primary)
         .ok()
+        .or_else(|| std::env::var(legacy).ok())
+}
+
+fn read_node_id() -> Option<String> {
+    env_with_legacy("NEURALBASE_NODE_ID", "NODE_ID")
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }
@@ -59,7 +64,7 @@ fn implicit_peer_id(raw: &str) -> String {
 /// Parse PEERS into Raft logical IDs and their connectable socket addresses.
 ///
 /// Preferred production form:
-///   PEERS="node2=node2:7001,node3=node3:7001"
+///   NEURALBASE_PEERS="node2=node2:7001,node3=node3:7001"
 ///
 /// Backward-compatible shorthand is also accepted:
 ///   PEERS="node2,node3"       -> node2:7001, node3:7001
@@ -84,7 +89,7 @@ fn parse_peer_config(
             if id.is_empty() || addr.is_empty() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("invalid PEERS entry '{item}': expected id=host:port"),
+                    format!("invalid peer entry '{item}': expected id=host:port"),
                 ));
             }
             (id.to_string(), normalize_peer_addr(addr, default_port))
@@ -101,7 +106,7 @@ fn parse_peer_config(
         if !seen.insert(id.clone()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("duplicate Raft peer id '{id}' in PEERS"),
+                format!("duplicate Raft peer id '{id}'"),
             ));
         }
         peers.push(id.clone());
@@ -112,7 +117,7 @@ fn parse_peer_config(
 }
 
 fn raft_tls_enabled() -> bool {
-    std::env::var("NEURALBASE_RAFT_TLS")
+    env_with_legacy("NEURALBASE_RAFT_TLS", "RAFT_TLS")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
 }
@@ -134,15 +139,17 @@ async fn start_raft_node() -> io::Result<Option<RaftTaskHandle>> {
         return Ok(None);
     };
 
-    let raft_addr =
-        std::env::var("RAFT_ADDR").unwrap_or_else(|_| "0.0.0.0:7001".to_string());
-    let peer_spec = std::env::var("PEERS").unwrap_or_default();
+    let raft_addr = env_with_legacy("NEURALBASE_RAFT_ADDR", "RAFT_ADDR")
+        .unwrap_or_else(|| "0.0.0.0:7001".to_string());
+    let peer_spec = env_with_legacy("NEURALBASE_PEERS", "PEERS").unwrap_or_default();
     let (peers, peer_addrs) = parse_peer_config(&peer_spec, &node_id, &raft_addr)?;
-    let election_timeout_ms = std::env::var("RAFT_ELECTION_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .filter(|v| *v > 0)
-        .unwrap_or(150);
+    let election_timeout_ms = env_with_legacy(
+        "NEURALBASE_RAFT_ELECTION_TIMEOUT_MS",
+        "RAFT_ELECTION_TIMEOUT_MS",
+    )
+    .and_then(|v| v.parse::<u64>().ok())
+    .filter(|v| *v > 0)
+    .unwrap_or(150);
 
     tracing::info!(
         node_id = %node_id,
@@ -192,26 +199,21 @@ async fn start_raft_node() -> io::Result<Option<RaftTaskHandle>> {
 #[tokio::main]
 async fn main() -> io::Result<()> {
     // ── Telemetry ──────────────────────────────────────────────────────────
-    let metrics_port: u16 = std::env::var("METRICS_PORT")
-        .ok()
+    let metrics_port: u16 = env_with_legacy("NEURALBASE_METRICS_PORT", "METRICS_PORT")
         .and_then(|v| v.parse().ok())
         .unwrap_or(9090);
     telemetry::init(metrics_port);
 
-    // ── Env ────────────────────────────────────────────────────────────────
-    // LISTEN_ADDR: SQL wire-protocol endpoint (default 0.0.0.0:5432).
-    // NODE_ID:     Stable logical identifier for this Raft member.
-    // RAFT_ADDR:   Local bind address for Raft RPCs (default 0.0.0.0:7001).
-    // PEERS:       Comma-separated id=host:port mappings (preferred).
-    // DB_PATH:     Path to RocksDB data directory (optional).
-    let listen_addr =
-        std::env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:5432".to_string());
+    // Documented NEURALBASE_* names are authoritative. Legacy short names are
+    // accepted so existing docker-compose and local scripts remain compatible.
+    let listen_addr = env_with_legacy("NEURALBASE_LISTEN_ADDR", "LISTEN_ADDR")
+        .unwrap_or_else(|| "0.0.0.0:5432".to_string());
 
     // ── Catalog ────────────────────────────────────────────────────────────
     let catalog: Arc<InMemoryCatalog> = Arc::new(InMemoryCatalog::with_tpch_all_tables());
 
     // ── Storage engine (optional — present only when DB_PATH is set) ───────
-    let storage_engine = if let Ok(db_path) = std::env::var("DB_PATH") {
+    let storage_engine = if let Some(db_path) = env_with_legacy("NEURALBASE_DB_PATH", "DB_PATH") {
         match StorageEngine::open(Path::new(&db_path)) {
             Ok(engine) => {
                 tracing::info!(db_path, "RocksDB storage engine opened");
@@ -223,7 +225,7 @@ async fn main() -> io::Result<()> {
             }
         }
     } else {
-        tracing::info!("DB_PATH not set; running in in-memory mode");
+        tracing::info!("NEURALBASE_DB_PATH/DB_PATH not set; running in in-memory mode");
         None
     };
 
