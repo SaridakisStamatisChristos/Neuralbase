@@ -1,0 +1,76 @@
+name: Documentation source cleanup
+
+on:
+  push:
+    branches:
+      - docs/professional-presentation
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout presentation branch
+        uses: actions/checkout@v5
+        with:
+          ref: docs/professional-presentation
+          fetch-depth: 0
+
+      - name: Refresh stale TPC-H source commentary
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("tests/tpch_correctness.rs")
+          text = path.read_text()
+
+          marker = "// TPC-H Q1-Q22 correctness test suite"
+          end_marker = "#![allow(unused_imports)]"
+          start = text.find(marker)
+          end = text.find(end_marker)
+          if start < 0 or end < 0 or end <= start:
+              raise SystemExit("TPC-H header markers not found")
+
+          header = '''// TPC-H Q1-Q22 correctness suite.
+//
+// Evidence layers:
+//   - Q1 and Q6 have additional deterministic correctness checks.
+//   - Every checked-in Q1-Q22 SQL string is parsed and exercised through the
+//     current bind/execution path where applicable.
+//   - Q1-Q22 each have PostgreSQL 16 row-for-row reference comparisons on the
+//     deterministic small execution dataset (EXEC_TEST_SF = 0.001).
+//
+// The PostgreSQL reference harness runs in an opt-in test target because it
+// starts a Docker container. This suite is correctness evidence for the exact
+// checked data/query forms, not official TPC-H certification or a production-
+// scale benchmark.
+//
+'''
+
+          text = text[:start] + header + text[end:]
+          text = text.replace(
+              "// ── Q2-Q22: parse gate + bind-error classification ───────────────────────────\n"
+              "// Each test:\n"
+              "//   1. Asserts the SQL parses without panic.\n"
+              "//   2. Attempts to bind and asserts the result is expected (Ok or specific Err).\n"
+              "//   3. Documents the reason for any bind failure.\n",
+              "// ── Q2-Q22: additional parse/bind/execute coverage ────────────────────────────\n"
+              "// These checks complement the PostgreSQL row-for-row reference tests above.\n",
+          )
+          text = text.replace(
+              "/// Session 9 macro: parse → bind → execute through row-oriented query executor.",
+              "/// Parse → bind → execute through the row-oriented query executor.",
+          )
+          path.write_text(text)
+
+      - name: Commit source-comment cleanup and remove this temporary workflow
+        shell: bash
+        run: |
+          git rm .github/workflows/doc-source-cleanup.yml
+          git add tests/tpch_correctness.rs
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'docs: align TPC-H source commentary with current evidence'
+          git push origin HEAD:docs/professional-presentation
