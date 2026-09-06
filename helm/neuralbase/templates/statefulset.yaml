@@ -23,6 +23,26 @@ spec:
       {{- end }}
     spec:
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- if .Values.auth.existingSecret }}
+      initContainers:
+        - name: seed-users
+          image: busybox:1.36.1
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              if [ ! -f /data/users.json ] && [ -f /users-seed/users.json ]; then
+                cp /users-seed/users.json /data/users.json
+                chmod 600 /data/users.json
+              fi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: users-seed
+              mountPath: /users-seed
+              readOnly: true
+      {{- end }}
       containers:
         - name: neuralbase
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -44,20 +64,20 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: RAFT_ADDR
+              value: {{ .Values.config.raftAddr | quote }}
             - name: PEERS
-              value: "{{ include "neuralbase.fullname" . }}-0.{{ include "neuralbase.fullname" . }}-headless,{{ include "neuralbase.fullname" . }}-1.{{ include "neuralbase.fullname" . }}-headless,{{ include "neuralbase.fullname" . }}-2.{{ include "neuralbase.fullname" . }}-headless"
-          {{- if .Values.tls.enabled }}
+              value: {{ include "neuralbase.raftPeers" . | quote }}
+            - name: NEURALBASE_USERS_FILE
+              value: {{ printf "%s/users.json" .Values.config.dbPath | quote }}
           volumeMounts:
+            - name: data
+              mountPath: {{ .Values.config.dbPath }}
+            {{- if .Values.tls.enabled }}
             - name: tls-certs
               mountPath: /tls
               readOnly: true
-            - name: data
-              mountPath: {{ .Values.config.dbPath }}
-          {{- else }}
-          volumeMounts:
-            - name: data
-              mountPath: {{ .Values.config.dbPath }}
-          {{- end }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           startupProbe:
@@ -84,11 +104,18 @@ spec:
             preStop:
               exec:
                 command: ["sh", "-c", "sleep 5"]
-      {{- if .Values.tls.enabled }}
+      {{- if or .Values.tls.enabled .Values.auth.existingSecret }}
       volumes:
+        {{- if .Values.tls.enabled }}
         - name: tls-certs
           secret:
             secretName: {{ default (printf "%s-tls" (include "neuralbase.fullname" .)) .Values.tls.existingSecret }}
+        {{- end }}
+        {{- if .Values.auth.existingSecret }}
+        - name: users-seed
+          secret:
+            secretName: {{ .Values.auth.existingSecret }}
+        {{- end }}
       {{- end }}
   volumeClaimTemplates:
     - metadata:
