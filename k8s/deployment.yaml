@@ -44,7 +44,7 @@ spec:
               readOnly: true
       containers:
         - name: neuralbase
-          image: ghcr.io/neuralbase/neuralbase:latest
+          image: ghcr.io/saridakisstamatischristos/neuralbase:1.0.0
           imagePullPolicy: IfNotPresent
           ports:
             - name: sql
@@ -59,16 +59,12 @@ spec:
             - configMapRef:
                 name: neuralbase-config
           env:
-            - name: NODE_ID
+            - name: NEURALBASE_NODE_ID
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
-            - name: RAFT_ADDR
-              value: "0.0.0.0:7001"
-            - name: PEERS
+            - name: NEURALBASE_PEERS
               value: "neuralbase-0=neuralbase-0.neuralbase-headless:7001,neuralbase-1=neuralbase-1.neuralbase-headless:7001,neuralbase-2=neuralbase-2.neuralbase-headless:7001"
-            - name: DB_PATH
-              value: "/data/neuralbase"
             - name: NEURALBASE_TLS_CERT
               value: "/tls/server.crt"
             - name: NEURALBASE_TLS_KEY
