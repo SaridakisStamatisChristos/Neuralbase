@@ -413,12 +413,18 @@ impl<T: Transport> RaftNode<T> {
                             }
                         }
                         if let Some(tx) = &self.apply_tx {
-                            // Bounded channel: .send().await blocks when full,
-                            // providing backpressure.  Entries are never dropped.
-                            // Channel closed means executor is shutting down.
-                            if tx.send(entry).await.is_err() {
-                                // Receiver dropped — no consumer, stop forwarding.
-                                break;
+                            // Preserve bounded-channel backpressure during normal
+                            // operation, but make shutdown pre-empt a blocked send.
+                            // A closed apply channel is a fail-stop condition: once
+                            // the state-machine consumer is gone, continuing would
+                            // risk silently discarding committed entries.
+                            let send_result = tokio::select! {
+                                biased;
+                                _ = &mut shutdown_rx => return,
+                                result = tx.send(entry) => result,
+                            };
+                            if send_result.is_err() {
+                                return;
                             }
                         }
                     }
