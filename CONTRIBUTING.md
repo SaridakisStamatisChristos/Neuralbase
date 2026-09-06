@@ -38,6 +38,8 @@ make confidence
 make adversarial
 ```
 
+`make lint` is intentionally strict: it runs `cargo fmt --check` and Clippy across all targets with warnings denied under the repository's pinned Rust 1.88.0 toolchain. Treat new warnings as CI failures rather than suppressing them without a documented reason.
+
 For SQL semantic changes:
 
 ```bash
