@@ -1,0 +1,50 @@
+name: Repair clippy regression
+
+on:
+  push:
+    branches:
+      - repair/neuralbase-v1.1-finalization
+
+permissions:
+  contents: write
+
+concurrency:
+  group: repair-clippy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repair branch
+        uses: actions/checkout@v4.2.2
+        with:
+          ref: repair/neuralbase-v1.1-finalization
+          fetch-depth: 0
+
+      - name: Apply clippy repair
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path('src/query_executor.rs')
+          text = path.read_text()
+          old = 'rows.iter_mut().zip(values.into_iter())'
+          new = 'rows.iter_mut().zip(values)'
+          if old in text:
+              text = text.replace(old, new, 1)
+              path.write_text(text)
+          elif new not in text:
+              raise SystemExit('expected window zip expression not found')
+
+      - name: Commit repair if needed
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo 'clippy repair already applied'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/query_executor.rs
+          git commit -m 'fix: remove redundant into_iter in window execution'
+          git push origin HEAD:repair/neuralbase-v1.1-finalization
