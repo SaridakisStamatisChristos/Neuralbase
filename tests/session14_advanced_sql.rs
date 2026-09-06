@@ -540,7 +540,7 @@ fn binder_produces_explain_plan_without_analyze() {
         BoundPlan::Explain { analyze, .. } => {
             assert!(!analyze, "plain EXPLAIN should have analyze=false");
         }
-        other => panic!("expected Explain plan, got {:?}", other),
+        other => panic!("expected Explain plan, got {other:?}"),
     }
 }
 
@@ -553,7 +553,7 @@ fn binder_produces_explain_analyze_plan() {
         BoundPlan::Explain { analyze, .. } => {
             assert!(analyze, "EXPLAIN ANALYZE should have analyze=true");
         }
-        other => panic!("expected Explain plan, got {:?}", other),
+        other => panic!("expected Explain plan, got {other:?}"),
     }
 }
 

@@ -433,8 +433,7 @@ mod tests {
         let expected_pos = 1.0f32 / MAX_TABLES as f32;
         assert!(
             (state[0] - expected_pos).abs() < 1e-6,
-            "diagonal A[0,0] should be {} after joining at pos 0",
-            expected_pos
+            "diagonal A[0,0] should be {expected_pos} after joining at pos 0"
         );
         // orders not yet joined → diagonal still 0
         assert_eq!(state[MAX_TABLES + 1], 0.0);

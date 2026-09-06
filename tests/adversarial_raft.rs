@@ -599,7 +599,7 @@ async fn s13_data_cmd_rejected_while_membership_change_in_progress() {
         .await
         .expect("AddNode reply within 500ms")
         .expect("channel not dropped");
-    assert!(r1.is_ok(), "AddNode must be accepted by leader: {:?}", r1);
+    assert!(r1.is_ok(), "AddNode must be accepted by leader: {r1:?}");
 
     // Immediately submit a regular data command — must be rejected.
     let (tx2, rx2) = oneshot::channel::<Result<u64, String>>();

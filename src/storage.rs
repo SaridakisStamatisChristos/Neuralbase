@@ -372,7 +372,7 @@ impl StorageEngine {
         cf_opts.set_compaction_style(rocksdb::DBCompactionStyle::Level);
         self.db.create_cf(index_name, &cf_opts)?;
         // Record in CF_CATALOG so re-open discovers it.
-        let meta_key = format!("__idx:{}", index_name);
+        let meta_key = format!("__idx:{index_name}");
         self.write_catalog_entry(&meta_key, b"active")?;
         Ok(())
     }
@@ -385,7 +385,7 @@ impl StorageEngine {
             return Ok(());
         }
         self.db.drop_cf(index_name)?;
-        let meta_key = format!("__idx:{}", index_name);
+        let meta_key = format!("__idx:{index_name}");
         let cf = self.db.cf_handle(CF_CATALOG).unwrap();
         self.db.delete_cf(&cf, meta_key.as_bytes())?;
         Ok(())
@@ -445,8 +445,7 @@ impl StorageEngine {
     ) -> Result<(), StorageError> {
         let cf = self.db.cf_handle(index_cf).ok_or_else(|| {
             StorageError::Encoding(format!(
-                "index CF '{}' not found — call create_index_cf first",
-                index_cf
+                "index CF '{index_cf}' not found — call create_index_cf first"
             ))
         })?;
         self.db.put_cf(&cf, key, value)?;

@@ -310,7 +310,7 @@ pub fn create_scram_user(username: &str, password: &str) -> UserRecord {
 /// Create an MD5 UserRecord from plaintext credentials (legacy / ALTER USER path).
 pub fn create_md5_user(username: &str, password: &str) -> UserRecord {
     use md5::Md5;
-    let inner = format!("{}{}", password, username);
+    let inner = format!("{password}{username}");
     let mut hasher = Md5::new();
     hasher.update(inner.as_bytes());
     let hash = hasher.finalize();
@@ -415,7 +415,7 @@ impl ScramServer {
         let proof_b64 = &client_final[split + proof_sep.len()..];
 
         // AuthMessage = client-first-message-bare "," server-first-message "," client-final-without-proof
-        let auth_msg = format!("{},{},{}", first_bare, server_first, without_proof);
+        let auth_msg = format!("{first_bare},{server_first},{without_proof}");
 
         // ClientSignature = HMAC(StoredKey, AuthMessage)
         let client_sig = hmac_sha256(&self.keys.stored_key, auth_msg.as_bytes());
@@ -691,7 +691,7 @@ mod tests {
 
         // Simulate client-first (no channel binding).
         let client_nonce = BASE64.encode(b"clientnonce12345");
-        let client_first = format!("n,,n=bob,r={}", client_nonce);
+        let client_first = format!("n,,n=bob,r={client_nonce}");
 
         let server_first = server.process_client_first(&client_first).unwrap();
 
@@ -721,13 +721,10 @@ mod tests {
         // Verify our stored_key matches what client computes (sanity check).
         assert_eq!(stored_key_client, keys.stored_key);
 
-        let client_first_bare = format!("n=bob,r={}", client_nonce);
+        let client_first_bare = format!("n=bob,r={client_nonce}");
         let channel_binding = BASE64.encode("n,,");
-        let client_final_without_proof = format!("c={},r={}", channel_binding, combined_nonce);
-        let auth_msg = format!(
-            "{},{},{}",
-            client_first_bare, server_first, client_final_without_proof
-        );
+        let client_final_without_proof = format!("c={channel_binding},r={combined_nonce}");
+        let auth_msg = format!("{client_first_bare},{server_first},{client_final_without_proof}");
         let client_sig = hmac_sha256(&stored_key_client, auth_msg.as_bytes());
         let client_proof: Vec<u8> = client_key
             .iter()
@@ -755,7 +752,7 @@ mod tests {
         };
         let mut server = ScramServer::new(keys.clone());
         let client_nonce = BASE64.encode(b"clientnonce12345");
-        let client_first = format!("n,,n=carol,r={}", client_nonce);
+        let client_first = format!("n,,n=carol,r={client_nonce}");
         let server_first = server.process_client_first(&client_first).unwrap();
 
         let combined_nonce = server_first
@@ -781,13 +778,10 @@ mod tests {
         let client_key = hmac_sha256(&salted, b"Client Key");
         let wrong_stored = sha256(&client_key);
 
-        let client_first_bare = format!("n=carol,r={}", client_nonce);
+        let client_first_bare = format!("n=carol,r={client_nonce}");
         let channel_binding = BASE64.encode("n,,");
-        let client_final_wop = format!("c={},r={}", channel_binding, combined_nonce);
-        let auth_msg = format!(
-            "{},{},{}",
-            client_first_bare, server_first, client_final_wop
-        );
+        let client_final_wop = format!("c={channel_binding},r={combined_nonce}");
+        let auth_msg = format!("{client_first_bare},{server_first},{client_final_wop}");
         let client_sig = hmac_sha256(&wrong_stored, auth_msg.as_bytes());
         let client_proof: Vec<u8> = client_key
             .iter()
@@ -899,10 +893,7 @@ mod tests {
             .find_map(|p| p.strip_prefix("r="))
             .unwrap();
         let channel_binding = BASE64.encode("n,,");
-        let client_final = format!(
-            "c={},r={},p=!!!NOT_VALID_BASE64!!!",
-            channel_binding, combined
-        );
+        let client_final = format!("c={channel_binding},r={combined},p=!!!NOT_VALID_BASE64!!!");
         let result = server.process_client_final(&client_final);
         assert!(matches!(result, Err(AuthError::InvalidMessage(_))));
     }

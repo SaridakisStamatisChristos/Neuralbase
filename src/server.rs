@@ -746,7 +746,7 @@ where
             None => {
                 drop(reg);
                 let err = build_error_response(
-                    &format!("password authentication failed for user \"{}\"", username),
+                    &format!("password authentication failed for user \"{username}\""),
                     "28P01",
                 );
                 let _ = socket.write_all(&err).await;
@@ -844,7 +844,7 @@ where
         .map_err(|_| ProtocolError::InvalidLength(0))?;
 
     // Send AuthenticationSASLFinal then AuthenticationOk.
-    let final_msg = format!("v={}", server_sig);
+    let final_msg = format!("v={server_sig}");
     socket
         .write_all(&build_auth_sasl_final(final_msg.as_bytes()))
         .await
@@ -885,7 +885,7 @@ where
 
     if !md5_state.verify(&response) {
         let err = build_error_response(
-            &format!("password authentication failed for user \"{}\"", username),
+            &format!("password authentication failed for user \"{username}\""),
             "28P01",
         );
         let _ = socket.write_all(&err).await;
@@ -1205,7 +1205,7 @@ where
                     .write_all(&build_command_complete("ALTER USER"))
                     .await?;
             } else {
-                write_error_and_ready(socket, &format!("user not found: {}", username), "42704")
+                write_error_and_ready(socket, &format!("user not found: {username}"), "42704")
                     .await?;
             }
         }
@@ -1230,7 +1230,7 @@ where
                 removed
             };
             if !removed && !if_exists {
-                write_error_and_ready(socket, &format!("user not found: {}", username), "42704")
+                write_error_and_ready(socket, &format!("user not found: {username}"), "42704")
                     .await?;
             } else {
                 socket

@@ -1,2 +1,0 @@
-    Checking neuralbase v0.1.0 (C:\Users\scsar\Desktop\neuralbase)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.72s

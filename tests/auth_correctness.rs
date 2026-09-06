@@ -29,7 +29,7 @@ fn parse_create_user_basic() {
             assert_eq!(username, "alice");
             assert_eq!(password, "secret");
         }
-        other => panic!("expected CreateUser, got {:?}", other),
+        other => panic!("expected CreateUser, got {other:?}"),
     }
 }
 
@@ -42,7 +42,7 @@ fn parse_create_user_uppercase_keyword() {
             assert_eq!(username, "bob");
             assert_eq!(password, "pw2");
         }
-        other => panic!("expected CreateUser, got {:?}", other),
+        other => panic!("expected CreateUser, got {other:?}"),
     }
 }
 
@@ -57,7 +57,7 @@ fn parse_alter_user_basic() {
             assert_eq!(username, "alice");
             assert_eq!(new_password, "newpass");
         }
-        other => panic!("expected AlterUser, got {:?}", other),
+        other => panic!("expected AlterUser, got {other:?}"),
     }
 }
 
@@ -72,7 +72,7 @@ fn parse_drop_user_basic() {
             assert_eq!(username, "alice");
             assert!(!if_exists);
         }
-        other => panic!("expected DropUser, got {:?}", other),
+        other => panic!("expected DropUser, got {other:?}"),
     }
 }
 
@@ -87,7 +87,7 @@ fn parse_drop_user_if_exists() {
             assert_eq!(username, "carol");
             assert!(if_exists);
         }
-        other => panic!("expected DropUser, got {:?}", other),
+        other => panic!("expected DropUser, got {other:?}"),
     }
 }
 
@@ -113,7 +113,7 @@ fn bind_create_user_produces_correct_plan() {
             assert_eq!(username, "testuser");
             assert_eq!(password, "pw");
         }
-        other => panic!("expected BoundPlan::CreateUser, got {:?}", other),
+        other => panic!("expected BoundPlan::CreateUser, got {other:?}"),
     }
 }
 
@@ -130,7 +130,7 @@ fn bind_alter_user_produces_correct_plan() {
             assert_eq!(username, "alice");
             assert_eq!(new_password, "newpw");
         }
-        other => panic!("expected BoundPlan::AlterUser, got {:?}", other),
+        other => panic!("expected BoundPlan::AlterUser, got {other:?}"),
     }
 }
 
@@ -147,7 +147,7 @@ fn bind_drop_user_produces_correct_plan() {
             assert_eq!(username, "alice");
             assert!(if_exists);
         }
-        other => panic!("expected BoundPlan::DropUser, got {:?}", other),
+        other => panic!("expected BoundPlan::DropUser, got {other:?}"),
     }
 }
 

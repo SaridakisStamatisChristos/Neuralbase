@@ -1,0 +1,37 @@
+name: Feature or design proposal
+description: Propose a focused NeuralBase capability or semantic improvement
+title: "[proposal] "
+labels: []
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What concrete limitation or user/developer problem should be solved?
+    validations:
+      required: true
+  - type: textarea
+    id: semantics
+    attributes:
+      label: Proposed semantics
+      description: Describe externally visible behavior, including failure cases.
+    validations:
+      required: true
+  - type: textarea
+    id: design
+    attributes:
+      label: Design sketch
+      description: Relevant modules, compatibility constraints, and alternatives considered.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Validation plan
+      description: What tests, reference comparisons, adversarial cases, or benchmarks would prove the change?
+    validations:
+      required: true
+  - type: checkboxes
+    id: docs
+    attributes:
+      label: Documentation impact
+      options:
+        - label: I have identified which architecture/SQL/distributed/deployment/testing docs would need updating.

@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 rust-version = "1.88.0"
+description = "Experimental Rust SQL engine with PostgreSQL wire protocol, MVCC/RocksDB storage, vectorized execution, and a Raft subsystem"
+repository = "https://github.com/SaridakisStamatisChristos/Neuralbase"
+readme = "README.md"
+keywords = ["database", "sql", "rust", "raft", "rocksdb"]
+categories = ["database-implementations"]
 
 [features]
 default = []

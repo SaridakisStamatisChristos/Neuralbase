@@ -1,5 +1,0 @@
-   Compiling neuralbase v0.1.0 (C:\Users\scsar\Desktop\neuralbase)
-error: failed to remove file `C:\Users\scsar\Desktop\neuralbase\target\release\neuralbase.exe`
-
-Caused by:
-  Access is denied. (os error 5)

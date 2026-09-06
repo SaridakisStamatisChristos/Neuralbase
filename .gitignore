@@ -19,11 +19,22 @@ venv/
 tmp_*/
 test_db*/
 
-# TLS private keys (public certs *.crt are tracked)
+# TLS private keys (public certs *.crt may be tracked)
 certs/*.key
 certs/*.pem
 
-# OS noise
+# One-off local diagnostics
+*.log
+build_*.txt
+clippy_*.txt
+clippy_out*.txt
+test_*.txt
+tls_build*.txt
+audit_result.txt
+
+# OS / editor noise
 .DS_Store
 Thumbs.db
 desktop.ini
+.idea/
+.vscode/

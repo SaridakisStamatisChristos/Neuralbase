@@ -5,11 +5,11 @@
 [advisories]
 version = 2
 ignore = [
-    # paste crate — transitive via tract-onnx; not directly fixable.
-    # Accepted and documented in SESSION_STATE.md.
+    # paste crate — transitive via tract-onnx; not directly fixable here.
+    # Re-evaluate this exception whenever tract-onnx/dependency versions change.
     "RUSTSEC-2024-0436",
     # rustls-pemfile — unmaintained but functional, no vulnerability.
-    # Used only for PEM certificate parsing in src/tls.rs.
+    # Used only for PEM certificate parsing in src/tls.rs; review on TLS updates.
     "RUSTSEC-2025-0134",
 ]
 
