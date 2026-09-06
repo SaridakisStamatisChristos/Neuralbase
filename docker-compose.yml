@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-# 3-node NeuralBase cluster for local development and integration testing.
+# 3-node NeuralBase development topology.
+#
+# This starts three independent SQL/RocksDB nodes plus a real Raft TCP cluster.
+# SQL data is not yet replicated through Raft; see README.md.
 #
 # Usage:
 #   docker compose up -d --wait
@@ -14,11 +17,6 @@ x-neuralbase-common: &neuralbase-common
     context: .
     dockerfile: Dockerfile
   restart: unless-stopped
-  environment:
-    NEURALBASE_TLS_CERT: /certs/server.crt
-    NEURALBASE_TLS_KEY: /certs/server.key
-  volumes:
-    - ./certs:/certs:ro
   healthcheck:
     test: ["CMD-SHELL", "timeout 2 bash -c 'echo > /dev/tcp/127.0.0.1/5432'"]
     interval: 5s
@@ -31,15 +29,15 @@ services:
     <<: *neuralbase-common
     container_name: neuralbase-node1
     environment:
-      NODE_ID: "node1"
-      LISTEN_ADDR: "0.0.0.0:5432"
-      RAFT_ADDR: "0.0.0.0:7001"
-      PEERS: "node2=node2:7001,node3=node3:7001"
-      DB_PATH: "/data/neuralbase"
+      NEURALBASE_NODE_ID: "node1"
+      NEURALBASE_LISTEN_ADDR: "0.0.0.0:5432"
+      NEURALBASE_RAFT_ADDR: "0.0.0.0:7001"
+      NEURALBASE_PEERS: "node2=node2:7001,node3=node3:7001"
+      NEURALBASE_DB_PATH: "/data/neuralbase"
       NEURALBASE_USERS_FILE: "/data/neuralbase/users.json"
-      METRICS_PORT: "9090"
+      NEURALBASE_METRICS_PORT: "9090"
+      NEURALBASE_AUTH_REQUIRED: "false"
     volumes:
-      - ./certs:/certs:ro
       - node1_data:/data/neuralbase
     ports:
       - "5432:5432"
@@ -51,15 +49,15 @@ services:
     <<: *neuralbase-common
     container_name: neuralbase-node2
     environment:
-      NODE_ID: "node2"
-      LISTEN_ADDR: "0.0.0.0:5432"
-      RAFT_ADDR: "0.0.0.0:7001"
-      PEERS: "node1=node1:7001,node3=node3:7001"
-      DB_PATH: "/data/neuralbase"
+      NEURALBASE_NODE_ID: "node2"
+      NEURALBASE_LISTEN_ADDR: "0.0.0.0:5432"
+      NEURALBASE_RAFT_ADDR: "0.0.0.0:7001"
+      NEURALBASE_PEERS: "node1=node1:7001,node3=node3:7001"
+      NEURALBASE_DB_PATH: "/data/neuralbase"
       NEURALBASE_USERS_FILE: "/data/neuralbase/users.json"
-      METRICS_PORT: "9090"
+      NEURALBASE_METRICS_PORT: "9090"
+      NEURALBASE_AUTH_REQUIRED: "false"
     volumes:
-      - ./certs:/certs:ro
       - node2_data:/data/neuralbase
     ports:
       - "5433:5432"
@@ -71,15 +69,15 @@ services:
     <<: *neuralbase-common
     container_name: neuralbase-node3
     environment:
-      NODE_ID: "node3"
-      LISTEN_ADDR: "0.0.0.0:5432"
-      RAFT_ADDR: "0.0.0.0:7001"
-      PEERS: "node1=node1:7001,node2=node2:7001"
-      DB_PATH: "/data/neuralbase"
+      NEURALBASE_NODE_ID: "node3"
+      NEURALBASE_LISTEN_ADDR: "0.0.0.0:5432"
+      NEURALBASE_RAFT_ADDR: "0.0.0.0:7001"
+      NEURALBASE_PEERS: "node1=node1:7001,node2=node2:7001"
+      NEURALBASE_DB_PATH: "/data/neuralbase"
       NEURALBASE_USERS_FILE: "/data/neuralbase/users.json"
-      METRICS_PORT: "9090"
+      NEURALBASE_METRICS_PORT: "9090"
+      NEURALBASE_AUTH_REQUIRED: "false"
     volumes:
-      - ./certs:/certs:ro
       - node3_data:/data/neuralbase
     ports:
       - "5434:5432"
