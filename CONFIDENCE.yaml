@@ -1,16 +1,33 @@
 version: 2
-updated: 2026-09-06
+updated: 2026-09-07
 
 system:
-  scope: local_sql_engine_and_raft_subsystem
+  scope: local_sql_engine_plus_fixed_membership_replicated_table_mutations
   effective_confidence: 0.78
   production_ready: false
-  distributed_sql_replication: false
+  distributed_sql_replication: true
+  replication_scope:
+    fixed_membership: true
+    table_ddl:
+      - create_table
+      - drop_table
+    table_dml:
+      - insert
+      - update
+      - delete
+    follower_writes: reject
+    follower_reads_linearizable: false
+    auth_replication: false
+    dynamic_membership: false
+    sql_snapshots: false
+    production_ha: false
   summary: >-
-    Confidence applies to the tested local SQL/MVCC engine and to the Raft
-    subsystem as separate components. It does not imply that SQL mutations are
-    replicated through Raft or that the deployment is a highly available
-    replicated database.
+    Confidence covers the tested local SQL/MVCC engine and a fixed-membership
+    replicated mutation path for persistent table CREATE/DROP/INSERT/UPDATE/DELETE.
+    Clustered write success waits for Raft quorum commit and confirmed durable
+    local state-machine apply. This does not imply production HA, linearizable
+    follower reads, replicated authentication state, dynamic membership, or
+    SQL snapshot/node-replacement recovery.
 
 artifacts:
   - artifact: wire_protocol_v3
@@ -48,9 +65,9 @@ artifacts:
       - tests/tpch_correctness.rs
       - tests/session14_advanced_sql.rs
     note: >-
-      All TPC-H Q1-Q22 SQL strings have PostgreSQL-16 row-for-row reference
-      comparisons on the deterministic small test dataset. This is correctness
-      evidence, not a production-scale performance result.
+      All checked-in TPC-H Q1-Q22 SQL strings have PostgreSQL-16 row-for-row
+      reference comparisons on the deterministic small test dataset. This is
+      correctness evidence, not a production-scale performance result.
 
   - artifact: storage_engine
     effective: 0.78
@@ -58,6 +75,7 @@ artifacts:
     evidence:
       - tests/mvcc_correctness.rs
       - tests/dml_correctness.rs
+      - tests/replicated_sql_process.rs
 
   - artifact: mvcc_txn_manager
     effective: 0.76
@@ -80,18 +98,34 @@ artifacts:
       - src/server.rs
       - tests/auth_correctness.rs
     limitation: >-
-      User DDL is persisted per node. Authentication state is not replicated
-      through Raft.
+      CREATE/ALTER/DROP USER remains per-node. Authentication state is not part
+      of the replicated table-mutation command model in this phase.
 
   - artifact: raft_consensus
-    effective: 0.72
-    status: subsystem_tested
+    effective: 0.76
+    status: fixed_membership_replicated_sql_path_tested
     evidence:
       - tests/raft_correctness.rs
       - tests/adversarial_raft.rs
+      - tests/raft_client_ack.rs
+      - tests/raft_persistence_fail_closed.rs
+      - tests/replicated_sql_raft.rs
     limitation: >-
-      No TLA+ proof and no claim of SQL-state-machine replication. Stable-store
-      error handling is not yet a fail-closed production persistence model.
+      No TLA+ proof or coordinated operator-safe dynamic membership workflow.
+      Legacy opaque Raft snapshots are rejected in replicated-SQL mode until a
+      SQL-aware snapshot/restore format exists.
+
+  - artifact: raft_persistence
+    effective: 0.76
+    status: durable_and_fail_closed
+    evidence:
+      - src/raft_persistence.rs
+      - src/consensus/raft.rs
+      - tests/raft_persistence_fail_closed.rs
+    note: >-
+      Term, vote, log, and snapshot metadata are persisted through RocksDB.
+      Required persistence load/save failures fail-stop the Raft node rather
+      than logging and continuing.
 
   - artifact: raft_tcp_transport
     effective: 0.74
@@ -99,8 +133,28 @@ artifacts:
     evidence:
       - tests/raft_tcp_transport.rs
       - src/consensus/transport.rs
+      - tests/replicated_sql_process.rs
     note: >-
       Logical Raft node IDs are mapped separately to connectable peer addresses.
+
+  - artifact: sql_replication
+    effective: 0.74
+    status: fixed_membership_table_mutations_tested
+    criticality: release_boundary
+    evidence:
+      - src/replicated_sql.rs
+      - src/replicated_gateway.rs
+      - src/replicated_state_machine.rs
+      - tests/replicated_mutation_materialization.rs
+      - tests/replicated_sql_raft.rs
+      - tests/replicated_sql_process.rs
+      - tests/replicated_sql_snapshot_guard.rs
+    limitation: >-
+      Scope is persistent table CREATE/DROP/INSERT/UPDATE/DELETE in configured
+      fixed-membership clusters. Followers reject writes; reads remain local and
+      may be stale; auth/users are not replicated; SQL-aware snapshots,
+      bootstrap/node replacement, coordinated membership, backup/restore, and
+      production HA are not implemented.
 
   - artifact: deployment_manifests
     effective: 0.70
@@ -113,24 +167,17 @@ artifacts:
       Fixed membership only. Automatic horizontal scaling is intentionally not
       enabled because membership changes must be coordinated with Raft.
 
-  - artifact: sql_replication
-    effective: 0.0
-    status: not_implemented
-    criticality: release_boundary
-    note: >-
-      SQL DDL/DML currently executes against local RocksDB and is not submitted
-      to the Raft ClientCommand/apply path. Therefore Raft quorum does not imply
-      replicated SQL durability or automatic SQL failover.
-
 verification_policy:
   - No performance claim without a reproducible benchmark and workload context.
-  - No replicated-database or HA claim while system.distributed_sql_replication is false.
+  - distributed_sql_replication means only the machine-readable replication_scope above.
+  - distributed_sql_replication must not be interpreted as production_ready or production HA.
   - Keep SQL correctness claims synchronized with executable PostgreSQL reference tests.
   - Keep deployment examples fixed-membership until safe membership orchestration exists.
-  - A release head must pass tests, lint, confidence checks, adversarial tests, and Helm rendering.
+  - A release head must pass tests, lint, confidence checks, adversarial tests, TPC-H reference validation, and Helm rendering.
 
 next_high_value_work:
-  - Wire deterministic SQL mutation commands through Raft and apply committed entries on every node.
-  - Make Raft stable-storage failures fail closed rather than logging and continuing.
-  - Add separate-process restart, partition, re-election, and state convergence tests.
+  - Define SQL-aware snapshot/bootstrap and node-replacement recovery before enabling Raft log compaction in replicated-SQL mode.
+  - Replicate authentication/user mutations or document a separate strongly consistent identity design.
   - Add coordinated membership changes and operator recovery workflows.
+  - Add backup/restore and disaster-recovery procedures.
+  - Add stronger read-consistency modes and deeper PostgreSQL compatibility only after these safety boundaries.

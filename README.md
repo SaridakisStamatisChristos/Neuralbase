@@ -7,21 +7,26 @@
 **NeuralBase is an experimental SQL engine in Rust** with a PostgreSQL-compatible wire endpoint, vectorized and general SQL execution paths, MVCC/RocksDB storage, an ONNX-based join-order optimizer, and a real multi-process Raft subsystem over TCP/TLS.
 
 > [!IMPORTANT]
-> NeuralBase is **pre-1.0 research/development software**. Raft consensus is implemented as a subsystem, but SQL DDL/DML is not yet committed through a replicated Raft state machine. SQL writes currently mutate each node's local RocksDB state. Do not present the current multi-node deployment as replicated SQL HA.
+> NeuralBase is **pre-1.0 research/development software**. Configured fixed-membership clusters now replicate persistent table `CREATE TABLE`, `DROP TABLE`, `INSERT`, `UPDATE`, and `DELETE` through Raft and wait for quorum commit plus confirmed durable local apply before returning SQL success. This is not a production-HA claim: follower reads are local and may lag, user/auth mutations remain per-node, dynamic membership is not operator-safe, and SQL-aware snapshot/bootstrap, backup/restore, and node-replacement workflows are not implemented.
 
 ## Why this repository exists
 
-NeuralBase is built as an evidence-driven database-engine project rather than a feature checklist. The repository emphasizes explicit semantics, bounded execution, adversarial tests, deterministic reference comparisons, deployment safety, and clear statements about what is and is not implemented.
+NeuralBase is built as an evidence-driven database-engine project rather than a feature checklist. The repository emphasizes explicit semantics, bounded execution, deterministic mutation representation, adversarial tests, PostgreSQL reference comparisons, deployment safety, and clear statements about what is and is not implemented.
 
-### Current highlights
+## Current highlights
 
 - PostgreSQL wire protocol endpoint with authentication support.
 - Parser/binder plus vectorized and row-oriented execution paths.
 - Multi-table joins, subqueries, grouping, aggregates, ordering, limits, CTEs, and selected window-function execution.
-- Persistent local tables using MVCC, HLC timestamps, and RocksDB.
-- Local `INSERT`, `UPDATE`, `DELETE`, table DDL, and durable user DDL.
+- MVCC, HLC timestamps, and RocksDB persistence.
+- Versioned deterministic replicated commands for persistent table DDL/DML.
+- Leader-side concrete materialization of `UPDATE`/`DELETE`; followers do not re-evaluate predicates.
+- Follower write rejection with leader information instead of local mutation.
+- Raft acknowledgement only after quorum commit and confirmed state-machine apply for normal replicated SQL commands.
+- Atomic replicated SQL effect + durable replay marker for idempotent recovery.
+- RocksDB-backed Raft stable storage with fail-stop handling of required persistence failures.
+- Real three-process PostgreSQL/Raft failover and restart regression coverage with independent RocksDB directories.
 - ONNX DQN join-order optimizer integration.
-- Raft election/log replication subsystem with real TCP and optional TLS transport.
 - Docker Compose, Kubernetes StatefulSet, and Helm development deployments.
 - PostgreSQL 16 row-for-row reference checks for the checked-in TPC-H Q1-Q22 suite at a small deterministic scale.
 - CI gates for core tests, rustfmt/Clippy, confidence assertions, adversarial suites, TPC-H reference checks, and deployment manifests.
@@ -43,13 +48,17 @@ The SQL listener defaults to `0.0.0.0:5432`.
 psql -h 127.0.0.1 -p 5432 -U neuralbase -d neuralbase
 ```
 
-### Three-process development topology
+Without `NEURALBASE_NODE_ID`, persistent table DDL/DML uses the single-node local storage path.
+
+### Three-process fixed-membership topology
 
 ```bash
 docker compose up --build -d --wait
 ```
 
-The three SQL endpoints are exposed on ports `5432`, `5433`, and `5434`. Raft communication uses explicit logical-node-ID to socket-address mappings. Each SQL node still owns independent local storage.
+The three SQL endpoints are exposed on ports `5432`, `5433`, and `5434`. Raft communication uses explicit logical-node-ID to socket-address mappings. Each node owns an independent RocksDB directory; committed persistent table mutations are applied to each member through the replicated SQL state machine.
+
+Clustered startup requires durable RocksDB storage. Setting `NEURALBASE_NODE_ID` without `NEURALBASE_DB_PATH`/`DB_PATH` fails startup instead of silently running a non-durable cluster.
 
 ## System shape
 
@@ -57,40 +66,26 @@ The three SQL endpoints are exposed on ports `5432`, `5433`, and `5434`. Raft co
 flowchart TD
     Client[PostgreSQL client] --> Wire[Wire protocol + auth]
     Wire --> Binder[Parser + binder]
-    Binder --> V[Vectorized execution]
-    Binder --> Q[General SQL executor]
-    V --> Storage[Storage executor]
-    Q --> Storage
-    Storage --> MVCC[MVCC + HLC + RocksDB]
+    Binder --> Read[Read execution]
+    Read --> Rocks[(local RocksDB)]
 
-    subgraph Distributed subsystem
-      R1[Raft node] <--> T[TCP / optional TLS transport]
-      T <--> R2[Raft peer]
-      R1 --> Apply[Committed-entry apply channel]
-    end
+    Binder -->|persistent table mutation| Gateway[replicated SQL gateway]
+    Gateway -->|leader only| Raft[Raft log]
+    Raft -->|quorum commit| Apply[confirmed apply]
+    Apply --> SM[deterministic SQL state machine]
+    SM --> Rocks
 
-    Apply -. not yet wired to SQL mutations .-> MVCC
+    Raft <--> Transport[TCP / optional TLS]
+    Transport <--> Peers[Raft peers]
 ```
 
-The dashed edge is the key current boundary: committed Raft entries are **not yet** the authoritative SQL mutation path.
+Mutation success is tied to Raft commit and confirmed local apply. Reads remain local; this phase does not add a linearizable follower-read protocol.
 
-## Documentation
+## Client write semantics
 
-| Document | Purpose |
-|---|---|
-| [Architecture](docs/ARCHITECTURE.md) | Component boundaries, data flow, invariants, and module map |
-| [SQL support](docs/SQL_SUPPORT.md) | Supported SQL surface and known execution limits |
-| [Distributed semantics](docs/DISTRIBUTED.md) | Raft transport, lifecycle, failure semantics, and non-HA boundary |
-| [Deployment](docs/DEPLOYMENT.md) | Single-node, Compose, Kubernetes, Helm, TLS, auth, and configuration |
-| [Testing](docs/TESTING.md) | What each CI/test gate proves and does not prove |
-| [Threat model](docs/THREAT_MODEL.md) | Security assumptions and threat analysis |
-| [TSAN notes](docs/TSAN.md) | Thread-sanitizer guidance |
-| [Roadmap](ROADMAP.md) | Prioritized path from experimental engine to replicated database semantics |
-| [Contributing](CONTRIBUTING.md) | Development setup and contribution requirements |
-| [Security](SECURITY.md) | Vulnerability reporting policy |
-| [Confidence model](CONFIDENCE.md) | Evidence-scoped confidence and release boundaries |
-
-The [`docs/`](docs/) directory also contains a compact documentation index.
+- A follower rejects persistent table mutations before proposal. This response is safe to redirect/retry against the known/current leader.
+- A failure or timeout after submission to a leader is outcome-uncertain and must not be treated as proof that the mutation did not commit.
+- If the client observes SQL success, the process-level crash/failover test requires that acknowledged effect to remain recoverable after leader loss.
 
 ## Capability snapshot
 
@@ -102,20 +97,22 @@ The [`docs/`](docs/) directory also contains a compact documentation index.
 | General joins/subqueries/aggregates | Implemented with bounded intermediates |
 | TPC-H Q1-Q22 PostgreSQL 16 reference suite | Implemented at small deterministic scale |
 | MVCC + HLC + RocksDB local storage | Implemented |
-| Local SQL DDL/DML | Implemented |
-| Durable user DDL | Implemented per node |
-| Raft election/log replication | Implemented in the Raft subsystem |
+| Single-node persistent table DDL/DML | Implemented |
+| Fixed-membership replicated persistent table DDL/DML | **Implemented and process-tested** |
+| Replicated user/auth DDL | **Not implemented** |
+| Raft election/log replication + durable persistence | Implemented |
 | Multi-process Raft TCP transport | Implemented |
 | Optional TLS transport | Feature-gated |
-| SQL mutation replication through Raft | **Not implemented** |
-| Automatic replicated SQL failover | **Not implemented** |
-| Coordinated dynamic Raft membership | **Not implemented as an operator-safe deployment workflow** |
+| Linearizable arbitrary-follower reads | **Not implemented** |
+| SQL-aware Raft snapshot/bootstrap/node replacement | **Not implemented** |
+| Coordinated dynamic Raft membership | **Not operator-safe yet** |
+| Production SQL HA | **Not claimed** |
 
-See [SQL support](docs/SQL_SUPPORT.md) and [Distributed semantics](docs/DISTRIBUTED.md) for details.
+See [SQL support](docs/SQL_SUPPORT.md) and [Distributed semantics](docs/DISTRIBUTED.md) for the exact boundary.
 
 ## Configuration
 
-Canonical configuration uses `NEURALBASE_*` variables. Copy `.env.example` as a starting point. Important variables include:
+Canonical configuration uses `NEURALBASE_*` variables. Important variables include:
 
 - `NEURALBASE_LISTEN_ADDR`
 - `NEURALBASE_DB_PATH`
@@ -128,7 +125,7 @@ Canonical configuration uses `NEURALBASE_*` variables. Copy `.env.example` as a 
 - `NEURALBASE_USERS_FILE`
 - `NEURALBASE_AUTH_REQUIRED`
 
-Legacy unprefixed variables remain accepted in selected code paths for compatibility; new deployments should use the canonical names.
+Legacy unprefixed aliases remain accepted in selected code paths for compatibility; new deployments should use the canonical names.
 
 ## Verification
 
@@ -140,21 +137,26 @@ make adversarial
 make tpch-correctness
 ```
 
-`make tpch-correctness` is intentionally separate because it starts a PostgreSQL 16 Docker reference container. CI bounds the long-running suites with explicit timeouts so a blocked integration test cannot occupy a runner indefinitely.
+`make tpch-correctness` starts a PostgreSQL 16 Docker reference container. CI bounds long-running suites so deadlocks fail with diagnostics rather than occupying a runner indefinitely.
 
-Performance claims should only be made from the checked-in benchmark methodology and with workload/hardware context intact. Correctness evidence is not a throughput claim.
+Correctness evidence is not a throughput claim. Performance claims should retain exact commit, workload, scale, build, and hardware/runtime context.
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [SQL support](docs/SQL_SUPPORT.md)
+- [Distributed semantics](docs/DISTRIBUTED.md)
+- [Deployment](docs/DEPLOYMENT.md)
+- [Testing and evidence](docs/TESTING.md)
+- [Threat model](docs/THREAT_MODEL.md)
+- [Roadmap](ROADMAP.md)
+- [Confidence model](CONFIDENCE.md)
 
 ## Project maturity
 
-NeuralBase should currently be evaluated as an **experimental database-engine and distributed-systems repository**, not a production database product. High-value remaining work is deliberately concentrated on semantics rather than feature count:
+NeuralBase should be evaluated as an **experimental database-engine and distributed-systems repository**, not a production database product. Phase 1 closes the fixed-membership replicated table-mutation path, including deterministic effects, quorum/apply acknowledgement, fail-closed persistence, and process-level failover/restart evidence.
 
-1. deterministic SQL mutation commands through Raft;
-2. acknowledgement only after quorum commit and local apply;
-3. fail-closed stable Raft persistence;
-4. crash/restart and process-level failover proofs;
-5. coordinated membership changes and operational recovery tooling.
-
-See [ROADMAP.md](ROADMAP.md) for acceptance criteria.
+The next safety work is SQL-aware snapshot/bootstrap and node replacement, replicated identity state, coordinated membership changes, backup/restore, and stronger read-consistency semantics. See [ROADMAP.md](ROADMAP.md).
 
 ## License
 

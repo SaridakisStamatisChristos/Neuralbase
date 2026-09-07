@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Durable Raft stable storage backed by NeuralBase's RocksDB meta column family.
 //!
-//! Term, voted-for, log, snapshot boundary metadata, and snapshot bytes are
-//! written in one RocksDB WriteBatch. The store itself reports errors; clustered
-//! runtime wiring wraps it in `FailClosedPersistenceStore` so a required
-//! persistence failure terminates the Raft node instead of being ignored.
+//! Term, voted-for, log, snapshot-boundary metadata, and snapshot bytes are
+//! written in one RocksDB WriteBatch. The store reports storage/codec errors;
+//! `RaftNode` treats required persistence errors as fatal and fail-stops. The
+//! clustered runtime additionally wraps this store in `FailClosedPersistenceStore`
+//! as defense in depth.
 
 use std::sync::Arc;
 

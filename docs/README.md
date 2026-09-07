@@ -6,24 +6,28 @@ This directory contains the technical documentation for NeuralBase. The root `RE
 
 | Document | Audience | Scope |
 |---|---|---|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Developers / reviewers | Major components, execution flow, state boundaries, invariants |
-| [SQL_SUPPORT.md](SQL_SUPPORT.md) | Users / developers | SQL feature matrix, local DDL/DML semantics, execution limits |
-| [DISTRIBUTED.md](DISTRIBUTED.md) | Distributed-systems reviewers | Raft transport, apply path, shutdown/backpressure, current replication boundary |
-| [DEPLOYMENT.md](DEPLOYMENT.md) | Operators / evaluators | Local, Compose, Kubernetes, Helm, TLS, auth, fixed membership |
-| [TESTING.md](TESTING.md) | Contributors / reviewers | Test taxonomy, CI gates, TPC-H reference methodology, evidence limits |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Developers / reviewers | Major components, replicated mutation flow, state boundaries, invariants |
+| [SQL_SUPPORT.md](SQL_SUPPORT.md) | Users / developers | SQL feature matrix, single-node versus clustered mutation semantics, execution limits |
+| [DISTRIBUTED.md](DISTRIBUTED.md) | Distributed-systems reviewers | Raft transport, deterministic table replication, acknowledgement/apply semantics, remaining HA boundaries |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | Operators / evaluators | Single-node, fixed-membership cluster, Kubernetes/Helm, TLS/auth and routing constraints |
+| [TESTING.md](TESTING.md) | Contributors / reviewers | CI gates, process-level failover/restart evidence, TPC-H reference methodology and evidence limits |
 | [THREAT_MODEL.md](THREAT_MODEL.md) | Security reviewers | Threats, trust boundaries, mitigations |
 | [TSAN.md](TSAN.md) | Contributors | ThreadSanitizer workflow and caveats |
 
-Repository-level policy and operational material:
+Repository-level material:
 
-- [`../ROADMAP.md`](../ROADMAP.md) — prioritized engineering roadmap.
+- [`../ROADMAP.md`](../ROADMAP.md) — completed Phase-1 scope and prioritized remaining engineering work.
+- [`../CONFIDENCE.md`](../CONFIDENCE.md) / [`../CONFIDENCE.yaml`](../CONFIDENCE.yaml) — evidence-scoped confidence model and machine-readable replication boundary.
 - [`../CONTRIBUTING.md`](../CONTRIBUTING.md) — contributor setup and quality gates.
 - [`../SECURITY.md`](../SECURITY.md) — vulnerability reporting policy.
-- [`../CONFIDENCE.md`](../CONFIDENCE.md) / [`../CONFIDENCE.yaml`](../CONFIDENCE.yaml) — evidence-scoped confidence model.
-- [`../CHANGELOG.md`](../CHANGELOG.md) — current development changelog.
+- [`../CHANGELOG.md`](../CHANGELOG.md) — development changelog.
 - [`../ops/RUNBOOK.md`](../ops/RUNBOOK.md) — development operations and diagnostics.
-- [`../observability/README.md`](../observability/README.md) — metrics and current tracing boundary.
+- [`../observability/README.md`](../observability/README.md) — metrics and tracing boundary.
 - [`../tests/perf/README.md`](../tests/perf/README.md) — benchmark interpretation and reproducibility rules.
+
+## Current distributed claim in one sentence
+
+Configured fixed-membership clusters replicate persistent table CREATE/DROP/INSERT/UPDATE/DELETE through Raft with quorum commit + confirmed durable local apply before success; this is **not** a production-HA claim and excludes linearizable follower reads, replicated auth/users, dynamic membership, SQL-aware snapshot/bootstrap/node replacement, and backup/restore.
 
 ## Documentation rule
 
@@ -31,9 +35,9 @@ A change that alters public behavior, configuration, SQL semantics, persistence 
 
 Documentation must distinguish:
 
-1. code that exists,
-2. behavior verified by executable tests,
-3. deployment behavior exercised in CI,
+1. code that exists;
+2. behavior verified by executable tests;
+3. deployment behavior exercised in CI;
 4. future design intent.
 
 Those categories are intentionally not interchangeable.

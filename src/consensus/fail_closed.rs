@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Fail-closed adapter for Raft stable storage.
+//! Defense-in-depth fail-closed adapter for Raft stable storage.
 //!
-//! The historical Raft core logs `RaftPersistenceStore::save` failures and
-//! continues. That behavior is unsafe for any node participating in replicated
-//! SQL because a vote, term, or log mutation may be acknowledged without being
-//! durable. `FailClosedPersistenceStore` deliberately converts such failures
-//! into a fail-stop panic. The Raft task terminates instead of continuing with
-//! state that may diverge from stable storage.
+//! `RaftNode` itself treats `RaftPersistenceStore::load`/`save` errors as fatal
+//! consensus failures and fail-stops rather than logging and continuing. This
+//! adapter preserves that invariant at the store boundary too by converting an
+//! underlying storage error into an explicit fatal-consensus panic before it
+//! can be accidentally handled as recoverable by another caller.
 
 use std::sync::Arc;
 
@@ -15,9 +14,9 @@ use super::log::{PersistentState, RaftPersistenceStore};
 /// Strict adapter for consensus-critical persistence.
 ///
 /// `save` and `load` never return an underlying storage error. They panic with
-/// an explicit fatal-consensus message instead. A panic is intentional here:
-/// continuing the Raft event loop after a required persistence failure would
-/// violate the protocol's stable-storage assumptions.
+/// an explicit fatal-consensus message instead. `RaftNode` independently
+/// fail-stops returned persistence errors; this adapter is defense in depth and
+/// makes misuse through another caller fail closed as well.
 pub struct FailClosedPersistenceStore {
     inner: Arc<dyn RaftPersistenceStore>,
 }

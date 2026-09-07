@@ -1,93 +1,92 @@
 # NeuralBase roadmap
 
-NeuralBase is currently a pre-1.0 experimental SQL engine with a real Raft subsystem but without replicated SQL state-machine semantics. The roadmap prioritizes semantic closure and failure correctness before feature expansion.
+NeuralBase is a pre-1.0 experimental SQL engine. The fixed-membership replicated persistent table-mutation path is now implemented and process-tested; the roadmap therefore moves the P0 boundary from “connect SQL to Raft” to recovery, membership, identity, and read-consistency semantics required before stronger HA claims.
 
 This is an engineering roadmap, not a release-date commitment.
 
-## P0 — replicated SQL semantics
+## Completed Phase 1 — fixed-membership replicated table mutations
 
-### 1. Deterministic mutation command model
+The following acceptance items are implemented and covered by executable tests:
 
-Define a versioned command representation for all replicated state mutations.
+- [x] Versioned deterministic mutation representation for persistent table `CREATE`, `DROP`, `INSERT`, `UPDATE`, and `DELETE`.
+- [x] Canonical DML ordering and deterministic concrete row/key effects.
+- [x] Leader-only persistent table mutation routing; followers reject rather than mutate local RocksDB.
+- [x] Current-term readiness barrier before mutation binding/materialization after election.
+- [x] Leader-side `UPDATE`/`DELETE` predicate evaluation with concrete effects replicated to followers.
+- [x] SQL success withheld until Raft quorum commit plus confirmed local state-machine apply.
+- [x] Atomic SQL effect + durable apply marker and replay idempotence.
+- [x] RocksDB-backed Raft stable storage.
+- [x] Fail-stop handling of required Raft persistence load/save failures, including injected-failure coverage.
+- [x] Separate-process three-node convergence, leader-loss/re-election, killed-node catch-up, full-cluster restart, and acknowledged crash-race durability evidence.
+- [x] Fail-closed rejection of legacy opaque Raft snapshots/compaction in replicated-SQL mode.
 
-Acceptance criteria:
+These items justify a scoped fixed-membership table-replication claim. They do **not** justify production-readiness or general SQL-HA claims.
 
-- deterministic serialization;
-- explicit schema/version compatibility;
-- no dependence on local wall-clock/parser/planner nondeterminism during apply;
-- covered commands for required table/catalog/user mutation classes.
+## P0 — SQL-aware snapshot, bootstrap, and node replacement
 
-### 2. Route mutating SQL through Raft
-
-The SQL leader path must propose the deterministic command instead of directly treating local RocksDB mutation as authoritative.
-
-Acceptance criteria:
-
-- explicit follower behavior (redirect/reject/proxy policy);
-- client success tied to documented commit/apply durability point;
-- no success response for an uncommitted mutation;
-- replay is idempotent.
-
-### 3. Replicated apply state machine
-
-Committed commands must update every member's logical database state consistently.
+The current replicated-SQL mode disables legacy opaque Raft compaction because that snapshot format cannot reconstruct SQL/catalog state.
 
 Acceptance criteria:
 
-- deterministic table/catalog/auth apply;
-- snapshot/recovery compatibility;
-- convergence tests across separate processes;
-- duplicate/replay safety.
+- define a versioned SQL-aware snapshot containing all replicated catalog/data state required to resume deterministic apply;
+- atomically associate snapshot state with the corresponding Raft snapshot index/term;
+- restore a fresh/replacement node from snapshot plus remaining log entries;
+- prove replay/idempotence around snapshot boundaries;
+- allow safe log compaction only after snapshot durability is confirmed;
+- separate-process tests for snapshot creation, leader loss, replacement-node bootstrap, and convergence.
 
-## P0 — consensus durability
+## P0 — replicated identity or explicit strongly consistent identity design
 
-### 4. Fail-closed stable Raft persistence
+`CREATE USER`, `ALTER USER`, and `DROP USER` remain per-node today.
 
-Required consensus-state persistence failures must become explicit node-failure/availability events rather than best-effort warnings.
+Acceptance criteria for replication:
 
-Acceptance criteria:
+- deterministic versioned user/auth mutation commands;
+- secret-handling semantics that do not expose plaintext credentials in consensus logs;
+- durable/replay-safe apply;
+- cross-node authentication convergence tests;
+- documented migration from existing per-node registries.
 
-- durable term/vote/log semantics documented;
-- injected storage-failure tests;
-- no acknowledged consensus transition that depends on a failed required persistence operation.
+An alternative external/independent identity design is acceptable only if its consistency and failure semantics are equally explicit.
 
-### 5. Crash/restart proof
+## P0 — coordinated membership changes
 
-Acceptance criteria:
-
-- kill/restart individual processes during writes;
-- recover persisted Raft + SQL state;
-- prove acknowledged mutations survive the documented failure model;
-- validate state convergence after catch-up.
-
-## P1 — failover and membership operations
-
-### 6. SQL leader failover
+Fixed peer configuration remains intentional. Replica-count changes are not membership changes.
 
 Acceptance criteria:
 
-- acknowledged SQL state remains visible after leader loss;
-- new leader rejects stale/conflicting mutation paths;
-- client-facing behavior is documented and tested.
+- add/remove member through a safe Raft membership protocol;
+- new member catch-up before it is considered healthy/voting as appropriate;
+- explicit handling of failed/incomplete membership transitions;
+- deployment reconciliation that cannot bypass consensus membership;
+- safe rollback/retry and operator diagnostics;
+- process-level membership-change and restart tests.
 
-### 7. Coordinated membership changes
+## P1 — read consistency modes
 
-Acceptance criteria:
+Current reads are local; arbitrary follower reads can lag committed state.
 
-- add/remove member through Raft membership protocol;
-- new member catch-up before serving as healthy;
-- safe operator rollback/retry semantics;
-- deployment replica changes cannot bypass consensus membership.
+Candidate acceptance criteria:
 
-### 8. Operational recovery
+- document available consistency levels;
+- add leader/read-index/lease-based path for linearizable reads where claimed;
+- make follower/stale-read behavior explicit in the wire/API contract;
+- test reads across commit propagation, failover, and partitions.
 
-Add documented backup/restore, snapshot inspection, node replacement, and disaster-recovery workflows.
+## P1 — operational recovery
+
+Add documented and tested:
+
+- backup/restore;
+- snapshot inspection;
+- node replacement;
+- disaster recovery;
+- upgrade/rollback compatibility;
+- integrity verification and operator-facing failure diagnostics.
 
 ## P1 — SQL semantic depth
 
-Expand SQL only after replicated mutation semantics are credible.
-
-Candidate areas:
+Expand SQL without weakening replicated-state safety. Candidate areas:
 
 - stronger PostgreSQL type/cast compatibility;
 - richer window-function coverage;
@@ -113,29 +112,28 @@ Performance work must retain a reproducible benchmark methodology.
 - authentication/authorization policy beyond current credential registry;
 - certificate lifecycle and rotation procedures;
 - rate-limit/admission-control observability;
-- backup encryption and secret management integration;
-- upgrade/rollback compatibility matrix;
+- backup encryption and secret-management integration;
 - chaos testing across network partitions and storage faults;
 - supply-chain/security automation with reviewed exceptions.
 
 ## Explicit non-goals for the current stage
 
-Until P0 is closed, the project should not optimize for:
+The project should not optimize for:
 
-- large feature-count expansion;
-- automatic horizontal scaling;
 - claims of production SQL HA;
+- automatic HPA-driven cluster scaling;
+- broad feature-count expansion at the expense of recovery semantics;
 - official benchmark certification;
-- broad compatibility claims unsupported by executable evidence.
+- broad PostgreSQL compatibility claims unsupported by executable evidence.
 
-## Definition of a credible pre-1.0 milestone
+## Definition of a stronger pre-1.0 distributed milestone
 
-A future milestone suitable for stronger distributed-database claims should demonstrate all of the following in CI or reproducible integration tests:
+A future milestone suitable for stronger HA/database claims should demonstrate at minimum:
 
-1. deterministic replicated SQL mutations;
-2. quorum-based commit semantics;
-3. process crash/restart durability;
-4. leader failover preserving acknowledged SQL state;
-5. coordinated membership changes;
-6. documented recovery procedures;
-7. security/deployment assumptions that match the tested topology.
+1. the current deterministic/quorum-applied fixed-membership table-mutation guarantees;
+2. SQL-aware snapshot/bootstrap and replacement-node recovery;
+3. coordinated membership changes;
+4. a defined identity/auth consistency model;
+5. documented read-consistency semantics;
+6. tested backup/restore and disaster-recovery procedures;
+7. deployment/security assumptions matching the tested topology.

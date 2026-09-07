@@ -1,119 +1,194 @@
 # Distributed semantics
 
-NeuralBase contains a real Raft consensus subsystem, but the current SQL engine is not yet a Raft-replicated state machine. This document defines that boundary precisely.
+NeuralBase now has a tested fixed-membership replicated state-machine path for persistent table mutations. This document defines that path and, equally importantly, the boundaries that remain outside it.
 
-## Node identity and transport addresses
+## Node identity and durable clustered startup
 
-A Raft node has a **logical ID** and a **connectable address**. They are not interchangeable.
+A Raft node has a **logical ID** and a **connectable address**. They are separate concepts.
 
 Preferred configuration:
 
 ```bash
 NEURALBASE_NODE_ID=node1
+NEURALBASE_DB_PATH=/var/lib/neuralbase
 NEURALBASE_RAFT_ADDR=0.0.0.0:7001
 NEURALBASE_PEERS='node2=node2.internal:7001,node3=node3.internal:7001'
 ```
 
-Accepted peer forms include:
+Accepted peer forms include explicit `id=address` mappings and legacy shorthand. Explicit mapping is preferred because it removes ambiguity between protocol identity and DNS/socket routing.
 
-```text
-node2=node2.internal:7001,node3=node3.internal:7001
-node2:7001,node3:7001
-node2,node3
-```
+Clustered startup is fail-closed for persistent SQL prerequisites:
 
-Explicit `id=address` mapping is preferred because it removes ambiguity between protocol identity and DNS/socket routing.
+- `NEURALBASE_NODE_ID` requires `NEURALBASE_DB_PATH`/`DB_PATH`;
+- persisted SQL catalog hydration errors abort clustered startup;
+- required Raft stable-storage load/save failures fail-stop the Raft node.
 
-Duplicate or malformed logical IDs should fail startup rather than silently producing isolated clusters.
+Without `NEURALBASE_NODE_ID`, NeuralBase retains its single-node local DDL/DML behavior.
 
 ## Transport implementations
-
-The consensus layer has multiple transport implementations for different purposes:
 
 - `ChannelTransport` — in-process/test use.
 - `TcpTransport` — real multi-process framed TCP transport.
 - `TlsTcpTransport` — feature-gated encrypted/authenticated transport.
 
-Production-like process topologies use TCP/TLS, not a newly created in-process channel bus.
+The process-level replicated SQL test uses real OS processes, real PostgreSQL connections, real TCP Raft transport, distinct ports, and distinct RocksDB directories.
 
-## Raft lifecycle
-
-At a high level:
+## Replicated mutation flow
 
 ```mermaid
 sequenceDiagram
-    participant C as Client/subsystem caller
+    participant C as PostgreSQL client
+    participant G as SQL gateway
     participant L as Leader RaftNode
     participant F as Follower RaftNode
-    participant A as Apply consumer
+    participant S as SQL state machine
 
-    C->>L: client command
-    L->>L: append local log entry
+    C->>G: persistent table mutation
+    G->>L: current-term readiness barrier
     L->>F: AppendEntries
-    F-->>L: AppendEntries reply
-    L->>L: advance commit index on quorum
-    L->>A: committed entry via apply channel
+    F-->>L: reply
+    L->>S: confirmed barrier apply
+    S-->>L: apply complete
+    L-->>G: barrier acknowledged
+    G->>G: bind/materialize concrete mutation
+    G->>L: versioned mutation command
+    L->>F: AppendEntries
+    F-->>L: reply
+    L->>L: quorum commit
+    L->>S: committed entry
+    S-->>L: durable apply complete
+    L-->>G: command index
+    G-->>C: SQL success
 ```
 
-The apply channel represents committed state-machine work waiting to be consumed.
+For ordinary replicated SQL commands, append-only local logging is not success. The client reply is withheld until the command reaches quorum commit and the acknowledging node's state machine confirms apply.
 
-## Backpressure and shutdown
+## Deterministic mutation model
 
-The apply channel is bounded. A slow consumer is therefore allowed to apply backpressure rather than causing unbounded memory growth.
+Replicated table commands use an explicit versioned binary representation rather than re-running SQL on followers.
 
-A full channel must not make process shutdown impossible. The Raft task's apply send is interruptible by shutdown, so a blocked `send().await` cannot deadlock `shutdown().await` indefinitely.
+Current replicated mutation classes:
 
-If the apply receiver is permanently closed, the Raft task fail-stops rather than pretending committed entries were applied successfully.
+- `CREATE TABLE`
+- `DROP TABLE`
+- `INSERT`
+- `UPDATE`
+- `DELETE`
 
-## What Raft currently guarantees
+DML commands carry a leader-chosen commit timestamp and concrete primary-key/value effects. Canonical ordering is enforced for row/key collections.
 
-Within the Raft subsystem, the code and tests cover protocol behavior such as election, replication, snapshots/membership machinery, transport routing, and committed-entry delivery.
+`UPDATE` and `DELETE` are materialized on the leader: the predicate is evaluated against the leader's confirmed-applied state and the concrete replacement rows or delete keys are replicated. Followers do not re-evaluate the predicate or choose row effects locally.
 
-Those guarantees apply to the **Raft log/subsystem**.
+## Leader readiness and serialized mutation materialization
 
-## What Raft does not currently guarantee for SQL
+A newly elected leader can have committed entries in its Raft log before its local SQL state machine has caught up. Before persistent mutation binding/materialization, the gateway commits a current-term readiness barrier and waits for confirmed apply.
 
-A successful SQL `INSERT`, `UPDATE`, `DELETE`, or DDL statement is not currently equivalent to a committed Raft command.
+Mutating SQL is serialized through the leader-side gateway across readiness, materialization, proposal, commit, and apply acknowledgement. This prevents two concurrent mutations from independently deriving effects from the same stale pre-apply view.
 
-```mermaid
-flowchart LR
-    SQL[SQL mutation] --> Local[local MVCC / RocksDB]
-    Raft[Raft committed log] --> Apply[apply channel]
-    Apply -. not yet authoritative SQL apply .-> Local
-```
+## Follower behavior and client retries
 
-Consequences:
+Followers reject persistent table mutations before proposal. The PostgreSQL error uses SQLSTATE `25006`; the error includes the known leader ID when available.
 
-- peer nodes can have different SQL data;
-- a Raft leader change does not imply SQL failover;
-- quorum availability does not prove SQL data availability;
-- local RocksDB durability does not equal majority durability;
-- per-node user registry changes are not replicated automatically.
+That explicit follower rejection is a pre-submit outcome and is safe to redirect/retry against the current leader.
 
-## Stable persistence boundary
+A failure or timeout after submission to a leader is different: its outcome is **uncertain**. The former leader may have replicated the entry to a quorum before the client saw the connection/error result. A non-idempotent statement must not be blindly replayed solely because success was not observed.
 
-Raft has persistence abstractions, but stable-storage failure handling remains a hardening target. A production database should not continue as if consensus state were durable after a required persistence operation fails.
+## Deterministic apply and replay
 
-The roadmap therefore treats **fail-closed Raft persistence** as a release boundary, not an optional optimization.
+Committed SQL commands are applied in Raft log order.
 
-## Fixed membership in deployment
+The replicated SQL state machine:
 
-The checked-in Kubernetes/Helm topology uses fixed membership assumptions. HorizontalPodAutoscaler is deliberately rejected because scaling a StatefulSet replica count does not itself perform a Raft joint-consensus membership change.
+- validates command version/shape and table identity;
+- writes exact DML bytes at the leader-chosen HLC timestamp;
+- applies catalog/table changes deterministically;
+- writes the SQL effect and durable apply marker in one RocksDB `WriteBatch`;
+- treats already-applied Raft indices as replay/idempotence hits rather than creating duplicate MVCC versions;
+- restores the replicated HLC high-water mark from durable apply state after restart.
 
-The PodDisruptionBudget is derived from the configured replica count to preserve a majority of pods, but a PDB is an availability aid, not a consensus-membership controller.
+A state-machine apply error fails the confirmed apply path instead of returning SQL success.
 
-## Required path to replicated SQL
+## Stable Raft persistence
 
-A credible replicated SQL design should include all of the following:
+Raft term, vote, log, snapshot-boundary metadata, and snapshot bytes are persisted through the RocksDB-backed persistence store.
 
-1. **Deterministic mutation representation.** SQL effects must be encoded into deterministic commands independent of local parser/planner nondeterminism.
-2. **Leader routing.** Mutating requests must have explicit leader/follower behavior.
-3. **Commit semantics.** A client success response must be tied to the chosen durability point, normally quorum commit plus required local apply.
-4. **Deterministic apply.** Every member applies the same committed command to the same logical state.
-5. **Idempotence/replay.** Recovery and log replay must not duplicate effects.
-6. **Schema/auth replication.** Catalog and credential mutations must participate in the same state model or have equally explicit semantics.
-7. **Crash/restart proof.** Separate-process tests must show state convergence after kill/restart.
-8. **Leader-failover proof.** A new leader must expose the previously acknowledged SQL state.
-9. **Membership workflow.** Adds/removals must use coordinated consensus membership changes.
+Required persistence load/save failures are fail-stop events in `RaftNode` itself. The runtime also installs `FailClosedPersistenceStore` as defense in depth. Consensus does not log a required persistence failure and continue as though state were durable.
 
-Until those acceptance conditions exist, NeuralBase should be described as a local SQL engine with an integrated Raft subsystem, not a replicated SQL database.
+Injected failure tests exercise startup load failure and mid-command save failure and require that no SQL/normal-client success escape the failed node.
+
+## Process failover and restart evidence
+
+`tests/replicated_sql_process.rs` starts three independent NeuralBase processes and exercises:
+
+1. `CREATE TABLE`;
+2. multi-row `INSERT`;
+3. `UPDATE`;
+4. `DELETE`;
+5. convergence on all three independent RocksDB stores;
+6. leader kill;
+7. a write through the newly elected leader;
+8. restart/catch-up of the killed node;
+9. full-cluster stop/start from persisted state;
+10. another write after restart;
+11. a PostgreSQL write raced against `SIGKILL` of the leader;
+12. the one-way durability rule that any client-observed success remains visible through the surviving quorum;
+13. further mutation and convergence after crash recovery.
+
+This is evidence for the checked fixed-membership failure model, not a proof of arbitrary partition/Byzantine/storage-corruption behavior.
+
+## Read consistency boundary
+
+Reads are not routed through a Raft read-index/lease protocol in this phase. A follower serves its local applied state and can lag the leader/commit frontier.
+
+Therefore:
+
+- arbitrary follower reads are not claimed linearizable;
+- a just-acknowledged write need not be immediately visible on every follower until that follower learns/applies the commit;
+- the process tests wait for convergence where follower visibility is part of the assertion.
+
+## Snapshot and compaction safety boundary
+
+The legacy Raft snapshot payload is opaque and is not a complete NeuralBase SQL/catalog snapshot. Using that mechanism to truncate replicated SQL history could make a restarted/replacement node advance its Raft snapshot boundary without reconstructing table state.
+
+For that reason, replicated-SQL mode currently:
+
+- rejects legacy compaction commands; and
+- refuses startup from a persisted opaque Raft snapshot.
+
+This is intentional fail-closed behavior. SQL-aware snapshot/bootstrap and node replacement are future work.
+
+## Authentication boundary
+
+`CREATE USER`, `ALTER USER`, and `DROP USER` remain per-node credential-registry mutations. They are not part of the replicated table-mutation command model in this phase.
+
+Operators must not infer cluster-wide identity consistency from table replication.
+
+## Fixed membership and deployment
+
+Checked-in Compose/Kubernetes/Helm topologies use fixed membership. HPA enablement is rejected because changing StatefulSet replica count is not a Raft membership change.
+
+The PodDisruptionBudget preserves a configured majority of pods as an availability aid, but it is not a membership controller.
+
+## What is implemented versus still open
+
+Implemented/tested for configured fixed-membership clusters:
+
+- deterministic persistent table mutation commands;
+- explicit follower write rejection;
+- leader readiness barrier;
+- concrete leader-side UPDATE/DELETE materialization;
+- quorum commit + confirmed apply before SQL success;
+- deterministic/idempotent RocksDB apply;
+- durable/fail-closed Raft persistence;
+- separate-process convergence, leader failover, catch-up, restart, and crash-race evidence.
+
+Still open before stronger HA/production claims:
+
+- SQL-aware snapshots/bootstrap and node replacement;
+- coordinated dynamic membership;
+- replicated auth/user state;
+- stronger/linearizable read modes;
+- backup/restore and disaster recovery;
+- broader partition/chaos evidence and production operations validation.
+
+NeuralBase should therefore be described as an experimental SQL engine with a tested **fixed-membership replicated persistent table-mutation path**, not as a production-ready HA database.
