@@ -155,7 +155,7 @@ mod tests {
             kind: StagedSnapshotKind::Creation,
             last_included_index: 1,
             last_included_term: 1,
-            data: b"candidate".to_vec(),
+            data: Arc::new(b"candidate".to_vec()),
         }
     }
 
