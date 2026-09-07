@@ -10,9 +10,7 @@ use std::sync::Arc;
 
 use rocksdb::WriteBatch;
 
-use crate::consensus::{
-    PersistentState, RaftPersistenceStore, StagedSnapshot, StagedSnapshotKind,
-};
+use crate::consensus::{PersistentState, RaftPersistenceStore, StagedSnapshot, StagedSnapshotKind};
 use crate::storage::{StorageEngine, CF_META};
 
 const RAFT_STATE_KEY: &[u8] = b"raft/core/persistent-state-v1";
@@ -123,11 +121,10 @@ impl RaftPersistenceStore for RocksDbRaftPersistenceStore {
     }
 
     fn load_staged_snapshot(&self) -> Result<Option<StagedSnapshot>, String> {
-        let meta_cf = self
-            .engine
-            .db
-            .cf_handle(CF_META)
-            .ok_or_else(|| "CF_META unavailable while loading staged Raft snapshot".to_string())?;
+        let meta_cf =
+            self.engine.db.cf_handle(CF_META).ok_or_else(|| {
+                "CF_META unavailable while loading staged Raft snapshot".to_string()
+            })?;
         self.engine
             .db
             .get_cf(&meta_cf, RAFT_STAGED_SNAPSHOT_KEY)
@@ -137,11 +134,10 @@ impl RaftPersistenceStore for RocksDbRaftPersistenceStore {
     }
 
     fn clear_staged_snapshot(&self) -> Result<(), String> {
-        let meta_cf = self
-            .engine
-            .db
-            .cf_handle(CF_META)
-            .ok_or_else(|| "CF_META unavailable while clearing staged Raft snapshot".to_string())?;
+        let meta_cf =
+            self.engine.db.cf_handle(CF_META).ok_or_else(|| {
+                "CF_META unavailable while clearing staged Raft snapshot".to_string()
+            })?;
         let mut batch = WriteBatch::default();
         batch.delete_cf(&meta_cf, RAFT_STAGED_SNAPSHOT_KEY);
         self.engine

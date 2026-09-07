@@ -283,9 +283,9 @@ impl<T: Transport> RaftNode<T> {
 
     /// Attach a bounded state-machine channel with explicit completion.
     pub fn with_confirmed_apply_tx(mut self, tx: mpsc::Sender<CommittedEntry>) -> Self {
-        let has_unrecoverable_snapshot =
-            (self.ps.snapshot_index != 0 || !self.snapshot_data.is_empty())
-                && self.snapshot_store.is_none();
+        let has_unrecoverable_snapshot = (self.ps.snapshot_index != 0
+            || !self.snapshot_data.is_empty())
+            && self.snapshot_store.is_none();
         let has_unrecoverable_install = self
             .pending_staged_snapshot
             .as_ref()
@@ -408,10 +408,8 @@ impl<T: Transport> RaftNode<T> {
                     panic!("fatal staged state-machine snapshot recovery failure: {error}");
                 }
 
-                self.ps.install_snapshot(
-                    staged.last_included_index,
-                    staged.last_included_term,
-                );
+                self.ps
+                    .install_snapshot(staged.last_included_index, staged.last_included_term);
                 self.snapshot_data = Arc::clone(&staged.data);
                 self.commit_index = self.commit_index.max(staged.last_included_index);
                 self.last_applied = self.last_applied.max(staged.last_included_index);
@@ -1031,7 +1029,9 @@ impl<T: Transport> RaftNode<T> {
             );
             snapshot_store
                 .validate_snapshot(safe_last, last_term, data.as_slice())
-                .map_err(|error| format!("created state-machine snapshot failed validation: {error}"))?;
+                .map_err(|error| {
+                    format!("created state-machine snapshot failed validation: {error}")
+                })?;
 
             let persistence = self.persistence.as_ref().ok_or_else(|| {
                 "SQL-aware Raft compaction requires durable persistence".to_string()

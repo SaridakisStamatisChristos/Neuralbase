@@ -295,8 +295,7 @@ impl PersistentState {
 
         let retained: Vec<LogEntry> =
             if boundary_matches_local && last_included_index < last_log_index {
-                let physical_first_kept =
-                    (last_included_index - self.snapshot_index) as usize + 1;
+                let physical_first_kept = (last_included_index - self.snapshot_index) as usize + 1;
                 self.log[physical_first_kept..].to_vec()
             } else {
                 vec![]

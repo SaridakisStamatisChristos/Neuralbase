@@ -210,14 +210,13 @@ mod tests {
         let engine = Arc::new(StorageEngine::open(dir.path()).unwrap());
         let catalog = Arc::new(InMemoryCatalog::default());
         let clock = Arc::new(HlcClock::new(500));
-        let hooks = ReplicatedSqlSnapshotHooks::new(
-            Arc::clone(&engine),
-            Arc::clone(&catalog),
-            clock,
-        );
+        let hooks =
+            ReplicatedSqlSnapshotHooks::new(Arc::clone(&engine), Arc::clone(&catalog), clock);
         catalog.create_table(schema());
 
-        let error = hooks.validate_snapshot(4, 2, &snapshot_bytes()).unwrap_err();
+        let error = hooks
+            .validate_snapshot(4, 2, &snapshot_bytes())
+            .unwrap_err();
         assert!(error.contains("snapshot boundary mismatch"));
         assert!(engine.list_catalog_keys().unwrap().is_empty());
     }
@@ -228,11 +227,8 @@ mod tests {
         let engine = Arc::new(StorageEngine::open(dir.path()).unwrap());
         let catalog = Arc::new(InMemoryCatalog::default());
         let clock = Arc::new(HlcClock::new(500));
-        let hooks = ReplicatedSqlSnapshotHooks::new(
-            Arc::clone(&engine),
-            Arc::clone(&catalog),
-            clock,
-        );
+        let hooks =
+            ReplicatedSqlSnapshotHooks::new(Arc::clone(&engine), Arc::clone(&catalog), clock);
 
         let error = hooks.restore_snapshot(4, 2, &snapshot_bytes()).unwrap_err();
         assert!(error.contains("snapshot boundary mismatch"));

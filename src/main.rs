@@ -181,9 +181,8 @@ fn spawn_raft<T: Transport>(
         Arc::clone(&clock),
     ));
 
-    let raw_store: Arc<dyn RaftPersistenceStore> = Arc::new(RocksDbRaftPersistenceStore::new(
-        Arc::clone(&engine),
-    ));
+    let raw_store: Arc<dyn RaftPersistenceStore> =
+        Arc::new(RocksDbRaftPersistenceStore::new(Arc::clone(&engine)));
     let strict_store: Arc<dyn RaftPersistenceStore> =
         Arc::new(FailClosedPersistenceStore::new(raw_store));
 
