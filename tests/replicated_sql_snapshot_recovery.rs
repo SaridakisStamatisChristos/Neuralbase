@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use neuralbase::catalog::{Catalog, ColumnDef, InMemoryCatalog, TableSchema};
 use neuralbase::consensus::{
-    ChannelTransport, FailClosedPersistenceStore, RaftNode, RaftPersistenceStore,
-    StagedSnapshot, StagedSnapshotKind, StateMachineSnapshotStore,
+    ChannelTransport, FailClosedPersistenceStore, RaftNode, RaftPersistenceStore, StagedSnapshot,
+    StagedSnapshotKind, StateMachineSnapshotStore,
 };
 use neuralbase::hlc::{HlcClock, HlcTimestamp};
 use neuralbase::raft_persistence::RocksDbRaftPersistenceStore;
@@ -92,9 +92,8 @@ async fn interrupted_install_recovers_and_second_restart_is_idempotent() {
     assert_eq!(engine.raw_scan_table_versions(table_id).unwrap().len(), 1);
 
     let bus = ChannelTransport::new_bus();
-    let transport = Arc::new(
-        ChannelTransport::register("recover-node".to_string(), Arc::clone(&bus)).await,
-    );
+    let transport =
+        Arc::new(ChannelTransport::register("recover-node".to_string(), Arc::clone(&bus)).await);
     let strict_store: Arc<dyn RaftPersistenceStore> =
         Arc::new(FailClosedPersistenceStore::new(raw_store.clone()));
     let (apply_tx, _apply_rx) = mpsc::channel(8);
@@ -130,9 +129,8 @@ async fn interrupted_install_recovers_and_second_restart_is_idempotent() {
     // A second process-style reconstruction from the now-active snapshot must
     // not create another MVCC row version or leave staging behind.
     let bus2 = ChannelTransport::new_bus();
-    let transport2 = Arc::new(
-        ChannelTransport::register("recover-node".to_string(), Arc::clone(&bus2)).await,
-    );
+    let transport2 =
+        Arc::new(ChannelTransport::register("recover-node".to_string(), Arc::clone(&bus2)).await);
     let hooks2 = Arc::new(ReplicatedSqlSnapshotHooks::new(
         Arc::clone(&engine),
         Arc::clone(&catalog),
