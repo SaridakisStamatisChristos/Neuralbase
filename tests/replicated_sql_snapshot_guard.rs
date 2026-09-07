@@ -18,9 +18,8 @@ use tokio::sync::{mpsc, oneshot};
 #[tokio::test]
 async fn replicated_sql_mode_rejects_legacy_compaction_command() {
     let bus = ChannelTransport::new_bus();
-    let transport = Arc::new(
-        ChannelTransport::register("snapshot_guard".to_string(), Arc::clone(&bus)).await,
-    );
+    let transport =
+        Arc::new(ChannelTransport::register("snapshot_guard".to_string(), Arc::clone(&bus)).await);
     let (apply_tx, _apply_rx) = mpsc::channel::<CommittedEntry>(8);
     let mut node = RaftNode::new("snapshot_guard".to_string(), vec![], transport)
         .with_confirmed_apply_tx(apply_tx);
@@ -44,7 +43,9 @@ async fn replicated_sql_mode_rejects_legacy_compaction_command() {
         })
         .await
         .expect("compaction request reaches leader");
-    let reply = reply_rx.await.expect("leader returns explicit compaction error");
+    let reply = reply_rx
+        .await
+        .expect("leader returns explicit compaction error");
     let error = reply.expect_err("replicated SQL mode must reject legacy compaction");
     assert!(
         error.contains("disabled in replicated SQL mode"),

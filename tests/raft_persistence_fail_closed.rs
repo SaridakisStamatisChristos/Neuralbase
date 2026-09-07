@@ -61,8 +61,8 @@ async fn persistence_load_failure_prevents_node_startup() {
         ChannelTransport::register("persist_load_fail".to_string(), Arc::clone(&bus)).await,
     );
     let store: Arc<dyn RaftPersistenceStore> = Arc::new(FailLoad);
-    let _ = RaftNode::new("persist_load_fail".to_string(), vec![], transport)
-        .with_persistence(store);
+    let _ =
+        RaftNode::new("persist_load_fail".to_string(), vec![], transport).with_persistence(store);
 }
 
 #[tokio::test]
@@ -76,8 +76,8 @@ async fn command_persistence_failure_cannot_return_success() {
     // second save is the first client log append and is injected to fail. This
     // store is attached directly: no fail-closed adapter is involved.
     let store: Arc<dyn RaftPersistenceStore> = Arc::new(FailAfterFirstSave::new());
-    let mut node = RaftNode::new("persist_fail_node".to_string(), vec![], transport)
-        .with_persistence(store);
+    let mut node =
+        RaftNode::new("persist_fail_node".to_string(), vec![], transport).with_persistence(store);
     node.set_election_timeout_ms(20);
     let (cmd_tx, shared, _handle) = node.spawn();
 

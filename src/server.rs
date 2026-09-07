@@ -59,9 +59,7 @@ static REPLICATED_SQL_GATEWAY: OnceLock<Mutex<Option<Arc<ReplicatedSqlGateway>>>
 
 pub fn configure_replicated_sql_gateway(gateway: Option<Arc<ReplicatedSqlGateway>>) {
     let slot = REPLICATED_SQL_GATEWAY.get_or_init(|| Mutex::new(None));
-    *slot
-        .lock()
-        .expect("replicated SQL gateway mutex poisoned") = gateway;
+    *slot.lock().expect("replicated SQL gateway mutex poisoned") = gateway;
 }
 
 fn replicated_sql_gateway() -> Option<Arc<ReplicatedSqlGateway>> {
@@ -552,10 +550,18 @@ where
                                                 tracing::info!(index_name, "index dropped");
                                             }
                                             DdlResult::Skipped { index_name, reason } => {
-                                                tracing::debug!(index_name, reason, "index ddl skipped");
+                                                tracing::debug!(
+                                                    index_name,
+                                                    reason,
+                                                    "index ddl skipped"
+                                                );
                                             }
                                             DdlResult::Failed { index_name, error } => {
-                                                tracing::warn!(index_name, error, "index ddl failed");
+                                                tracing::warn!(
+                                                    index_name,
+                                                    error,
+                                                    "index ddl failed"
+                                                );
                                             }
                                         }
                                     }
@@ -998,9 +1004,11 @@ where
         BoundPlan::DropTable { name } => {
             if let Some(gateway) = replicated_sql_gateway() {
                 match gateway.drop_table(&name).await {
-                    Ok(_) => socket
-                        .write_all(&build_command_complete("DROP TABLE"))
-                        .await?,
+                    Ok(_) => {
+                        socket
+                            .write_all(&build_command_complete("DROP TABLE"))
+                            .await?
+                    }
                     Err(error) => write_replicated_error(socket, &error).await?,
                 }
             } else {
@@ -1023,9 +1031,11 @@ where
             let schema = create_plan.to_table_schema();
             if let Some(gateway) = replicated_sql_gateway() {
                 match gateway.create_table(schema).await {
-                    Ok(_) => socket
-                        .write_all(&build_command_complete("CREATE TABLE"))
-                        .await?,
+                    Ok(_) => {
+                        socket
+                            .write_all(&build_command_complete("CREATE TABLE"))
+                            .await?
+                    }
                     Err(error) => write_replicated_error(socket, &error).await?,
                 }
             } else {
@@ -1114,18 +1124,18 @@ where
                 let assignments: Vec<(String, String)> = update_plan
                     .assignments
                     .iter()
-                    .map(|(col, val)| {
-                        (col.clone(), val.to_storage_string().unwrap_or_default())
-                    })
+                    .map(|(col, val)| (col.clone(), val.to_storage_string().unwrap_or_default()))
                     .collect();
                 match exec.update_rows(
                     &update_plan.table.name,
                     &assignments,
                     update_plan.predicate.as_ref(),
                 ) {
-                    Ok(n) => socket
-                        .write_all(&build_command_complete(&format!("UPDATE {n}")))
-                        .await?,
+                    Ok(n) => {
+                        socket
+                            .write_all(&build_command_complete(&format!("UPDATE {n}")))
+                            .await?
+                    }
                     Err(e) => write_error_and_ready(socket, &e.to_string(), "22000").await?,
                 }
             }
@@ -1152,9 +1162,11 @@ where
                     return Ok(());
                 };
                 match exec.delete_rows(&delete_plan.table.name, delete_plan.predicate.as_ref()) {
-                    Ok(n) => socket
-                        .write_all(&build_command_complete(&format!("DELETE {n}")))
-                        .await?,
+                    Ok(n) => {
+                        socket
+                            .write_all(&build_command_complete(&format!("DELETE {n}")))
+                            .await?
+                    }
                     Err(e) => write_error_and_ready(socket, &e.to_string(), "22000").await?,
                 }
             }
@@ -1283,12 +1295,14 @@ where
             };
             write_error_and_ready(socket, &message, "25006").await
         }
-        _ => write_error_and_ready(
-            socket,
-            &format!("replicated SQL mutation failed: {error}"),
-            "58030",
-        )
-        .await,
+        _ => {
+            write_error_and_ready(
+                socket,
+                &format!("replicated SQL mutation failed: {error}"),
+                "58030",
+            )
+            .await
+        }
     }
 }
 

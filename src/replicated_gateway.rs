@@ -95,7 +95,8 @@ impl ReplicatedSqlGateway {
     ) -> Result<ReplicatedMutationAck, ReplicatedGatewayError> {
         let _guard = self.mutation_serial.lock().await;
         self.commit_readiness_barrier().await?;
-        self.submit(ReplicatedMutation::CreateTable { schema }).await
+        self.submit(ReplicatedMutation::CreateTable { schema })
+            .await
     }
 
     pub async fn drop_table(
@@ -322,9 +323,7 @@ fn batch_row_to_map(batch: &RecordBatch) -> BTreeMap<String, String> {
         let value = match column {
             ColumnVector::Int32(values) => values[0].map(|v| v.to_string()).unwrap_or_default(),
             ColumnVector::Int64(values) => values[0].map(|v| v.to_string()).unwrap_or_default(),
-            ColumnVector::Float64(values) => {
-                values[0].map(|v| v.to_string()).unwrap_or_default()
-            }
+            ColumnVector::Float64(values) => values[0].map(|v| v.to_string()).unwrap_or_default(),
             ColumnVector::Date32(values) => values[0].map(|v| v.to_string()).unwrap_or_default(),
             ColumnVector::Utf8(values) => values.get(0).unwrap_or_default(),
         };
@@ -363,10 +362,13 @@ mod tests {
         let engine = Arc::new(StorageEngine::open(dir.path()).unwrap());
         let clock = Arc::new(HlcClock::new(500));
         let bus = ChannelTransport::new_bus();
-        let transport = Arc::new(
-            ChannelTransport::register("follower".to_string(), Arc::clone(&bus)).await,
+        let transport =
+            Arc::new(ChannelTransport::register("follower".to_string(), Arc::clone(&bus)).await);
+        let node = RaftNode::new(
+            "follower".to_string(),
+            vec!["missing".to_string()],
+            transport,
         );
-        let node = RaftNode::new("follower".to_string(), vec!["missing".to_string()], transport);
         let (client_tx, shared, _handle) = node.spawn();
         let gateway = ReplicatedSqlGateway::new(client_tx, shared, Arc::clone(&engine), clock);
 
@@ -392,12 +394,11 @@ mod tests {
         );
 
         let bus = ChannelTransport::new_bus();
-        let transport = Arc::new(
-            ChannelTransport::register("solo".to_string(), Arc::clone(&bus)).await,
-        );
+        let transport =
+            Arc::new(ChannelTransport::register("solo".to_string(), Arc::clone(&bus)).await);
         let (apply_tx, mut apply_rx) = tokio::sync::mpsc::channel::<CommittedEntry>(8);
-        let mut node = RaftNode::new("solo".to_string(), vec![], transport)
-            .with_confirmed_apply_tx(apply_tx);
+        let mut node =
+            RaftNode::new("solo".to_string(), vec![], transport).with_confirmed_apply_tx(apply_tx);
         node.set_election_timeout_ms(20);
         let (client_tx, shared, _handle) = node.spawn();
         let sm = Arc::clone(&state_machine);
@@ -416,16 +417,15 @@ mod tests {
             if shared.lock().await.role == RaftRole::Leader {
                 break;
             }
-            assert!(tokio::time::Instant::now() < deadline, "leader election timed out");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "leader election timed out"
+            );
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
 
-        let gateway = ReplicatedSqlGateway::new(
-            client_tx,
-            shared,
-            Arc::clone(&engine),
-            Arc::clone(&clock),
-        );
+        let gateway =
+            ReplicatedSqlGateway::new(client_tx, shared, Arc::clone(&engine), Arc::clone(&clock));
         let plan = InsertPlan {
             table: schema(),
             columns: vec!["id".to_string(), "name".to_string()],

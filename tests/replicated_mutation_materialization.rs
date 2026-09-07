@@ -67,9 +67,7 @@ fn leader_shared() -> Arc<Mutex<RaftShared>> {
 /// Capture the readiness barrier followed by exactly one replicated SQL
 /// mutation. The fake Raft endpoint acknowledges both so the gateway can
 /// complete, but it never evaluates SQL or touches storage.
-fn spawn_capture(
-    mut rx: mpsc::Receiver<ClientCommand>,
-) -> oneshot::Receiver<Vec<u8>> {
+fn spawn_capture(mut rx: mpsc::Receiver<ClientCommand>) -> oneshot::Receiver<Vec<u8>> {
     let (captured_tx, captured_rx) = oneshot::channel();
     tokio::spawn(async move {
         let barrier = rx.recv().await.expect("readiness barrier command");

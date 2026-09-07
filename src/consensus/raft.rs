@@ -297,8 +297,7 @@ impl<T: Transport> RaftNode<T> {
     pub fn with_persistence(mut self, store: Arc<dyn RaftPersistenceStore>) -> Self {
         match store.load() {
             Ok(Some((ps, snap))) => {
-                if self.confirmed_apply_tx.is_some()
-                    && (ps.snapshot_index != 0 || !snap.is_empty())
+                if self.confirmed_apply_tx.is_some() && (ps.snapshot_index != 0 || !snap.is_empty())
                 {
                     panic!(
                         "replicated SQL confirmed apply cannot load a legacy Raft snapshot; SQL state snapshot restore is not implemented"

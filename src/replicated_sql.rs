@@ -30,8 +30,13 @@ pub struct ReplicatedRowWrite {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplicatedMutation {
-    CreateTable { schema: TableSchema },
-    DropTable { table: String, table_id: u32 },
+    CreateTable {
+        schema: TableSchema,
+    },
+    DropTable {
+        table: String,
+        table_id: u32,
+    },
     InsertRows {
         table: String,
         table_id: u32,
@@ -113,14 +118,7 @@ impl ReplicatedMutation {
                 commit_ts,
                 rows,
             } => {
-                encode_row_writes(
-                    &mut out,
-                    OP_INSERT_ROWS,
-                    table,
-                    *table_id,
-                    *commit_ts,
-                    rows,
-                )?;
+                encode_row_writes(&mut out, OP_INSERT_ROWS, table, *table_id, *commit_ts, rows)?;
             }
             Self::UpdateRows {
                 table,
@@ -128,14 +126,7 @@ impl ReplicatedMutation {
                 commit_ts,
                 rows,
             } => {
-                encode_row_writes(
-                    &mut out,
-                    OP_UPDATE_ROWS,
-                    table,
-                    *table_id,
-                    *commit_ts,
-                    rows,
-                )?;
+                encode_row_writes(&mut out, OP_UPDATE_ROWS, table, *table_id, *commit_ts, rows)?;
             }
             Self::DeleteRows {
                 table,
