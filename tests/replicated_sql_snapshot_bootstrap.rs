@@ -23,6 +23,7 @@ use neuralbase::raft_persistence::RocksDbRaftPersistenceStore;
 use neuralbase::replicated_gateway::{ReplicatedGatewayError, ReplicatedSqlGateway};
 use neuralbase::replicated_snapshot_hooks::ReplicatedSqlSnapshotHooks;
 use neuralbase::replicated_state_machine::ReplicatedSqlStateMachine;
+use neuralbase::rocksdb_catalog::RocksDbCatalog;
 use neuralbase::storage::StorageEngine;
 use neuralbase::storage_executor::table_id_for;
 use tempfile::TempDir;
@@ -104,7 +105,15 @@ async fn spawn_node(
     dir: TempDir,
 ) -> SnapshotNode {
     let engine = Arc::new(StorageEngine::open(dir.path()).unwrap());
-    let catalog = Arc::new(InMemoryCatalog::default());
+    // Mirror production clustered startup: hydrate durable schemas before the
+    // Raft snapshot hook decides whether an older active snapshot should be
+    // replayed. If durable SQL is already ahead of that snapshot, the hook must
+    // preserve the suffix and the catalog must still come from RocksDB.
+    let catalog = Arc::new(
+        RocksDbCatalog::new(Arc::clone(&engine))
+            .load_all()
+            .unwrap(),
+    );
     let clock = Arc::new(HlcClock::new(500));
     let state_machine = Arc::new(
         ReplicatedSqlStateMachine::new(
