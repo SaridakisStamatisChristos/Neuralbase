@@ -109,11 +109,7 @@ async fn spawn_node(
     // Raft snapshot hook decides whether an older active snapshot should be
     // replayed. If durable SQL is already ahead of that snapshot, the hook must
     // preserve the suffix and the catalog must still come from RocksDB.
-    let catalog = Arc::new(
-        RocksDbCatalog::new(Arc::clone(&engine))
-            .load_all()
-            .unwrap(),
-    );
+    let catalog = Arc::new(RocksDbCatalog::new(Arc::clone(&engine)).load_all().unwrap());
     let clock = Arc::new(HlcClock::new(500));
     let state_machine = Arc::new(
         ReplicatedSqlStateMachine::new(
@@ -216,10 +212,7 @@ async fn wait_for_rows(nodes: &[SnapshotNode], count: usize) {
     loop {
         let mut converged = true;
         for node in nodes {
-            let rows = node
-                .engine
-                .scan_table(table_id, HlcTimestamp::MAX)
-                .unwrap();
+            let rows = node.engine.scan_table(table_id, HlcTimestamp::MAX).unwrap();
             converged &= rows.len() == count;
         }
         if converged {
@@ -260,10 +253,7 @@ fn insert_plan(id: i64, name: &str) -> InsertPlan {
     InsertPlan {
         table: schema(),
         columns: vec!["id".to_string(), "name".to_string()],
-        rows: vec![vec![
-            SqlValue::Int(id),
-            SqlValue::Text(name.to_string()),
-        ]],
+        rows: vec![vec![SqlValue::Int(id), SqlValue::Text(name.to_string())]],
     }
 }
 
@@ -314,11 +304,7 @@ async fn empty_disk_fixed_member_bootstraps_from_snapshot_suffix_and_survives_fa
     // Choose the first peer in the leader's deterministic peer order. The
     // existing leader-transfer helper targets that same peer later, allowing the
     // reconstructed member to prove it can safely assume leadership.
-    let victim_id = IDS
-        .iter()
-        .find(|id| **id != leader_id)
-        .unwrap()
-        .to_string();
+    let victim_id = IDS.iter().find(|id| **id != leader_id).unwrap().to_string();
     let victim_pos = nodes.iter().position(|node| node.id == victim_id).unwrap();
     let victim = nodes.remove(victim_pos);
     let destroyed_dir = victim.shutdown_into_dir().await;
