@@ -18,6 +18,7 @@
 //   - confirmed state-machine apply acknowledgement
 //   - fail-closed persistence adapter for term/vote/log durability failures
 //   - explicit SQL-aware state-machine snapshot contract
+//   - resumable staged snapshot transitions across crashes
 //
 // CONFIDENCE: raw=0.78 effective=0.70
 // [HUMAN REVIEW REQUIRED] — see REVIEW_REQUIRED.md §Session13
@@ -33,7 +34,9 @@ pub mod transport;
 #[allow(unused_imports)]
 pub use fail_closed::FailClosedPersistenceStore;
 #[allow(unused_imports)]
-pub use log::{MemPersistenceStore, PersistentState, RaftPersistenceStore};
+pub use log::{
+    MemPersistenceStore, PersistentState, RaftPersistenceStore, StagedSnapshot, StagedSnapshotKind,
+};
 #[allow(unused_imports)]
 pub use raft::{
     encode_compact_log, encode_leader_transfer, encode_membership_change, ClientCommand,
