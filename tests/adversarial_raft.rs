@@ -623,7 +623,9 @@ async fn s13_data_cmd_rejected_while_membership_change_in_progress() {
 // ── Session 13: bounded apply_tx tests ─────────────────────────────────────
 
 // [S13-D] Bounded apply channel does not drop entries under backpressure.
-// Fill the channel past capacity, then drain.  Every committed entry must arrive.
+// Fill the leader channel past capacity while follower apply consumers remain
+// live. Every committed leader entry must arrive, and client acknowledgement
+// must not occur until that delivery has happened.
 #[tokio::test]
 async fn s13_apply_tx_backpressure_does_not_drop_entries() {
     use neuralbase::consensus::ClientCommand;
@@ -652,7 +654,7 @@ async fn s13_apply_tx_backpressure_does_not_drop_entries() {
         shareds.push(shared);
         cmd_txs.push(cmd_tx);
         _handles.push(handle);
-        apply_rxs.push(arx);
+        apply_rxs.push(Some(arx));
     }
 
     let elected = wait_for_leader(&shareds, Duration::from_millis(2_000)).await;
@@ -668,46 +670,67 @@ async fn s13_apply_tx_backpressure_does_not_drop_entries() {
         }
     }
 
-    let count = 20u32;
+    // A blocked follower state-machine handoff also blocks that follower's
+    // legacy Raft event loop. Drain followers continuously so this test isolates
+    // leader apply backpressure rather than deliberately destroying quorum.
+    let mut follower_drainers = vec![];
+    for (i, rx) in apply_rxs.iter_mut().enumerate() {
+        if i == leader_idx {
+            continue;
+        }
+        let mut rx = rx.take().expect("follower apply receiver present");
+        follower_drainers.push(tokio::spawn(
+            async move { while rx.recv().await.is_some() {} },
+        ));
+    }
 
-    // Spawn producer + drain from the leader's apply channel concurrently.
+    let count = 20u32;
     let cmd_tx = cmd_txs[leader_idx].clone();
-    let mut apply_rx = std::mem::replace(
-        &mut apply_rxs[leader_idx],
-        tokio::sync::mpsc::channel(1).1, // placeholder
-    );
+    let mut apply_rx = apply_rxs[leader_idx]
+        .take()
+        .expect("leader apply receiver present");
+
     let producer = tokio::spawn(async move {
         for i in 0..count {
             let (tx, rx) = oneshot::channel::<Result<u64, String>>();
-            if cmd_tx
+            cmd_tx
                 .send(ClientCommand {
                     payload: format!("entry_{i}").into_bytes(),
                     reply: tx,
                 })
                 .await
-                .is_err()
-            {
-                break;
-            }
-            let _ = rx.await;
+                .expect("Raft command channel must remain open");
+            rx.await
+                .expect("client reply channel must remain open")
+                .expect("committed entry must apply successfully");
         }
     });
 
     let consumer = tokio::spawn(async move {
         let mut received = 0u32;
-        let drain_deadline = tokio::time::Instant::now() + Duration::from_millis(10_000);
         while received < count {
-            let entry = tokio::time::timeout_at(drain_deadline, apply_rx.recv()).await;
-            match entry {
+            match tokio::time::timeout(Duration::from_secs(5), apply_rx.recv()).await {
                 Ok(Some(_)) => received += 1,
-                Ok(None) | Err(_) => break,
+                Ok(None) => break,
+                Err(_) => panic!("leader apply delivery timed out"),
             }
         }
         received
     });
 
-    let (_, received) = tokio::join!(producer, consumer);
-    let received = received.expect("consumer task must not panic");
+    tokio::time::timeout(Duration::from_secs(10), producer)
+        .await
+        .expect("producer timed out under bounded apply backpressure")
+        .expect("producer task must not panic");
+    let received = tokio::time::timeout(Duration::from_secs(10), consumer)
+        .await
+        .expect("consumer timed out under bounded apply backpressure")
+        .expect("consumer task must not panic");
+
+    for task in follower_drainers {
+        task.abort();
+    }
+
     assert_eq!(
         received, count,
         "all {count} entries must be delivered, got {received}"

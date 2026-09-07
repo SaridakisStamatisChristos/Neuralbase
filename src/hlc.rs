@@ -88,6 +88,19 @@ impl HlcClock {
         *cur = advance(*cur, wall);
         *cur
     }
+
+    /// Observe a timestamp that has already been ordered by a replicated state
+    /// machine. Unlike `update`, this performs no local-wall-clock skew check:
+    /// the timestamp is not an untrusted remote clock sample; it is committed
+    /// data that every node must incorporate identically. The next `tick()` is
+    /// therefore guaranteed to be strictly greater than the committed value.
+    pub fn observe_committed(&self, committed: HlcTimestamp) -> HlcTimestamp {
+        let mut cur = self.inner.lock().unwrap();
+        if committed > *cur {
+            *cur = committed;
+        }
+        *cur
+    }
 }
 
 impl HlcClock {
@@ -186,6 +199,18 @@ mod tests {
             logical: 0,
         };
         assert!(clock.update(far_future).is_err());
+    }
+
+    #[test]
+    fn observe_committed_does_not_consult_wall_clock() {
+        let clock = HlcClock::new(1);
+        let committed = HlcTimestamp {
+            wall_ms: HlcTimestamp::MAX.wall_ms - 10,
+            logical: 7,
+        };
+        assert_eq!(clock.observe_committed(committed), committed);
+        assert_eq!(clock.now(), committed);
+        assert!(clock.tick() > committed);
     }
 
     #[test]

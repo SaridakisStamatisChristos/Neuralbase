@@ -2,11 +2,33 @@
 
 All notable user-visible changes to NeuralBase are recorded here.
 
-NeuralBase is currently a **pre-1.0 experimental project**. The crate version is `0.1.0`; no historical development-session label should be interpreted as a published stable release.
+NeuralBase is currently a **pre-1.0 experimental project**. The crate version is `0.1.0`; no development-session label should be interpreted as a published stable release.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) where practical.
 
 ## [Unreleased]
+
+### Fixed-membership replicated table mutations
+
+- Added a versioned deterministic binary mutation format for persistent table `CREATE TABLE`, `DROP TABLE`, `INSERT`, `UPDATE`, and `DELETE`.
+- Added canonical DML key ordering and rejection of ambiguous/non-canonical command encodings.
+- Added leader-side concrete `UPDATE`/`DELETE` materialization so followers apply exact row/key effects rather than re-evaluating predicates.
+- Added a current-term readiness barrier before persistent mutation binding/materialization after election.
+- Routed clustered persistent table mutations through the Raft leader; followers reject writes before proposal instead of mutating local RocksDB.
+- Changed normal Raft client acknowledgement so success waits for quorum commit and confirmed state-machine apply.
+- Added deterministic RocksDB state-machine apply with atomic SQL effect + durable replay marker and restart-safe HLC recovery.
+- Added RocksDB-backed Raft stable storage and fail-stop handling of required persistence load/save failures.
+- Added injected persistence/apply failure tests that require no false client success.
+- Added a three-process PostgreSQL/Raft integration test with independent RocksDB directories covering convergence, leader loss/re-election, killed-node catch-up, full-cluster restart, and a write raced against leader kill.
+- Replicated-SQL mode now rejects legacy opaque Raft compaction/snapshot state until a SQL-aware snapshot/bootstrap format exists.
+
+### Important remaining boundaries
+
+- User/auth `CREATE USER`, `ALTER USER`, and `DROP USER` remain per-node.
+- Reads remain local; arbitrary follower reads are not claimed linearizable.
+- Raft membership remains fixed from an operator/deployment perspective; HPA-driven scaling is still rejected.
+- SQL-aware snapshot/bootstrap, replacement-node recovery, backup/restore, and disaster-recovery workflows are not implemented.
+- These changes do **not** make NeuralBase production-ready or justify a general production-HA claim.
 
 ### Documentation and repository presentation
 
@@ -21,6 +43,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) wher
 ### CI maintenance
 
 - Updated GitHub `checkout` and `cache` actions to Node 24-compatible v5 releases.
+- CI gates core tests, rustfmt/Clippy with warnings denied, confidence assertions, adversarial suites, PostgreSQL 16 TPC-H Q1-Q22 reference validation, Helm rendering, auth/TLS chart rendering, and unsafe fixed-membership HPA rejection.
 
 ## [0.1.0] — development baseline
 
@@ -55,6 +78,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) wher
 ### Evidence and boundaries
 
 - Core, lint, confidence, adversarial, TPC-H reference, and deployment-manifest CI gates.
-- Explicit documentation that SQL mutations are **not yet replicated through Raft** and automatic replicated SQL failover is not implemented.
+- At this baseline, SQL mutations were local-only and automatic replicated SQL failover was not implemented.
 
 [Unreleased]: https://github.com/SaridakisStamatisChristos/Neuralbase/compare/main...HEAD

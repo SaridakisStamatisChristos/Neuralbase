@@ -1,6 +1,6 @@
 # NeuralBase development runbook
 
-This runbook covers the checked-in development topology. It is not a production disaster-recovery guide.
+This runbook covers the checked-in development/fixed-membership topology. It is not a production disaster-recovery guide.
 
 ## Single-node start
 
@@ -17,7 +17,9 @@ Smoke query:
 psql -h 127.0.0.1 -p 5432 -U neuralbase -d neuralbase -c "SELECT 1"
 ```
 
-## Three-process development topology
+Without `NEURALBASE_NODE_ID`, persistent table mutations use the local single-node path.
+
+## Three-process fixed-membership topology
 
 ```bash
 docker compose up --build -d --wait
@@ -25,8 +27,16 @@ docker compose up --build -d --wait
 
 SQL endpoints are exposed on ports `5432`, `5433`, and `5434`.
 
+Persistent table `CREATE`, `DROP`, `INSERT`, `UPDATE`, and `DELETE` are replicated through the elected Raft leader to independent per-node RocksDB stores.
+
 > [!WARNING]
-> This topology has real Raft transport/election behavior, but SQL data remains local to each node. Do not use another SQL endpoint as an assumed failover replica.
+> Writes are leader-directed. A follower rejects a persistent table mutation before proposal rather than forwarding it. Reads are local and may lag committed state, so an arbitrary follower endpoint is not a linearizable read-after-write endpoint.
+
+## Finding the write path
+
+A client may probe nodes for a persistent table write. Followers return SQLSTATE `25006` and include the known leader ID when available.
+
+An explicit follower rejection is safe to redirect/retry because no proposal occurred. Do **not** blindly retry a non-idempotent mutation after a timeout/error that occurred after submission to a leader; that outcome can be uncertain.
 
 ## Health and diagnostics
 
@@ -59,16 +69,31 @@ Stop the Compose topology with:
 docker compose down
 ```
 
-For process-level Raft tests, use the engine's graceful shutdown path rather than relying on a full apply channel to drain indefinitely; shutdown is designed to interrupt apply-channel backpressure.
+Raft confirmed-apply delivery is bounded and shutdown-interruptible. Graceful shutdown attempts leader transfer before the configured drain period.
 
 ## Persistent data
 
-`NEURALBASE_DB_PATH` must refer to writable persistent storage when restart durability is required. `NEURALBASE_USERS_FILE` must also be writable for runtime user DDL.
+Clustered startup requires `NEURALBASE_DB_PATH`/`DB_PATH`. Each node must use writable persistent storage for its own RocksDB directory. `NEURALBASE_USERS_FILE` must also be writable for runtime user DDL.
 
 In Kubernetes/Helm, a Secret may seed users but the live registry belongs on writable persistent storage.
 
-## Known incident boundary
+## Tested recovery path
 
-A healthy Raft quorum does not currently imply replicated SQL data. If one node's local RocksDB is lost, the current system cannot reconstruct that SQL state from peer SQL stores through the Raft log.
+The process integration suite exercises:
 
-See `docs/DEPLOYMENT.md`, `docs/DISTRIBUTED.md`, and `ROADMAP.md` for the operational path required before HA claims are appropriate.
+- convergence of table mutations across three independent stores;
+- elected-leader kill and re-election;
+- writes through the new leader;
+- restart/catch-up of the killed node;
+- full-cluster restart from persisted RocksDB/Raft state;
+- a write raced against leader kill, with the guarantee that client-observed success remains recoverable.
+
+## Recovery boundary
+
+Do not confuse ordinary persisted restart/catch-up with replacement-node bootstrap.
+
+Replicated-SQL mode intentionally rejects legacy opaque Raft snapshots/compaction because NeuralBase does not yet have a SQL-aware snapshot capable of reconstructing catalog/data state on a fresh replacement node. If a node permanently loses its RocksDB state, there is no documented operator-safe snapshot/bootstrap/node-replacement procedure yet.
+
+Authentication/user mutations also remain per-node, membership is fixed, and backup/restore/disaster-recovery procedures are still open work.
+
+See `docs/DEPLOYMENT.md`, `docs/DISTRIBUTED.md`, `CONFIDENCE.md`, and `ROADMAP.md` before making stronger HA claims.

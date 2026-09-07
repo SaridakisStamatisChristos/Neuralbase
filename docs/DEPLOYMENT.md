@@ -1,10 +1,8 @@
 # Deployment
 
-NeuralBase ships deployment assets for development, integration testing, and architecture evaluation. They are not yet a production-HA database deployment because SQL storage is not replicated through Raft.
+NeuralBase ships deployment assets for development, integration testing, and architecture evaluation. Configured fixed-membership clusters replicate persistent table mutations through Raft, but the manifests are **not** a production-HA database deployment.
 
 ## Single process
-
-Build and run:
 
 ```bash
 cargo build --release --locked
@@ -18,25 +16,37 @@ Defaults:
 - Raft: disabled unless `NEURALBASE_NODE_ID` is configured
 - authentication: optional/configuration-dependent
 
+Without `NEURALBASE_NODE_ID`, persistent table DDL/DML uses the local single-node storage path.
+
+## Clustered startup requirements
+
+Setting `NEURALBASE_NODE_ID` enables the replicated table-mutation runtime and changes the durability prerequisites:
+
+- durable `NEURALBASE_DB_PATH`/`DB_PATH` is required;
+- RocksDB open failure prevents a usable clustered runtime rather than silently creating an authoritative in-memory cluster;
+- persisted catalog hydration failure aborts clustered startup;
+- persisted Raft state is loaded from RocksDB;
+- required Raft persistence load/save failure fail-stops the node.
+
 ## Environment reference
 
 | Variable | Typical/default behavior | Purpose |
 |---|---|---|
 | `NEURALBASE_LISTEN_ADDR` | `0.0.0.0:5432` | SQL listener |
-| `NEURALBASE_DB_PATH` | unset | RocksDB directory for persistent local SQL state |
+| `NEURALBASE_DB_PATH` | unset | RocksDB directory; required when `NEURALBASE_NODE_ID` is set |
 | `NEURALBASE_METRICS_PORT` | `9090` | Prometheus listener |
-| `NEURALBASE_NODE_ID` | unset | Logical Raft ID; setting it enables Raft startup |
+| `NEURALBASE_NODE_ID` | unset | Logical Raft ID; enables clustered replicated table mutations |
 | `NEURALBASE_RAFT_ADDR` | `0.0.0.0:7001` | Local Raft transport bind address |
-| `NEURALBASE_PEERS` | empty | Peer logical-ID/address map |
+| `NEURALBASE_PEERS` | empty | Fixed peer logical-ID/address map |
 | `NEURALBASE_RAFT_ELECTION_TIMEOUT_MS` | `150` | Base election timeout |
 | `NEURALBASE_RAFT_TLS` | false | Select feature-gated TLS Raft transport |
-| `NEURALBASE_USERS_FILE` | `users.json` | Persistent per-node credential registry |
+| `NEURALBASE_USERS_FILE` | `users.json` | Persistent **per-node** credential registry |
 | `NEURALBASE_AUTH_REQUIRED` | false unless enabled | Require client authentication |
 | `NEURALBASE_MAX_CONNECTIONS` | engine default | Global connection admission limit |
 | `NEURALBASE_MAX_CONNECTIONS_PER_IP` | engine default | Per-IP connection admission limit |
 | `NEURALBASE_MAX_CONNECTIONS_PER_USER` | optional/unlimited unless set | Per-user admission limit |
 
-Use `.env.example` as a safe starting template. Legacy unprefixed aliases remain in selected code paths for compatibility, but new configurations should use canonical names.
+Use `.env.example` as a starting point. Legacy unprefixed aliases remain in selected code paths for compatibility.
 
 ## Docker Compose
 
@@ -44,7 +54,7 @@ Use `.env.example` as a safe starting template. Legacy unprefixed aliases remain
 docker compose up --build -d --wait
 ```
 
-The Compose file starts a fixed three-node development topology with explicit Raft peer mappings and per-node persistent volumes.
+The Compose file starts a fixed three-node topology with explicit Raft peer mappings and per-node persistent volumes.
 
 SQL ports:
 
@@ -52,52 +62,38 @@ SQL ports:
 - node2: `5433`
 - node3: `5434`
 
-This topology validates real multi-process transport/election behavior. It does **not** mirror SQL rows between volumes.
+Each node owns an independent RocksDB database. Persistent table `CREATE`, `DROP`, `INSERT`, `UPDATE`, and `DELETE` are replicated as deterministic Raft commands; the volumes are not shared storage.
 
-## Kubernetes
+A client connected to a follower receives a write rejection rather than local mutation. The client must direct the mutation to the elected leader.
 
-The raw `k8s/` manifests use a StatefulSet and headless service. StatefulSet pod names provide stable logical node identities, while headless-service DNS provides connectable Raft addresses.
+## Read behavior
 
-The live user registry resides on writable persistent storage. An optional Secret is treated as an initial seed, not mounted over the live registry read-only.
+Reads are local to the connected process. This phase does not provide a linearizable follower-read protocol, so follower reads may lag until committed entries are learned/applied locally.
 
-The raw topology intentionally does not include an HPA manifest.
+Do not place a generic load balancer in front of all SQL endpoints and assume arbitrary read-after-write or write routing semantics. An operator/client layer must understand leader-directed writes and the selected read-consistency policy.
 
-## Helm
+## Kubernetes and Helm
 
-The chart lives at `helm/neuralbase/`.
+The raw `k8s/` manifests and Helm chart use StatefulSet/fixed-membership assumptions. Stable pod identity maps naturally to logical Raft identity and persistent volumes keep each node's RocksDB state.
 
-Typical validation:
+The chart validates:
 
 ```bash
 helm lint helm/neuralbase
 helm template neuralbase helm/neuralbase
 ```
 
-Authentication-enabled render:
+Authentication and TLS render paths are also exercised in CI.
 
-```bash
-helm template neuralbase helm/neuralbase \
-  --set config.authRequired=true \
-  --set auth.existingSecret=neuralbase-users
-```
-
-TLS-enabled render:
-
-```bash
-helm template neuralbase helm/neuralbase \
-  --set tls.enabled=true \
-  --set tls.existingSecret=neuralbase-tls
-```
-
-The chart rejects automatic HPA enablement because fixed Raft membership cannot safely infer membership changes from replica scaling.
-
-The PodDisruptionBudget derives a majority requirement from `replicaCount`.
+Automatic HPA enablement is rejected because changing `replicaCount` or StatefulSet size does not perform a coordinated Raft membership change. The PodDisruptionBudget is an availability aid that preserves a configured majority; it is not a membership controller.
 
 ## Authentication
 
-When authentication is enabled, seed credentials may be supplied through the deployment Secret mechanism. Runtime `CREATE USER`, `ALTER USER`, and `DROP USER` write the live registry to `NEURALBASE_USERS_FILE`.
+Seed credentials may be supplied by the deployment Secret mechanism when authentication is enabled. Runtime `CREATE USER`, `ALTER USER`, and `DROP USER` write the live registry to `NEURALBASE_USERS_FILE`.
 
-Because auth changes are not yet Raft-replicated, operators must not assume a user created on one node automatically exists on another.
+Authentication mutations remain per-node. A user created on one node does not automatically become cluster-wide simply because table data is replicated.
+
+Do not place the writable live user-registry path directly on a read-only Secret mount.
 
 ## TLS
 
@@ -107,30 +103,32 @@ Build with:
 cargo build --release --locked --features tls
 ```
 
-SQL TLS configuration supports the environment names documented by `src/tls.rs`, including `TLS_ENABLED`, certificate/key path aliases, and `NEURALBASE_TLS_*` certificate settings. Node-to-node Raft TLS is selected with `NEURALBASE_RAFT_TLS=1` when the binary includes the `tls` feature.
+SQL TLS uses the certificate/key settings documented by `src/tls.rs`. Node-to-node Raft TLS is selected with `NEURALBASE_RAFT_TLS=1` when the binary includes the `tls` feature.
 
 See [THREAT_MODEL.md](THREAT_MODEL.md) before treating TLS/auth defaults as a production security profile.
 
-## Persistence
+## Persistence and recovery boundary
 
-Each process owns its local RocksDB path and local credential registry. For containers, both must live on writable persistent storage if restart durability is required.
+Each process owns local RocksDB and a local credential registry. Persistent table mutations and Raft stable state survive the tested process kill/re-election/full-cluster restart path.
 
-Do not place a writable live user-registry path directly on a read-only Secret mount.
+However, replicated-SQL mode intentionally rejects legacy opaque Raft snapshot/compaction state. NeuralBase does not yet have a SQL-aware snapshot/bootstrap format for replacement nodes or safe log truncation.
+
+Backup/restore, disaster recovery, and replacement-node procedures are therefore still release boundaries.
 
 ## Scaling
 
-Increasing replicas is not an operator-safe membership-change workflow today.
+Increasing replicas is not an operator-safe membership-change workflow.
 
-Before dynamic scaling is supported, NeuralBase needs coordinated consensus membership changes, address discovery/reconciliation, state catch-up, and explicit rollback/recovery behavior.
+Before dynamic scaling is supported, NeuralBase needs coordinated consensus membership changes, state catch-up/bootstrap, address discovery/reconciliation, and explicit rollback/recovery behavior.
 
 ## Operational readiness boundary
 
-The deployment manifests demonstrate packaging and topology correctness. Production readiness additionally requires at minimum:
+Current manifests demonstrate packaging plus a tested fixed-membership replicated table-mutation topology. Production readiness additionally requires at minimum:
 
-- replicated SQL state-machine semantics;
-- fail-closed consensus persistence;
-- process crash/restart recovery tests;
-- proven leader failover with acknowledged SQL state;
+- SQL-aware snapshot/bootstrap and replacement-node recovery;
 - coordinated membership operations;
+- an explicit replicated/strongly consistent identity design;
+- defined read-consistency modes and appropriate routing;
+- backup/restore and disaster-recovery procedures;
 - security review for the target environment;
-- backup/restore and disaster-recovery procedures.
+- broader partition/storage-fault/upgrade validation.

@@ -12,7 +12,7 @@ fn confidence_yaml_is_valid_yaml() {
     assert!(parsed.get("artifacts").is_some());
 }
 
-/// Internal confidence score for the scoped local engine + Raft subsystem.
+/// Internal confidence score for the scoped engine + replicated-table path.
 /// This score is deliberately not a production-readiness declaration.
 #[test]
 fn scoped_system_confidence_meets_regression_floor() {
@@ -60,19 +60,44 @@ fn critical_local_execution_artifacts_stay_above_floor() {
 }
 
 #[test]
-fn confidence_ledger_cannot_claim_replicated_sql_or_production_ready() {
+fn replicated_sql_claim_is_narrow_and_production_readiness_stays_false() {
     let parsed = load_confidence();
+    let system = &parsed["system"];
 
     assert_eq!(
-        parsed["system"]["production_ready"].as_bool(),
+        system["production_ready"].as_bool(),
         Some(false),
-        "NeuralBase must not be marked production-ready while replicated SQL is absent"
+        "replicated table mutations do not make NeuralBase production-ready"
     );
     assert_eq!(
-        parsed["system"]["distributed_sql_replication"].as_bool(),
-        Some(false),
-        "distributed_sql_replication must remain false until SQL DDL/DML is committed and applied through Raft"
+        system["distributed_sql_replication"].as_bool(),
+        Some(true),
+        "fixed-membership persistent table mutations are now exercised through Raft"
     );
+
+    let scope = &system["replication_scope"];
+    assert_eq!(scope["fixed_membership"].as_bool(), Some(true));
+    assert_eq!(scope["follower_writes"].as_str(), Some("reject"));
+    assert_eq!(scope["follower_reads_linearizable"].as_bool(), Some(false));
+    assert_eq!(scope["auth_replication"].as_bool(), Some(false));
+    assert_eq!(scope["dynamic_membership"].as_bool(), Some(false));
+    assert_eq!(scope["sql_snapshots"].as_bool(), Some(false));
+    assert_eq!(scope["production_ha"].as_bool(), Some(false));
+
+    let ddl = scope["table_ddl"]
+        .as_sequence()
+        .expect("replication_scope.table_ddl must be a list");
+    assert_eq!(ddl.len(), 2);
+    assert_eq!(ddl[0].as_str(), Some("create_table"));
+    assert_eq!(ddl[1].as_str(), Some("drop_table"));
+
+    let dml = scope["table_dml"]
+        .as_sequence()
+        .expect("replication_scope.table_dml must be a list");
+    assert_eq!(dml.len(), 3);
+    assert_eq!(dml[0].as_str(), Some("insert"));
+    assert_eq!(dml[1].as_str(), Some("update"));
+    assert_eq!(dml[2].as_str(), Some("delete"));
 
     let artifacts = parsed["artifacts"]
         .as_sequence()
@@ -81,5 +106,8 @@ fn confidence_ledger_cannot_claim_replicated_sql_or_production_ready() {
         .iter()
         .find(|item| item["artifact"].as_str() == Some("sql_replication"))
         .expect("sql_replication boundary must be explicit");
-    assert_eq!(replication["status"].as_str(), Some("not_implemented"));
+    assert_eq!(
+        replication["status"].as_str(),
+        Some("fixed_membership_table_mutations_tested")
+    );
 }

@@ -2,10 +2,16 @@ use neuralbase::catalog::{Catalog, InMemoryCatalog, MutableCatalog};
 use neuralbase::consensus::raft::RaftTaskHandle;
 #[cfg(feature = "tls")]
 use neuralbase::consensus::TlsTcpTransport;
-use neuralbase::consensus::{RaftNode, TcpTransport, Transport};
+use neuralbase::consensus::{
+    ClientCommand, CommittedEntry, FailClosedPersistenceStore, RaftNode, RaftPersistenceStore,
+    RaftShared, TcpTransport, Transport, APPLY_CHANNEL_CAPACITY,
+};
 use neuralbase::gc::GarbageCollector;
 use neuralbase::hlc::HlcClock;
 use neuralbase::mvcc::TransactionManager;
+use neuralbase::raft_persistence::RocksDbRaftPersistenceStore;
+use neuralbase::replicated_gateway::ReplicatedSqlGateway;
+use neuralbase::replicated_state_machine::ReplicatedSqlStateMachine;
 use neuralbase::rocksdb_catalog;
 use neuralbase::server;
 use neuralbase::storage::StorageEngine;
@@ -16,6 +22,7 @@ use std::io;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio::sync::{mpsc, Mutex};
 
 const DEFAULT_RAFT_PORT: u16 = 7001;
 
@@ -61,17 +68,6 @@ fn implicit_peer_id(raw: &str) -> String {
     raw.to_string()
 }
 
-/// Parse PEERS into Raft logical IDs and their connectable socket addresses.
-///
-/// Preferred production form:
-///   NEURALBASE_PEERS="node2=node2:7001,node3=node3:7001"
-///
-/// Backward-compatible shorthand is also accepted:
-///   PEERS="node2,node3"       -> node2:7001, node3:7001
-///   PEERS="node2:7001,node3:7001"
-///
-/// Explicit id=address form is required whenever NODE_ID differs from the
-/// connectable host name (for example Kubernetes pod name vs headless FQDN).
 fn parse_peer_config(
     raw: &str,
     node_id: &str,
@@ -122,22 +118,114 @@ fn raft_tls_enabled() -> bool {
         .unwrap_or(false)
 }
 
+struct RaftRuntime {
+    client_tx: mpsc::Sender<ClientCommand>,
+    shared: Arc<Mutex<RaftShared>>,
+    handle: Option<RaftTaskHandle>,
+    apply_task: tokio::task::JoinHandle<()>,
+}
+
+impl RaftRuntime {
+    fn sql_gateway(
+        &self,
+        engine: Arc<StorageEngine>,
+        clock: Arc<HlcClock>,
+    ) -> Arc<ReplicatedSqlGateway> {
+        Arc::new(ReplicatedSqlGateway::new(
+            self.client_tx.clone(),
+            Arc::clone(&self.shared),
+            engine,
+            clock,
+        ))
+    }
+
+    async fn request_leader_transfer(&self) -> Result<String, String> {
+        match self.handle.as_ref() {
+            Some(handle) => handle.request_leader_transfer().await,
+            None => Err("Raft runtime already stopped".to_string()),
+        }
+    }
+
+    async fn shutdown(mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.shutdown().await;
+        }
+        self.apply_task.abort();
+        let _ = self.apply_task.await;
+    }
+}
+
 fn spawn_raft<T: Transport>(
     node_id: String,
     peers: Vec<String>,
     transport: Arc<T>,
     election_timeout_ms: u64,
-) -> RaftTaskHandle {
-    let mut node = RaftNode::new(node_id, peers, transport);
+    engine: Arc<StorageEngine>,
+    catalog: Arc<InMemoryCatalog>,
+    clock: Arc<HlcClock>,
+) -> io::Result<RaftRuntime> {
+    let state_machine = Arc::new(
+        ReplicatedSqlStateMachine::new(engine.clone(), catalog, clock).map_err(|error| {
+            io::Error::other(format!("initialize replicated SQL state machine: {error}"))
+        })?,
+    );
+
+    let raw_store: Arc<dyn RaftPersistenceStore> =
+        Arc::new(RocksDbRaftPersistenceStore::new(engine));
+    let strict_store: Arc<dyn RaftPersistenceStore> =
+        Arc::new(FailClosedPersistenceStore::new(raw_store));
+
+    let (apply_tx, mut apply_rx) = mpsc::channel::<CommittedEntry>(APPLY_CHANNEL_CAPACITY);
+    let apply_state_machine = Arc::clone(&state_machine);
+    let apply_task = tokio::spawn(async move {
+        while let Some(committed) = apply_rx.recv().await {
+            let result = apply_state_machine
+                .apply_log_entry(&committed.entry)
+                .map(|_| ())
+                .map_err(|error| error.to_string());
+            let failed = result.is_err();
+            let _ = committed.completion.send(result);
+            if failed {
+                break;
+            }
+        }
+    });
+
+    let mut node = RaftNode::new(node_id, peers, transport)
+        .with_persistence(strict_store)
+        .with_confirmed_apply_tx(apply_tx);
     node.set_election_timeout_ms(election_timeout_ms);
-    let (_cmd_tx, _shared, handle) = node.spawn();
-    handle
+    let (client_tx, shared, handle) = node.spawn();
+
+    Ok(RaftRuntime {
+        client_tx,
+        shared,
+        handle: Some(handle),
+        apply_task,
+    })
 }
 
-async fn start_raft_node() -> io::Result<Option<RaftTaskHandle>> {
+async fn start_raft_node(
+    storage_engine: Option<Arc<StorageEngine>>,
+    catalog: Arc<InMemoryCatalog>,
+    clock: Option<Arc<HlcClock>>,
+) -> io::Result<Option<RaftRuntime>> {
     let Some(node_id) = read_node_id() else {
         return Ok(None);
     };
+
+    let engine = storage_engine.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "NEURALBASE_NODE_ID requires NEURALBASE_DB_PATH/DB_PATH for durable replicated SQL",
+        )
+    })?;
+    let clock = clock.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "clustered startup requires a durable-storage HLC",
+        )
+    })?;
 
     let raft_addr = env_with_legacy("NEURALBASE_RAFT_ADDR", "RAFT_ADDR")
         .unwrap_or_else(|| "0.0.0.0:7001".to_string());
@@ -156,7 +244,7 @@ async fn start_raft_node() -> io::Result<Option<RaftTaskHandle>> {
         bind = %raft_addr,
         peer_count = peers.len(),
         raft_tls = raft_tls_enabled(),
-        "starting Raft transport"
+        "starting durable Raft transport and replicated SQL apply loop"
     );
 
     #[cfg(feature = "tls")]
@@ -165,12 +253,16 @@ async fn start_raft_node() -> io::Result<Option<RaftTaskHandle>> {
             TlsTcpTransport::listen_with_peers(node_id.clone(), &raft_addr, peer_addrs.clone())
                 .await?,
         );
-        return Ok(Some(spawn_raft(
+        return spawn_raft(
             node_id,
             peers,
             transport,
             election_timeout_ms,
-        )));
+            engine,
+            catalog,
+            clock,
+        )
+        .map(Some);
     }
 
     #[cfg(not(feature = "tls"))]
@@ -183,31 +275,31 @@ async fn start_raft_node() -> io::Result<Option<RaftTaskHandle>> {
 
     let transport =
         Arc::new(TcpTransport::listen_with_peers(node_id.clone(), &raft_addr, peer_addrs).await?);
-    Ok(Some(spawn_raft(
+    spawn_raft(
         node_id,
         peers,
         transport,
         election_timeout_ms,
-    )))
+        engine,
+        catalog,
+        clock,
+    )
+    .map(Some)
 }
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    // ── Telemetry ──────────────────────────────────────────────────────────
     let metrics_port: u16 = env_with_legacy("NEURALBASE_METRICS_PORT", "METRICS_PORT")
         .and_then(|v| v.parse().ok())
         .unwrap_or(9090);
     telemetry::init(metrics_port);
 
-    // Documented NEURALBASE_* names are authoritative. Legacy short names are
-    // accepted so existing docker-compose and local scripts remain compatible.
     let listen_addr = env_with_legacy("NEURALBASE_LISTEN_ADDR", "LISTEN_ADDR")
         .unwrap_or_else(|| "0.0.0.0:5432".to_string());
+    let clustered = read_node_id().is_some();
 
-    // ── Catalog ────────────────────────────────────────────────────────────
     let catalog: Arc<InMemoryCatalog> = Arc::new(InMemoryCatalog::with_tpch_all_tables());
 
-    // ── Storage engine (optional — present only when DB_PATH is set) ───────
     let storage_engine = if let Some(db_path) = env_with_legacy("NEURALBASE_DB_PATH", "DB_PATH") {
         match StorageEngine::open(Path::new(&db_path)) {
             Ok(engine) => {
@@ -224,7 +316,6 @@ async fn main() -> io::Result<()> {
         None
     };
 
-    // ── Startup catalog hydration from RocksDB ─────────────────────────────
     if let Some(engine) = &storage_engine {
         let rdb_catalog = rocksdb_catalog::RocksDbCatalog::new(engine.clone());
         match rdb_catalog.load_all() {
@@ -233,17 +324,27 @@ async fn main() -> io::Result<()> {
                     catalog.create_table(schema);
                 }
             }
-            Err(e) => tracing::warn!(error = %e, "Failed to restore persisted schemas"),
+            Err(error) if clustered => {
+                return Err(io::Error::other(format!(
+                    "clustered startup cannot hydrate persisted SQL catalog: {error}"
+                )));
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "Failed to restore persisted schemas");
+            }
         }
     }
 
-    // ── Transaction manager ────────────────────────────────────────────────
-    let txn_mgr = storage_engine.as_ref().map(|engine| {
-        let clock = Arc::new(HlcClock::new(500));
-        Arc::new(TransactionManager::new(engine.clone(), clock))
-    });
+    let hlc_clock = storage_engine
+        .as_ref()
+        .map(|_| Arc::new(HlcClock::new(500)));
+    let txn_mgr = storage_engine
+        .as_ref()
+        .zip(hlc_clock.as_ref())
+        .map(|(engine, clock)| {
+            Arc::new(TransactionManager::new(engine.clone(), Arc::clone(clock)))
+        });
 
-    // ── GC ─────────────────────────────────────────────────────────────────
     let _gc_handle = txn_mgr
         .as_ref()
         .zip(storage_engine.as_ref())
@@ -255,7 +356,6 @@ async fn main() -> io::Result<()> {
             gc.start(5000)
         });
 
-    // ── Storage executor ───────────────────────────────────────────────────
     let dml_exec = txn_mgr
         .as_ref()
         .zip(storage_engine.as_ref())
@@ -267,11 +367,9 @@ async fn main() -> io::Result<()> {
             ))
         });
 
-    // ── SQL listener ───────────────────────────────────────────────────────
     let listener = TcpListener::bind(&listen_addr).await?;
     tracing::info!(addr = %listen_addr, "NeuralBase listening");
 
-    // ── Client TLS (optional) ──────────────────────────────────────────────
     #[cfg(feature = "tls")]
     let tls_acceptor: server::TlsAcceptorOpt = match neuralbase::tls::acceptor::build_acceptor() {
         Ok(acc) => acc,
@@ -283,18 +381,33 @@ async fn main() -> io::Result<()> {
     #[cfg(not(feature = "tls"))]
     let tls_acceptor: server::TlsAcceptorOpt = None;
 
-    // ── Real Raft transport ────────────────────────────────────────────────
-    let raft_handle = start_raft_node().await?;
+    let mut raft_runtime = start_raft_node(
+        storage_engine.clone(),
+        Arc::clone(&catalog),
+        hlc_clock.clone(),
+    )
+    .await?;
 
-    // ── Run server with graceful shutdown ─────────────────────────────────
+    let replicated_sql_gateway = match (
+        raft_runtime.as_ref(),
+        storage_engine.as_ref(),
+        hlc_clock.as_ref(),
+    ) {
+        (Some(runtime), Some(engine), Some(clock)) => {
+            Some(runtime.sql_gateway(Arc::clone(engine), Arc::clone(clock)))
+        }
+        _ => None,
+    };
+    server::configure_replicated_sql_gateway(replicated_sql_gateway);
+
     tokio::select! {
         result = server::run(listener, catalog, dml_exec, tls_acceptor, storage_engine) => {
             result
         }
         _ = shutdown_signal() => {
-            if let Some(ref handle) = raft_handle {
+            if let Some(runtime) = raft_runtime.as_ref() {
                 eprintln!("[shutdown] attempting leader transfer before drain");
-                match handle.request_leader_transfer().await {
+                match runtime.request_leader_transfer().await {
                     Ok(new_leader) => eprintln!("[shutdown] leadership transferred to {new_leader}"),
                     Err(e) => eprintln!("[shutdown] transfer skipped or failed: {e}"),
                 }
@@ -302,13 +415,16 @@ async fn main() -> io::Result<()> {
 
             eprintln!("[shutdown] waiting up to 30s for in-flight queries to drain");
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            server::configure_replicated_sql_gateway(None);
+            if let Some(runtime) = raft_runtime.take() {
+                runtime.shutdown().await;
+            }
             eprintln!("[shutdown] drain complete -- exiting");
             Ok(())
         }
     }
 }
 
-/// Wait for a shutdown signal (Ctrl+C on all platforms, SIGTERM on Unix).
 async fn shutdown_signal() {
     let ctrl_c = tokio::signal::ctrl_c();
     #[cfg(unix)]
