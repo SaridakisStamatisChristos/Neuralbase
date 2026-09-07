@@ -301,7 +301,13 @@ impl ReplicatedSqlSnapshotManager {
         writer(batch)?;
 
         // Publish volatile state only after the durable replacement succeeded.
-        self.catalog.replace_all(schemas);
+        // Runtime catalogs always start with NeuralBase's built-in TPC-H schemas;
+        // the logical snapshot contains only durable catalog entries. Rebuild the
+        // same baseline and overlay restored durable schemas so snapshot install
+        // cannot accidentally remove the built-ins from the serving catalog.
+        let mut runtime_schemas = InMemoryCatalog::with_tpch_all_tables().all_tables();
+        runtime_schemas.extend(schemas);
+        self.catalog.replace_all(runtime_schemas);
         if snapshot.metadata.latest_commit_ts != 0 {
             self.clock
                 .observe_committed(HlcTimestamp::from_u64(snapshot.metadata.latest_commit_ts));
@@ -555,6 +561,7 @@ mod tests {
         let (target_manager, _engine, catalog, clock) = manager_for(&target_dir);
         assert_eq!(target_manager.restore(&bytes).unwrap(), decoded.metadata);
         assert_eq!(catalog.get_table("items"), Some(schema()));
+        assert!(catalog.get_table("lineitem").is_some());
         assert_eq!(clock.now().to_u64(), decoded.metadata.latest_commit_ts);
         assert_eq!(target_manager.export(5, 2).unwrap(), bytes);
     }
