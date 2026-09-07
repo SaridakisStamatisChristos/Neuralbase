@@ -32,9 +32,23 @@ use crate::consensus::rpc::{LogEntry, NodeId};
 /// Invariant: `save` is called BEFORE the node replies to any RPC that
 /// depends on the saved state (term, vote, log entry).
 pub trait RaftPersistenceStore: Send + Sync {
-    /// Persist the full state + snapshot data atomically.
+    /// Persist the full state + active snapshot data atomically.
+    ///
+    /// Implementations that support `stage_snapshot` must atomically clear the
+    /// staged artifact when this publish succeeds. A crash may therefore leave
+    /// an unused staged snapshot, but can never leave a compacted active Raft
+    /// state without its corresponding active snapshot bytes.
     fn save(&self, state: &PersistentState, snapshot_data: &[u8]) -> Result<(), String>;
-    /// Load previously saved state.  Returns `None` on a fresh node.
+
+    /// Durably stage snapshot bytes before any persistent log-prefix truncation.
+    ///
+    /// SQL-aware compaction requires this operation. The default fails closed so
+    /// a persistence implementation cannot accidentally claim staging support.
+    fn stage_snapshot(&self, _snapshot_data: &[u8]) -> Result<(), String> {
+        Err("snapshot staging is not supported by this persistence store".to_string())
+    }
+
+    /// Load previously saved active state. Returns `None` on a fresh node.
     fn load(&self) -> Result<Option<(PersistentState, Vec<u8>)>, String>;
 }
 
@@ -45,7 +59,13 @@ pub trait RaftPersistenceStore: Send + Sync {
 ///
 /// Used by integration tests to verify restart-recovery behaviour.
 pub struct MemPersistenceStore {
-    inner: Mutex<Option<MemPersistedData>>,
+    inner: Mutex<MemPersistenceData>,
+}
+
+#[derive(Default)]
+struct MemPersistenceData {
+    active: Option<MemPersistedData>,
+    staged_snapshot: Option<Vec<u8>>,
 }
 
 struct MemPersistedData {
@@ -56,7 +76,7 @@ struct MemPersistedData {
 impl MemPersistenceStore {
     pub fn new() -> Self {
         Self {
-            inner: Mutex::new(None),
+            inner: Mutex::new(MemPersistenceData::default()),
         }
     }
 }
@@ -70,16 +90,24 @@ impl Default for MemPersistenceStore {
 impl RaftPersistenceStore for MemPersistenceStore {
     fn save(&self, state: &PersistentState, snapshot_data: &[u8]) -> Result<(), String> {
         let mut guard = self.inner.lock().map_err(|e| e.to_string())?;
-        *guard = Some(MemPersistedData {
+        guard.active = Some(MemPersistedData {
             state: state.clone(),
             snapshot_data: snapshot_data.to_vec(),
         });
+        guard.staged_snapshot = None;
+        Ok(())
+    }
+
+    fn stage_snapshot(&self, snapshot_data: &[u8]) -> Result<(), String> {
+        let mut guard = self.inner.lock().map_err(|e| e.to_string())?;
+        guard.staged_snapshot = Some(snapshot_data.to_vec());
         Ok(())
     }
 
     fn load(&self) -> Result<Option<(PersistentState, Vec<u8>)>, String> {
         let guard = self.inner.lock().map_err(|e| e.to_string())?;
         Ok(guard
+            .active
             .as_ref()
             .map(|d| (d.state.clone(), d.snapshot_data.clone())))
     }
@@ -370,5 +398,23 @@ mod tests {
         assert_eq!(loaded_ps.current_term, 7);
         assert_eq!(loaded_ps.last_log_index(), 1);
         assert_eq!(loaded_snap, b"snap");
+    }
+
+    #[test]
+    fn mem_persistence_publish_clears_staged_snapshot() {
+        let store = MemPersistenceStore::new();
+        store.stage_snapshot(b"candidate").unwrap();
+        assert_eq!(
+            store
+                .inner
+                .lock()
+                .unwrap()
+                .staged_snapshot
+                .as_deref(),
+            Some(b"candidate".as_slice())
+        );
+
+        store.save(&PersistentState::new(), b"active").unwrap();
+        assert!(store.inner.lock().unwrap().staged_snapshot.is_none());
     }
 }
