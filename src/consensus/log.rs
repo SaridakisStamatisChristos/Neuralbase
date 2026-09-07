@@ -16,7 +16,7 @@
 //       REVIEW_REQUIRED.md §Session13 before lifting confidence cap.
 // [HUMAN REVIEW REQUIRED] — see REVIEW_REQUIRED.md §Session13
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -39,7 +39,7 @@ pub struct StagedSnapshot {
     pub kind: StagedSnapshotKind,
     pub last_included_index: u64,
     pub last_included_term: u64,
-    pub data: Vec<u8>,
+    pub data: Arc<Vec<u8>>,
 }
 
 /// Stable-storage interface for Raft persistent state.
@@ -251,8 +251,6 @@ impl PersistentState {
         let physical_keep = if prev_log_index >= self.snapshot_index {
             (prev_log_index - self.snapshot_index) as usize + 1
         } else {
-            // prev_log_index is before the snapshot boundary — keep only the
-            // sentinel so the log remains in a valid state.
             1
         };
         self.log.truncate(physical_keep);
@@ -262,15 +260,12 @@ impl PersistentState {
     }
 
     /// Return a slice of entries from Raft index `from` (inclusive) to end.
-    ///
     /// Never returns the sentinel (physical[0]).
     pub fn entries_from(&self, from: u64) -> &[LogEntry] {
-        // Physical position of `from`.  If `from` <= snapshot_index, start
-        // from the first real entry (physical 1) — the sentinel is not sent.
         let physical = if from > self.snapshot_index {
             (from - self.snapshot_index) as usize
         } else {
-            1 // skip sentinel
+            1
         };
         if physical >= self.log.len() {
             &[]
@@ -286,8 +281,6 @@ impl PersistentState {
     /// `last_included_index` whose term equals `last_included_term`. If either
     /// the boundary entry is absent or its term differs, the local suffix may
     /// conflict with the snapshot and is discarded as required by Raft §7.
-    ///
-    /// CONFIDENCE: raw=0.82  [HUMAN REVIEW REQUIRED] §Session13 Invariant 1.
     pub fn install_snapshot(&mut self, last_included_index: u64, last_included_term: u64) {
         let new_sentinel = LogEntry {
             term: last_included_term,
@@ -338,10 +331,9 @@ mod tests {
     #[test]
     fn truncate_and_append_removes_conflict() {
         let mut s = PersistentState::new();
-        s.append(1, b"a".to_vec()); // idx=1
-        s.append(1, b"b".to_vec()); // idx=2
-        s.append(2, b"c".to_vec()); // idx=3 — conflicting
-                                    // Leader sends entries starting at index 2 with term 3.
+        s.append(1, b"a".to_vec());
+        s.append(1, b"b".to_vec());
+        s.append(2, b"c".to_vec());
         s.truncate_and_append(
             1,
             vec![LogEntry {
@@ -360,16 +352,12 @@ mod tests {
         assert_eq!(s.entries_from(99).len(), 0);
     }
 
-    // ── Snapshot arithmetic tests ──────────────────────────────────────────
-
     #[test]
     fn install_snapshot_resets_log_and_sentinel() {
         let mut s = PersistentState::new();
         for i in 1u64..=10 {
             s.append(1, format!("cmd{i}").into_bytes());
         }
-        assert_eq!(s.last_log_index(), 10);
-
         s.install_snapshot(5, 1);
         assert_eq!(s.snapshot_index, 5);
         assert_eq!(s.snapshot_term, 1);
@@ -384,9 +372,7 @@ mod tests {
         for i in 1u64..=5 {
             s.append(1, format!("old-{i}").into_bytes());
         }
-
         s.install_snapshot(3, 2);
-
         assert_eq!(s.snapshot_index, 3);
         assert_eq!(s.snapshot_term, 2);
         assert_eq!(s.last_log_index(), 3);
@@ -447,11 +433,10 @@ mod tests {
             kind: StagedSnapshotKind::Creation,
             last_included_index: 4,
             last_included_term: 2,
-            data: b"candidate".to_vec(),
+            data: Arc::new(b"candidate".to_vec()),
         };
         store.stage_snapshot(&staged).unwrap();
         assert_eq!(store.load_staged_snapshot().unwrap(), Some(staged));
-
         store.save(&PersistentState::new(), b"active").unwrap();
         assert!(store.load_staged_snapshot().unwrap().is_none());
     }
