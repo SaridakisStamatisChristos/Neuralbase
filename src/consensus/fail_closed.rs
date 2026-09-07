@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use super::log::{PersistentState, RaftPersistenceStore};
+use super::log::{PersistentState, RaftPersistenceStore, StagedSnapshot};
 
 /// Strict adapter for consensus-critical persistence.
 ///
@@ -35,10 +35,24 @@ impl RaftPersistenceStore for FailClosedPersistenceStore {
         }
     }
 
-    fn stage_snapshot(&self, snapshot_data: &[u8]) -> Result<(), String> {
-        match self.inner.stage_snapshot(snapshot_data) {
+    fn stage_snapshot(&self, snapshot: &StagedSnapshot) -> Result<(), String> {
+        match self.inner.stage_snapshot(snapshot) {
             Ok(()) => Ok(()),
             Err(error) => panic!("fatal Raft snapshot staging failure: {error}"),
+        }
+    }
+
+    fn load_staged_snapshot(&self) -> Result<Option<StagedSnapshot>, String> {
+        match self.inner.load_staged_snapshot() {
+            Ok(snapshot) => Ok(snapshot),
+            Err(error) => panic!("fatal staged Raft snapshot load failure: {error}"),
+        }
+    }
+
+    fn clear_staged_snapshot(&self) -> Result<(), String> {
+        match self.inner.clear_staged_snapshot() {
+            Ok(()) => Ok(()),
+            Err(error) => panic!("fatal staged Raft snapshot clear failure: {error}"),
         }
     }
 
@@ -53,37 +67,44 @@ impl RaftPersistenceStore for FailClosedPersistenceStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consensus::StagedSnapshotKind;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     struct FailingStore {
         fail_save: AtomicBool,
         fail_load: AtomicBool,
         fail_stage: AtomicBool,
+        fail_load_stage: AtomicBool,
+        fail_clear_stage: AtomicBool,
     }
 
     impl FailingStore {
-        fn save_failure() -> Self {
+        fn clean() -> Self {
             Self {
-                fail_save: AtomicBool::new(true),
+                fail_save: AtomicBool::new(false),
                 fail_load: AtomicBool::new(false),
                 fail_stage: AtomicBool::new(false),
+                fail_load_stage: AtomicBool::new(false),
+                fail_clear_stage: AtomicBool::new(false),
             }
+        }
+
+        fn save_failure() -> Self {
+            let store = Self::clean();
+            store.fail_save.store(true, Ordering::SeqCst);
+            store
         }
 
         fn load_failure() -> Self {
-            Self {
-                fail_save: AtomicBool::new(false),
-                fail_load: AtomicBool::new(true),
-                fail_stage: AtomicBool::new(false),
-            }
+            let store = Self::clean();
+            store.fail_load.store(true, Ordering::SeqCst);
+            store
         }
 
         fn stage_failure() -> Self {
-            Self {
-                fail_save: AtomicBool::new(false),
-                fail_load: AtomicBool::new(false),
-                fail_stage: AtomicBool::new(true),
-            }
+            let store = Self::clean();
+            store.fail_stage.store(true, Ordering::SeqCst);
+            store
         }
     }
 
@@ -96,9 +117,25 @@ mod tests {
             }
         }
 
-        fn stage_snapshot(&self, _snapshot_data: &[u8]) -> Result<(), String> {
+        fn stage_snapshot(&self, _snapshot: &StagedSnapshot) -> Result<(), String> {
             if self.fail_stage.load(Ordering::SeqCst) {
                 Err("injected stage failure".to_string())
+            } else {
+                Ok(())
+            }
+        }
+
+        fn load_staged_snapshot(&self) -> Result<Option<StagedSnapshot>, String> {
+            if self.fail_load_stage.load(Ordering::SeqCst) {
+                Err("injected staged-load failure".to_string())
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn clear_staged_snapshot(&self) -> Result<(), String> {
+            if self.fail_clear_stage.load(Ordering::SeqCst) {
+                Err("injected staged-clear failure".to_string())
             } else {
                 Ok(())
             }
@@ -110,6 +147,15 @@ mod tests {
             } else {
                 Ok(None)
             }
+        }
+    }
+
+    fn staged() -> StagedSnapshot {
+        StagedSnapshot {
+            kind: StagedSnapshotKind::Creation,
+            last_included_index: 1,
+            last_included_term: 1,
+            data: b"candidate".to_vec(),
         }
     }
 
@@ -126,7 +172,7 @@ mod tests {
     fn injected_snapshot_stage_failure_is_fail_closed() {
         let inner: Arc<dyn RaftPersistenceStore> = Arc::new(FailingStore::stage_failure());
         let strict = FailClosedPersistenceStore::new(inner);
-        strict.stage_snapshot(b"candidate").unwrap();
+        strict.stage_snapshot(&staged()).unwrap();
     }
 
     #[test]
