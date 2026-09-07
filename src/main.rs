@@ -11,6 +11,7 @@ use neuralbase::hlc::HlcClock;
 use neuralbase::mvcc::TransactionManager;
 use neuralbase::raft_persistence::RocksDbRaftPersistenceStore;
 use neuralbase::replicated_gateway::ReplicatedSqlGateway;
+use neuralbase::replicated_snapshot_hooks::ReplicatedSqlSnapshotHooks;
 use neuralbase::replicated_state_machine::ReplicatedSqlStateMachine;
 use neuralbase::rocksdb_catalog;
 use neuralbase::server;
@@ -165,13 +166,24 @@ fn spawn_raft<T: Transport>(
     clock: Arc<HlcClock>,
 ) -> io::Result<RaftRuntime> {
     let state_machine = Arc::new(
-        ReplicatedSqlStateMachine::new(engine.clone(), catalog, clock).map_err(|error| {
+        ReplicatedSqlStateMachine::new(
+            Arc::clone(&engine),
+            Arc::clone(&catalog),
+            Arc::clone(&clock),
+        )
+        .map_err(|error| {
             io::Error::other(format!("initialize replicated SQL state machine: {error}"))
         })?,
     );
+    let snapshot_store = Arc::new(ReplicatedSqlSnapshotHooks::new(
+        Arc::clone(&engine),
+        Arc::clone(&catalog),
+        Arc::clone(&clock),
+    ));
 
-    let raw_store: Arc<dyn RaftPersistenceStore> =
-        Arc::new(RocksDbRaftPersistenceStore::new(engine));
+    let raw_store: Arc<dyn RaftPersistenceStore> = Arc::new(RocksDbRaftPersistenceStore::new(
+        Arc::clone(&engine),
+    ));
     let strict_store: Arc<dyn RaftPersistenceStore> =
         Arc::new(FailClosedPersistenceStore::new(raw_store));
 
@@ -192,6 +204,7 @@ fn spawn_raft<T: Transport>(
     });
 
     let mut node = RaftNode::new(node_id, peers, transport)
+        .with_snapshot_store(snapshot_store)
         .with_persistence(strict_store)
         .with_confirmed_apply_tx(apply_tx);
     node.set_election_timeout_ms(election_timeout_ms);
