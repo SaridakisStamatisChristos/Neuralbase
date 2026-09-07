@@ -198,6 +198,11 @@ async fn repeated_compaction_restart_and_suffix_replay_remain_safe() {
         3
     );
 
+    // `ReplicatedSqlGateway` owns an Arc<StorageEngine>. Release it before
+    // reopening this same RocksDB directory so the restart exercises a real
+    // close/reopen boundary instead of retaining the previous process-local DB
+    // handle and tripping RocksDB's LOCK protection.
+    drop(gateway);
     let dir = node.shutdown_into_dir().await;
     node = spawn_solo(Arc::clone(&bus), dir).await;
     wait_for_leader(&node).await;
