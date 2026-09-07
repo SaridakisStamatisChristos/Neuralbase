@@ -296,6 +296,7 @@ async fn main() -> io::Result<()> {
 
     let listen_addr = env_with_legacy("NEURALBASE_LISTEN_ADDR", "LISTEN_ADDR")
         .unwrap_or_else(|| "0.0.0.0:5432".to_string());
+    let clustered = read_node_id().is_some();
 
     let catalog: Arc<InMemoryCatalog> = Arc::new(InMemoryCatalog::with_tpch_all_tables());
 
@@ -323,7 +324,14 @@ async fn main() -> io::Result<()> {
                     catalog.create_table(schema);
                 }
             }
-            Err(e) => tracing::warn!(error = %e, "Failed to restore persisted schemas"),
+            Err(error) if clustered => {
+                return Err(io::Error::other(format!(
+                    "clustered startup cannot hydrate persisted SQL catalog: {error}"
+                )));
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "Failed to restore persisted schemas");
+            }
         }
     }
 
