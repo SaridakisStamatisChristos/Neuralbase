@@ -14,6 +14,8 @@ use std::sync::Arc;
 use crate::catalog::{Catalog, InMemoryCatalog, TableSchema};
 use crate::storage::{StorageEngine, StorageError};
 
+const INDEX_SENTINEL_PREFIX: &str = "__idx:";
+
 /// A catalog backed by the RocksDB `catalog` column family.
 /// Schema registrations are durable — they survive process restart.
 /// Thread-safe: `StorageEngine` uses `DBWithThreadMode<MultiThreaded>`.
@@ -47,14 +49,18 @@ impl RocksDbCatalog {
         self.engine.list_catalog_keys()
     }
 
-    /// Load the full catalog into an in-memory snapshot (for startup warm-up).
+    /// Load the full table catalog into an in-memory snapshot (for startup warm-up).
     ///
-    /// Corrupt persisted schema bytes fail the whole hydration instead of
-    /// silently returning a partial catalog. Clustered startup relies on this
-    /// fail-closed behavior before it begins serving SQL.
+    /// Dynamic-index discovery sentinels share the catalog CF but are not table
+    /// schemas, so they are skipped deliberately. Corrupt bytes for an actual
+    /// table entry fail the whole hydration instead of silently returning a
+    /// partial catalog. Clustered startup relies on this fail-closed behavior.
     pub fn load_all(&self) -> Result<InMemoryCatalog, StorageError> {
         let mem = InMemoryCatalog::default();
         for key in self.engine.list_catalog_keys()? {
+            if key.starts_with(INDEX_SENTINEL_PREFIX) {
+                continue;
+            }
             if let Some(bytes) = self.engine.read_catalog_entry(&key)? {
                 let schema =
                     serde_json::from_slice::<TableSchema>(&bytes).map_err(StorageError::Serde)?;
@@ -142,6 +148,23 @@ mod tests {
         for i in 0..5u32 {
             assert!(mem.get_table(&format!("table_{i}")).is_some());
         }
+    }
+
+    #[test]
+    fn load_all_skips_index_sentinel_and_restores_table_schema() {
+        let (cat, _dir) = setup();
+        cat.register_table(&TableSchema {
+            name: "valid".to_string(),
+            columns: vec![],
+        })
+        .unwrap();
+        cat.engine
+            .write_catalog_entry("__idx:valid_name", b"active")
+            .unwrap();
+
+        let mem = cat.load_all().unwrap();
+        assert!(mem.get_table("valid").is_some());
+        assert!(mem.get_table("__idx:valid_name").is_none());
     }
 
     #[test]
