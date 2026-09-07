@@ -176,18 +176,9 @@ fn is_follower_error(error: &postgres::Error) -> bool {
         .is_some_and(|db| db.code().code() == "25006")
 }
 
-fn is_retryable_leadership_loss(error: &postgres::Error) -> bool {
-    error.as_db_error().is_some_and(|db| {
-        db.code().code() == "58030"
-            && db
-                .message()
-                .contains("leadership lost before command reached quorum commit")
-    })
-}
-
 enum MutationAttempt {
     Success,
-    Retryable,
+    RetryablePreSubmit,
     Fatal(String),
     TimedOut,
 }
@@ -197,14 +188,15 @@ fn mutation_attempt(port: u16, sql: &str) -> MutationAttempt {
     let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
     let _worker = thread::spawn(move || {
         let outcome = match connect(port) {
-            Err(_) => MutationAttempt::Retryable,
+            // No query was submitted, so trying another node is safe.
+            Err(_) => MutationAttempt::RetryablePreSubmit,
             Ok(mut client) => match client.simple_query(&sql) {
                 Ok(_) => MutationAttempt::Success,
-                Err(error)
-                    if is_follower_error(&error) || is_retryable_leadership_loss(&error) =>
-                {
-                    MutationAttempt::Retryable
-                }
+                // Explicit follower rejection occurs before proposal and is safe
+                // to redirect to the known/current leader.
+                Err(error) if is_follower_error(&error) => MutationAttempt::RetryablePreSubmit,
+                // Any error after submitting to a leader is conservatively
+                // outcome-uncertain. Never replay a non-idempotent INSERT here.
                 Err(error) => MutationAttempt::Fatal(error.to_string()),
             },
         };
@@ -225,9 +217,9 @@ fn mutate_on_leader(nodes: &mut [NodeProcess], sql: &str) -> usize {
             }
             match mutation_attempt(node.spec.sql_port, sql) {
                 MutationAttempt::Success => return index,
-                MutationAttempt::Retryable => {}
+                MutationAttempt::RetryablePreSubmit => {}
                 MutationAttempt::Fatal(error) => panic!(
-                    "mutation on {} failed with non-retryable error: {error}; SQL={sql}",
+                    "mutation on {} failed after submission; outcome is uncertain and MUST NOT be retried: {error}; SQL={sql}",
                     node.spec.id
                 ),
                 MutationAttempt::TimedOut => panic!(
