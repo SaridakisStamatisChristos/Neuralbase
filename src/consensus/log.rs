@@ -207,9 +207,10 @@ impl PersistentState {
     /// Discard all log entries ≤ `last_included_index` and replace the
     /// sentinel with the new snapshot boundary.
     ///
-    /// If the log contains the entry at `last_included_index`, its entries
-    /// after that point are retained.  Otherwise the log is reset to just
-    /// the new sentinel.
+    /// A local suffix is retained only when this log contains an entry at
+    /// `last_included_index` whose term equals `last_included_term`. If either
+    /// the boundary entry is absent or its term differs, the local suffix may
+    /// conflict with the snapshot and is discarded as required by Raft §7.
     ///
     /// CONFIDENCE: raw=0.82  [HUMAN REVIEW REQUIRED] §Session13 Invariant 1.
     pub fn install_snapshot(&mut self, last_included_index: u64, last_included_term: u64) {
@@ -220,13 +221,17 @@ impl PersistentState {
             command: vec![],
         };
 
-        // Retain any log entries that follow the snapshot.
-        let retained: Vec<LogEntry> = if last_included_index >= self.last_log_index() {
-            // Entire existing log is covered by the snapshot.
-            vec![]
-        } else {
+        let last_log_index = self.last_log_index();
+        let boundary_matches_local = last_included_index >= self.snapshot_index
+            && last_included_index <= last_log_index
+            && self.term_at(last_included_index) == last_included_term;
+
+        let retained: Vec<LogEntry> = if boundary_matches_local && last_included_index < last_log_index
+        {
             let physical_first_kept = (last_included_index - self.snapshot_index) as usize + 1;
             self.log[physical_first_kept..].to_vec()
+        } else {
+            vec![]
         };
 
         self.log = std::iter::once(new_sentinel).chain(retained).collect();
@@ -294,12 +299,27 @@ mod tests {
         // Sentinel is at physical[0] = Raft index 5.
         assert_eq!(s.snapshot_index, 5);
         assert_eq!(s.snapshot_term, 1);
-        // Entries 6..=10 were retained.
+        // Entries 6..=10 were retained because index 5 / term 1 matched.
         assert_eq!(s.last_log_index(), 10);
         // term_at the snapshot boundary.
         assert_eq!(s.term_at(5), 1);
         // Entries before snapshot are inaccessible.
         assert_eq!(s.term_at(3), 0);
+    }
+
+    #[test]
+    fn install_snapshot_term_mismatch_discards_local_suffix() {
+        let mut s = PersistentState::new();
+        for i in 1u64..=5 {
+            s.append(1, format!("old-{i}").into_bytes());
+        }
+
+        s.install_snapshot(3, 2);
+
+        assert_eq!(s.snapshot_index, 3);
+        assert_eq!(s.snapshot_term, 2);
+        assert_eq!(s.last_log_index(), 3);
+        assert!(s.entries_from(4).is_empty());
     }
 
     #[test]
