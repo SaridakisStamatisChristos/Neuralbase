@@ -15,6 +15,7 @@
 //   - A confirmed state-machine channel can defer success until durable apply.
 //   - Single-node regular commands commit immediately (majority of one).
 //   - Pending uncommitted clients fail if leadership is lost.
+//   - Required stable-storage load/save failures fail-stop the Raft node.
 //
 // CONFIDENCE: raw=0.76 effective=0.68
 // DEPENDS_ON: log, rpc, transport
@@ -278,17 +279,23 @@ impl<T: Transport> RaftNode<T> {
         self
     }
 
-    /// Attach a persistence store.  If a previously-saved state exists it is
+    /// Attach a persistence store. If a previously-saved state exists it is
     /// loaded immediately (restoring term, votedFor, log, snapshot).
     ///
+    /// A required stable-storage load failure is fatal: starting with an empty
+    /// or partially recovered consensus state would violate Raft safety.
     /// MUST be called before `spawn`. Calling after spawn has no effect.
     pub fn with_persistence(mut self, store: Arc<dyn RaftPersistenceStore>) -> Self {
-        if let Ok(Some((ps, snap))) = store.load() {
-            self.snapshot_data = Arc::new(snap);
-            let snap_idx = ps.snapshot_index;
-            self.ps = ps;
-            self.commit_index = snap_idx;
-            self.last_applied = snap_idx;
+        match store.load() {
+            Ok(Some((ps, snap))) => {
+                self.snapshot_data = Arc::new(snap);
+                let snap_idx = ps.snapshot_index;
+                self.ps = ps;
+                self.commit_index = snap_idx;
+                self.last_applied = snap_idx;
+            }
+            Ok(None) => {}
+            Err(error) => panic!("fatal Raft persistence load failure: {error}"),
         }
         self.persistence = Some(store);
         self
@@ -311,13 +318,13 @@ impl<T: Transport> RaftNode<T> {
     /// Flush current persistent state to stable storage.
     ///
     /// Per Raft safety: called BEFORE the node responds to any RPC that
-    /// depends on the state just mutated (term, vote, log, snapshot).
+    /// depends on the state just mutated (term, vote, log, snapshot). A save
+    /// failure is fail-stop: the task panics before it can acknowledge the
+    /// consensus transition or continue from non-durable state.
     fn persist(&self) {
         if let Some(store) = &self.persistence {
-            // Session-13 behavior retained in this commit; a following focused
-            // change converts persistence failures to fail-stop semantics.
-            if let Err(e) = store.save(&self.ps, &self.snapshot_data) {
-                eprintln!("[raft] persist error: {e}");
+            if let Err(error) = store.save(&self.ps, &self.snapshot_data) {
+                panic!("fatal Raft persistence save failure: {error}");
             }
         }
     }
