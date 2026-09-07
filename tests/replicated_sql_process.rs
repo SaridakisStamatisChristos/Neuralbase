@@ -317,11 +317,63 @@ fn process_cluster_mutations_survive_failover_and_restart() {
         wait_sql_ready(node);
     }
 
-    mutate_on_leader(
+    let crash_leader = mutate_on_leader(
         &mut nodes,
         "UPDATE replicated_items SET name = 'after_restart' WHERE id = 1",
     );
     let expected_after_restart =
         BTreeSet::from([("1".to_string(), "after_restart".to_string())]);
     wait_all_rows(&mut nodes, &expected_after_restart);
+
+    // Race a real PostgreSQL write against SIGKILL of the current leader. A
+    // failed client request has an intentionally uncertain outcome. The strong
+    // contract is one-way: if the client observed success, that exact effect
+    // must remain visible on the surviving quorum after leader death.
+    let crash_port = nodes[crash_leader].spec.sql_port;
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(0);
+    let writer = thread::spawn(move || -> Result<(), String> {
+        let mut client = connect(crash_port).map_err(|error| error.to_string())?;
+        ready_tx
+            .send(())
+            .map_err(|error| format!("signal crash-write readiness: {error}"))?;
+        client
+            .simple_query(
+                "UPDATE replicated_items SET name = 'crash_candidate' WHERE id = 1",
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    });
+
+    ready_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("crash-write client did not become ready");
+    thread::sleep(Duration::from_millis(2));
+    nodes[crash_leader].kill();
+    let crash_write = writer.join().expect("crash-write thread panicked");
+
+    if crash_write.is_ok() {
+        let acknowledged =
+            BTreeSet::from([("1".to_string(), "crash_candidate".to_string())]);
+        for (index, node) in nodes.iter_mut().enumerate() {
+            if index != crash_leader {
+                wait_rows(node, &acknowledged);
+            }
+        }
+    }
+
+    mutate_on_leader(
+        &mut nodes,
+        "UPDATE replicated_items SET name = 'after_crash_recovery' WHERE id = 1",
+    );
+    let expected_after_crash =
+        BTreeSet::from([("1".to_string(), "after_crash_recovery".to_string())]);
+    for (index, node) in nodes.iter_mut().enumerate() {
+        if index != crash_leader {
+            wait_rows(node, &expected_after_crash);
+        }
+    }
+
+    nodes[crash_leader].start();
+    wait_sql_ready(&mut nodes[crash_leader]);
+    wait_rows(&mut nodes[crash_leader], &expected_after_crash);
 }
