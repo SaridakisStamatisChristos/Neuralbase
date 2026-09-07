@@ -403,6 +403,14 @@ fn process_cluster_mutations_survive_failover_and_restart() {
     writer.join().expect("crash-write thread panicked");
 
     if crash_write.is_ok() {
+        // A new-term, logically empty DELETE establishes a Raft commit/apply
+        // barrier without changing the row being checked. This is necessary
+        // because follower reads are local and may not have learned the dead
+        // leader's final commit_index before the kill.
+        mutate_on_leader(
+            &mut nodes,
+            "DELETE FROM replicated_items WHERE id = -999999",
+        );
         let acknowledged =
             BTreeSet::from([("1".to_string(), "crash_candidate".to_string())]);
         for (index, node) in nodes.iter_mut().enumerate() {
