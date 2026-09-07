@@ -612,6 +612,17 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_magic_with_valid_checksum() {
+        let mut encoded = sample_snapshot().encode().unwrap();
+        encoded[0] ^= 0x01;
+        recompute_checksum(&mut encoded);
+        assert_eq!(
+            ReplicatedSqlSnapshot::decode(&encoded),
+            Err(SnapshotCodecError::InvalidMagic)
+        );
+    }
+
+    #[test]
     fn rejects_truncation() {
         let encoded = sample_snapshot().encode().unwrap();
         assert_eq!(

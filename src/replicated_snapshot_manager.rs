@@ -114,6 +114,20 @@ pub enum SnapshotManagerError {
         "restore target contains secondary index column families and cannot be replaced safely"
     )]
     RestoreTargetHasSecondaryIndexes,
+    #[error(
+        "snapshot SQL apply index {snapshot_index} would regress durable target apply index {existing_index}"
+    )]
+    RestoreWouldRegressApplyIndex {
+        existing_index: u64,
+        snapshot_index: u64,
+    },
+    #[error(
+        "snapshot commit timestamp {snapshot_timestamp} would regress durable target timestamp {existing_timestamp}"
+    )]
+    RestoreWouldRegressCommitTimestamp {
+        existing_timestamp: u64,
+        snapshot_timestamp: u64,
+    },
     #[cfg(test)]
     #[error("injected snapshot restore storage failure")]
     InjectedStorageFailure,
@@ -255,6 +269,23 @@ impl ReplicatedSqlSnapshotManager {
             .db
             .cf_handle(CF_META)
             .expect("CF_META must exist after StorageEngine::open");
+
+        let existing_apply_state = match self.engine.db.get_cf(&meta_cf, APPLY_STATE_KEY)? {
+            Some(bytes) => DurableApplyState::decode(&bytes)?,
+            None => DurableApplyState::default(),
+        };
+        if snapshot.metadata.latest_sql_apply_index < existing_apply_state.last_applied_index {
+            return Err(SnapshotManagerError::RestoreWouldRegressApplyIndex {
+                existing_index: existing_apply_state.last_applied_index,
+                snapshot_index: snapshot.metadata.latest_sql_apply_index,
+            });
+        }
+        if snapshot.metadata.latest_commit_ts < existing_apply_state.last_commit_ts {
+            return Err(SnapshotManagerError::RestoreWouldRegressCommitTimestamp {
+                existing_timestamp: existing_apply_state.last_commit_ts,
+                snapshot_timestamp: snapshot.metadata.latest_commit_ts,
+            });
+        }
 
         let mut batch = WriteBatch::default();
         delete_all_cf_keys(&self.engine, &data_cf, &mut batch)?;
@@ -697,6 +728,54 @@ mod tests {
         assert_eq!(catalog.get_table("existing"), Some(existing_schema));
         assert!(catalog.get_table("items").is_none());
         assert_eq!(clock.now(), before_clock);
+    }
+
+    #[test]
+    fn restore_rejects_apply_or_timestamp_regression_without_mutation() {
+        let source_dir = TempDir::new().unwrap();
+        let (source_engine, source_catalog, source_clock) = seed_source(&source_dir);
+        let bytes = ReplicatedSqlSnapshotManager::new(source_engine, source_catalog, source_clock)
+            .export(5, 2)
+            .unwrap();
+        let decoded = ReplicatedSqlSnapshot::decode(&bytes).unwrap();
+
+        let target_dir = TempDir::new().unwrap();
+        let (target_engine, target_catalog, target_clock) = seed_source(&target_dir);
+        let target_manager = ReplicatedSqlSnapshotManager::new(
+            Arc::clone(&target_engine),
+            Arc::clone(&target_catalog),
+            target_clock,
+        );
+        let before = target_engine
+            .raw_scan_table_versions(table_id_for("items"))
+            .unwrap();
+
+        let mut apply_regression = decoded.clone();
+        apply_regression.metadata.latest_sql_apply_index -= 1;
+        let apply_regression = apply_regression.encode().unwrap();
+        assert!(matches!(
+            target_manager.restore(&apply_regression),
+            Err(SnapshotManagerError::RestoreWouldRegressApplyIndex {
+                existing_index: 4,
+                snapshot_index: 3,
+            })
+        ));
+
+        let mut timestamp_regression = decoded;
+        timestamp_regression.metadata.latest_commit_ts = ts(1_000, 2);
+        let timestamp_regression = timestamp_regression.encode().unwrap();
+        assert!(matches!(
+            target_manager.restore(&timestamp_regression),
+            Err(SnapshotManagerError::RestoreWouldRegressCommitTimestamp { .. })
+        ));
+
+        assert_eq!(
+            target_engine
+                .raw_scan_table_versions(table_id_for("items"))
+                .unwrap(),
+            before
+        );
+        assert_eq!(target_catalog.get_table("items"), Some(schema()));
     }
 
     #[test]
