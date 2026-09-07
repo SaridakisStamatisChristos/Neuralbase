@@ -87,7 +87,9 @@ pub enum SnapshotCodecError {
     TooManyItems(&'static str),
     #[error("replicated SQL snapshot {0} exceeds the configured field-size limit")]
     FieldTooLarge(&'static str),
-    #[error("replicated SQL snapshot tables must be strictly ordered and unique by normalized name")]
+    #[error(
+        "replicated SQL snapshot tables must be strictly ordered and unique by normalized name"
+    )]
     NonCanonicalTableOrder,
     #[error("replicated SQL snapshot row keys must be strictly increasing and unique")]
     NonCanonicalRowOrder,
@@ -130,7 +132,8 @@ impl ReplicatedSqlSnapshot {
             table.rows.sort_by(|a, b| a.primary_key.cmp(&b.primary_key));
             ensure_row_order(&table.rows)?;
         }
-        tables.sort_by(|a, b| normalized_name(&a.schema.name).cmp(&normalized_name(&b.schema.name)));
+        tables
+            .sort_by(|a, b| normalized_name(&a.schema.name).cmp(&normalized_name(&b.schema.name)));
         ensure_table_order(&tables)?;
 
         let mut out = Vec::new();
@@ -260,10 +263,8 @@ impl ReplicatedSqlSnapshot {
         }
         ensure_table_order(&tables)?;
 
-        let metadata_extension = reader.bytes_with_limit(
-            MAX_EXTENSION_BYTES,
-            "metadata extension",
-        )?;
+        let metadata_extension =
+            reader.bytes_with_limit(MAX_EXTENSION_BYTES, "metadata extension")?;
         if !reader.is_finished() {
             return Err(SnapshotCodecError::TrailingBytes);
         }
@@ -594,7 +595,10 @@ mod tests {
             ..snapshot.clone()
         };
         assert_eq!(snapshot.encode().unwrap(), canonical.encode().unwrap());
-        assert_eq!(ReplicatedSqlSnapshot::decode(&snapshot.encode().unwrap()).unwrap(), canonical);
+        assert_eq!(
+            ReplicatedSqlSnapshot::decode(&snapshot.encode().unwrap()).unwrap(),
+            canonical
+        );
     }
 
     #[test]
