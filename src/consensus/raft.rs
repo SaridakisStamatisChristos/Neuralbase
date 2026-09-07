@@ -20,6 +20,8 @@
 //     durably staged before log truncation, and restored before install ACK.
 //   - Interrupted follower snapshot installs are resumed from staged metadata on
 //     restart, closing the SQL-restore/Raft-publication crash window.
+//   - Fresh durable members remain non-serving until a leader consistency
+//     exchange succeeds and their local apply point reaches the advertised commit.
 //
 // CONFIDENCE: raw=0.76 effective=0.68
 // DEPENDS_ON: log, rpc, snapshot, transport
@@ -30,6 +32,7 @@
 // [HUMAN REVIEW REQUIRED] — see REVIEW_REQUIRED.md §Session13
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -113,7 +116,7 @@ pub enum RaftRole {
 
 // ── LeaderState ────────────────────────────────────────────────────────────
 
-/// Volatile leader state.  Present only when role == Leader.
+/// Volatile leader state. Present only when role == Leader.
 struct LeaderState {
     /// For each peer: index of the next log entry to send.
     next_index: HashMap<NodeId, u64>,
@@ -216,6 +219,12 @@ pub struct RaftNode<T: Transport> {
     snapshot_store: Option<Arc<dyn StateMachineSnapshotStore>>,
     pending_staged_snapshot: Option<StagedSnapshot>,
 
+    // Serving readiness for fresh-node bootstrap. Persisted restarts preserve
+    // the historical local/stale-read semantics; only truly fresh durable
+    // members with peers start closed until leader-confirmed catch-up completes.
+    serving_ready: Arc<AtomicBool>,
+    successful_append_seen: bool,
+
     // Membership-change state (Session 13).
     membership_change_in_progress: bool,
 
@@ -255,6 +264,8 @@ impl<T: Transport> RaftNode<T> {
             snapshot_data: Arc::new(vec![]),
             snapshot_store: None,
             pending_staged_snapshot: None,
+            serving_ready: Arc::new(AtomicBool::new(true)),
+            successful_append_seen: false,
             membership_change_in_progress: false,
             transfer_in_progress: None,
             persistence: None,
@@ -263,6 +274,11 @@ impl<T: Transport> RaftNode<T> {
             confirmed_apply_tx: None,
             pending_clients: HashMap::new(),
         }
+    }
+
+    /// Shared readiness signal used by the production SQL serving layer.
+    pub fn serving_readiness(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.serving_ready)
     }
 
     pub fn with_apply_tx(mut self, tx: mpsc::Sender<LogEntry>) -> Self {
@@ -307,6 +323,7 @@ impl<T: Transport> RaftNode<T> {
             Ok(state) => state,
             Err(error) => panic!("fatal Raft persistence load failure: {error}"),
         };
+        let fresh_persistent_state = loaded.is_none();
         let staged = match store.load_staged_snapshot() {
             Ok(snapshot) => snapshot,
             Err(error) => panic!("fatal staged Raft snapshot load failure: {error}"),
@@ -332,6 +349,10 @@ impl<T: Transport> RaftNode<T> {
         let recovered_install = self.recover_staged_snapshot_if_possible();
         if !recovered_install {
             self.restore_active_snapshot_if_possible();
+        }
+
+        if fresh_persistent_state && !self.peers.is_empty() {
+            self.serving_ready.store(false, Ordering::Release);
         }
         self
     }
@@ -637,6 +658,13 @@ impl<T: Transport> RaftNode<T> {
                     }
                 }
 
+                if !self.serving_ready.load(Ordering::Acquire)
+                    && self.successful_append_seen
+                    && self.last_applied >= self.commit_index
+                {
+                    self.serving_ready.store(true, Ordering::Release);
+                }
+
                 if let Some((_target, deadline)) = &self.transfer_in_progress {
                     if Instant::now() >= *deadline {
                         self.transfer_in_progress = None;
@@ -884,6 +912,7 @@ impl<T: Transport> RaftNode<T> {
             };
         }
 
+        self.successful_append_seen = true;
         if !args.entries.is_empty() {
             self.ps
                 .truncate_and_append(args.prev_log_index, args.entries);
@@ -959,6 +988,7 @@ impl<T: Transport> RaftNode<T> {
     async fn become_leader(&mut self) {
         self.role = RaftRole::Leader;
         self.leader_id = Some(self.id.clone());
+        self.serving_ready.store(true, Ordering::Release);
         let next = self.ps.last_log_index() + 1;
         let mut next_index = HashMap::new();
         let mut match_index = HashMap::new();
