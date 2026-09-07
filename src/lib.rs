@@ -18,6 +18,7 @@ pub mod query_executor;
 pub mod raft_persistence;
 pub mod replicated_gateway;
 pub mod replicated_snapshot;
+pub mod replicated_snapshot_hooks;
 pub mod replicated_snapshot_manager;
 pub mod replicated_sql;
 pub mod replicated_state_machine;
