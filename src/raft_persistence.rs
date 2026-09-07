@@ -43,7 +43,7 @@ fn encode_staged_snapshot(snapshot: &StagedSnapshot) -> Vec<u8> {
     encoded.push(kind);
     encoded.extend_from_slice(&snapshot.last_included_index.to_be_bytes());
     encoded.extend_from_slice(&snapshot.last_included_term.to_be_bytes());
-    encoded.extend_from_slice(&snapshot.data);
+    encoded.extend_from_slice(snapshot.data.as_slice());
     encoded
 }
 
@@ -82,7 +82,7 @@ fn decode_staged_snapshot(bytes: &[u8]) -> Result<StagedSnapshot, String> {
         kind,
         last_included_index,
         last_included_term,
-        data: bytes[STAGED_HEADER_BYTES..].to_vec(),
+        data: Arc::new(bytes[STAGED_HEADER_BYTES..].to_vec()),
     })
 }
 
@@ -215,7 +215,7 @@ mod tests {
             kind: StagedSnapshotKind::Installation,
             last_included_index: 17,
             last_included_term: 4,
-            data: b"candidate".to_vec(),
+            data: Arc::new(b"candidate".to_vec()),
         };
 
         store.stage_snapshot(&staged).unwrap();
@@ -243,7 +243,7 @@ mod tests {
             kind: StagedSnapshotKind::Creation,
             last_included_index: 9,
             last_included_term: 3,
-            data: b"candidate".to_vec(),
+            data: Arc::new(b"candidate".to_vec()),
         };
         store.stage_snapshot(&staged).unwrap();
         store.clear_staged_snapshot().unwrap();
