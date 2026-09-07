@@ -16,11 +16,11 @@
 //   - Single-node regular commands commit immediately (majority of one).
 //   - Pending uncommitted clients fail if leadership is lost.
 //   - Required stable-storage load/save failures fail-stop the Raft node.
-//   - Legacy opaque snapshots are rejected in confirmed SQL-apply mode until
-//     a SQL state snapshot/restore format is implemented.
+//   - SQL-aware snapshots are created only at an applied/committed boundary,
+//     durably staged before log truncation, and restored before install ACK.
 //
 // CONFIDENCE: raw=0.76 effective=0.68
-// DEPENDS_ON: log, rpc, transport
+// DEPENDS_ON: log, rpc, snapshot, transport
 // RISK: Single-step membership changes are unsafe under certain network
 //       partitions (see Raft §6 for joint-consensus alternative).
 //       InstallSnapshot invariants MUST be human-reviewed before confidence cap
@@ -36,6 +36,7 @@ use crate::consensus::rpc::{
     AppendEntriesArgs, AppendEntriesReply, InstallSnapshotArgs, InstallSnapshotReply, LogEntry,
     MembershipChange, NodeId, RaftMessage, RequestVoteArgs, RequestVoteReply,
 };
+use crate::consensus::snapshot::StateMachineSnapshotStore;
 use crate::consensus::transport::Transport;
 use rand::Rng;
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -68,7 +69,9 @@ pub fn encode_membership_change(change: &MembershipChange) -> Vec<u8> {
 
 /// Encode a compact-log (snapshot trigger) request as a `ClientCommand::payload`.
 /// `last_index`: highest Raft index to include in the snapshot.
-/// `data`:       opaque state-machine bytes that the snapshot represents.
+/// `data`:       opaque state-machine bytes for legacy/non-SQL callers. When a
+///               `StateMachineSnapshotStore` is attached, Raft ignores these
+///               bytes and asks the state machine to create the exact snapshot.
 pub fn encode_compact_log(last_index: u64, data: &[u8]) -> Vec<u8> {
     let mut v = COMPACT_LOG_TAG.to_vec();
     v.extend_from_slice(&last_index.to_be_bytes());
@@ -204,10 +207,14 @@ pub struct RaftNode<T: Transport> {
     // Leader state.
     leader: Option<LeaderState>,
 
-    // Snapshot state (Session 13).
-    /// Opaque snapshot bytes held by the leader for forwarding to laggard
-    /// followers via InstallSnapshot.  Empty = no snapshot held.
+    // Snapshot state (Session 13 / replicated SQL Phase 2).
+    /// Active snapshot bytes held by the leader for forwarding to laggard
+    /// followers via InstallSnapshot. Empty = no active snapshot held.
     snapshot_data: Arc<Vec<u8>>,
+    /// Optional complete state-machine snapshot creator/restorer. Replicated SQL
+    /// attaches this so Raft can enforce lifecycle ordering without knowing the
+    /// SQL snapshot format.
+    snapshot_store: Option<Arc<dyn StateMachineSnapshotStore>>,
 
     // Membership-change state (Session 13).
     /// True while a single-step membership change is being committed.
@@ -252,6 +259,7 @@ impl<T: Transport> RaftNode<T> {
             votes_received: 0,
             leader: None,
             snapshot_data: Arc::new(vec![]),
+            snapshot_store: None,
             membership_change_in_progress: false,
             transfer_in_progress: None,
             persistence: None,
@@ -270,15 +278,41 @@ impl<T: Transport> RaftNode<T> {
         self
     }
 
+    /// Attach a complete state-machine snapshot creator/restorer.
+    ///
+    /// If persistence was attached first and loaded an active snapshot, restore
+    /// it now before the node can spawn. This makes the builder safe in either
+    /// `snapshot_store -> persistence` or `persistence -> snapshot_store` order.
+    pub fn with_snapshot_store(mut self, store: Arc<dyn StateMachineSnapshotStore>) -> Self {
+        if self.ps.snapshot_index != 0 || !self.snapshot_data.is_empty() {
+            if self.ps.snapshot_index == 0 || self.snapshot_data.is_empty() {
+                panic!(
+                    "fatal Raft snapshot recovery: snapshot boundary metadata and active snapshot bytes are inconsistent"
+                );
+            }
+            if let Err(error) = store.restore_snapshot(
+                self.ps.snapshot_index,
+                self.ps.snapshot_term,
+                &self.snapshot_data,
+            ) {
+                panic!("fatal state-machine snapshot recovery failure: {error}");
+            }
+        }
+        self.snapshot_store = Some(store);
+        self
+    }
+
     /// Attach a bounded state-machine channel with explicit completion.
     ///
     /// This is the required mode for replicated SQL: a committed entry is sent
     /// to the consumer and ClientCommand success waits until `completion`
     /// reports that the durable state-machine apply finished successfully.
-    /// Legacy opaque Raft snapshots are rejected because they do not contain a
-    /// NeuralBase SQL-state snapshot and therefore cannot safely restore tables.
+    /// Persisted snapshots are accepted only when a SQL-aware snapshot store has
+    /// already validated/restored them; legacy opaque snapshots remain rejected.
     pub fn with_confirmed_apply_tx(mut self, tx: mpsc::Sender<CommittedEntry>) -> Self {
-        if self.ps.snapshot_index != 0 || !self.snapshot_data.is_empty() {
+        if (self.ps.snapshot_index != 0 || !self.snapshot_data.is_empty())
+            && self.snapshot_store.is_none()
+        {
             panic!(
                 "replicated SQL confirmed apply cannot start from a legacy Raft snapshot; SQL state snapshot restore is not implemented"
             );
@@ -291,17 +325,32 @@ impl<T: Transport> RaftNode<T> {
     /// Attach a persistence store. If a previously-saved state exists it is
     /// loaded immediately (restoring term, votedFor, log, snapshot).
     ///
-    /// A required stable-storage load failure is fatal: starting with an empty
-    /// or partially recovered consensus state would violate Raft safety.
+    /// When a state-machine snapshot store is already attached, active snapshot
+    /// bytes are validated/restored before the recovered Raft state is accepted.
+    /// A required stable-storage load or snapshot-restore failure is fatal.
     /// MUST be called before `spawn`. Calling after spawn has no effect.
     pub fn with_persistence(mut self, store: Arc<dyn RaftPersistenceStore>) -> Self {
         match store.load() {
             Ok(Some((ps, snap))) => {
-                if self.confirmed_apply_tx.is_some() && (ps.snapshot_index != 0 || !snap.is_empty())
-                {
-                    panic!(
-                        "replicated SQL confirmed apply cannot load a legacy Raft snapshot; SQL state snapshot restore is not implemented"
-                    );
+                if ps.snapshot_index != 0 || !snap.is_empty() {
+                    if ps.snapshot_index == 0 || snap.is_empty() {
+                        panic!(
+                            "fatal Raft snapshot recovery: snapshot boundary metadata and active snapshot bytes are inconsistent"
+                        );
+                    }
+                    if let Some(snapshot_store) = &self.snapshot_store {
+                        if let Err(error) = snapshot_store.restore_snapshot(
+                            ps.snapshot_index,
+                            ps.snapshot_term,
+                            &snap,
+                        ) {
+                            panic!("fatal state-machine snapshot recovery failure: {error}");
+                        }
+                    } else if self.confirmed_apply_tx.is_some() {
+                        panic!(
+                            "replicated SQL confirmed apply cannot load a legacy Raft snapshot; SQL state snapshot restore is not implemented"
+                        );
+                    }
                 }
                 self.snapshot_data = Arc::new(snap);
                 let snap_idx = ps.snapshot_index;
@@ -383,8 +432,8 @@ impl<T: Transport> RaftNode<T> {
         let shared = Arc::new(Mutex::new(RaftShared {
             role: RaftRole::Follower,
             leader_id: None,
-            commit_index: 0,
-            last_applied: 0,
+            commit_index: self.commit_index,
+            last_applied: self.last_applied,
         }));
         let shared_clone = shared.clone();
 
@@ -433,7 +482,8 @@ impl<T: Transport> RaftNode<T> {
                     Some(cmd) = cmd_rx.recv() => {
                         // Session-13 membership and compaction admin commands keep
                         // their historical immediate acknowledgement semantics.
-                        // They are intentionally outside replicated SQL guarantees.
+                        // SQL-aware compaction does all snapshot creation/staging/
+                        // publication synchronously before this acknowledgement.
                         let legacy_admin_ack = cmd.payload.starts_with(MEMBERSHIP_CHANGE_TAG)
                             || cmd.payload.starts_with(COMPACT_LOG_TAG);
                         match self.handle_client_command(cmd.payload) {
@@ -940,12 +990,6 @@ impl<T: Transport> RaftNode<T> {
 
     /// Handle a compact-log admin command embedded in a ClientCommand payload.
     fn handle_compact_log_cmd(&mut self, payload: Vec<u8>) -> Result<u64, String> {
-        if self.confirmed_apply_tx.is_some() {
-            return Err(
-                "Raft log compaction is disabled in replicated SQL mode until SQL state snapshots are implemented"
-                    .to_string(),
-            );
-        }
         if payload.len() < 2 + 8 {
             return Err("compact-log payload too short (need at least 10 bytes)".to_string());
         }
@@ -954,11 +998,58 @@ impl<T: Transport> RaftNode<T> {
                 .try_into()
                 .map_err(|_| "bad last_index bytes".to_string())?,
         );
-        let data = payload[10..].to_vec();
 
+        if let Some(snapshot_store) = &self.snapshot_store {
+            let safe_last = last_index.min(self.commit_index).min(self.last_applied);
+            if safe_last <= self.ps.snapshot_index {
+                return Ok(self.ps.snapshot_index);
+            }
+            let last_term = self.ps.term_at(safe_last);
+            if last_term == 0 {
+                return Err(format!(
+                    "cannot create snapshot at Raft index {safe_last}: boundary term is unavailable"
+                ));
+            }
+
+            // Snapshot bytes must be fully created before any log mutation.
+            let data = snapshot_store
+                .create_snapshot(safe_last, last_term)
+                .map_err(|error| format!("state-machine snapshot creation failed: {error}"))?;
+
+            // Production SQL-aware compaction requires durable staging. If a
+            // persistence implementation cannot stage the artifact, fail before
+            // touching the in-memory or durable Raft prefix.
+            let persistence = self.persistence.as_ref().ok_or_else(|| {
+                "SQL-aware Raft compaction requires durable persistence".to_string()
+            })?;
+            persistence
+                .stage_snapshot(&data)
+                .map_err(|error| format!("stage state-machine snapshot: {error}"))?;
+
+            // Only after staging succeeds may the Raft prefix be compacted.
+            // `persist()` atomically publishes compacted state + active snapshot;
+            // the RocksDB implementation clears the staging key in that batch.
+            self.ps.install_snapshot(safe_last, last_term);
+            self.snapshot_data = Arc::new(data);
+            self.persist();
+            return Ok(safe_last);
+        }
+
+        if self.confirmed_apply_tx.is_some() {
+            return Err(
+                "Raft log compaction is disabled in replicated SQL mode until SQL state snapshots are implemented"
+                    .to_string(),
+            );
+        }
+
+        // Legacy opaque/non-SQL compaction path retained for compatibility.
+        let data = payload[10..].to_vec();
         let safe_last = last_index.min(self.commit_index);
         if safe_last == 0 {
             return Ok(0);
+        }
+        if safe_last <= self.ps.snapshot_index {
+            return Ok(self.ps.snapshot_index);
         }
 
         let last_term = self.ps.term_at(safe_last);
@@ -992,39 +1083,74 @@ impl<T: Transport> RaftNode<T> {
         self.membership_change_in_progress = false;
     }
 
-    // ── Session 13: InstallSnapshot handlers ──────────────────────────────
+    // ── Session 13 / Phase 2: InstallSnapshot handlers ────────────────────
 
     fn on_install_snapshot(&mut self, args: InstallSnapshotArgs) -> InstallSnapshotReply {
-        if self.confirmed_apply_tx.is_some() {
-            panic!(
-                "fatal replicated SQL snapshot install: SQL state snapshot restore is not implemented"
-            );
-        }
         if args.term < self.ps.current_term {
             return InstallSnapshotReply {
                 term: self.ps.current_term,
+                success: false,
+                last_included_index: args.last_included_index,
             };
         }
         if args.term > self.ps.current_term || self.role == RaftRole::Candidate {
             self.become_follower(args.term);
         }
-        self.leader_id = Some(args.leader_id);
+        self.leader_id = Some(args.leader_id.clone());
+
+        if !args.done {
+            return InstallSnapshotReply {
+                term: self.ps.current_term,
+                success: false,
+                last_included_index: args.last_included_index,
+            };
+        }
 
         if args.last_included_index <= self.ps.snapshot_index {
             return InstallSnapshotReply {
                 term: self.ps.current_term,
+                success: true,
+                last_included_index: args.last_included_index,
             };
+        }
+
+        if let Some(snapshot_store) = &self.snapshot_store {
+            // State-machine validation/restore must complete before Raft discards
+            // any prefix or acknowledges this snapshot. Manager restore is
+            // fail-closed and atomic across SQL data/catalog/apply marker.
+            if snapshot_store
+                .restore_snapshot(
+                    args.last_included_index,
+                    args.last_included_term,
+                    &args.data,
+                )
+                .is_err()
+            {
+                return InstallSnapshotReply {
+                    term: self.ps.current_term,
+                    success: false,
+                    last_included_index: args.last_included_index,
+                };
+            }
+        } else if self.confirmed_apply_tx.is_some() {
+            panic!(
+                "fatal replicated SQL snapshot install: SQL state snapshot restore is not implemented"
+            );
         }
 
         self.ps
             .install_snapshot(args.last_included_index, args.last_included_term);
         self.snapshot_data = args.data;
         self.commit_index = self.commit_index.max(args.last_included_index);
-        self.last_applied = args.last_included_index;
+        self.last_applied = self.last_applied.max(args.last_included_index);
+
+        // Persist the accepted Raft boundary + exact active bytes before reply.
         self.persist();
 
         InstallSnapshotReply {
             term: self.ps.current_term,
+            success: true,
+            last_included_index: self.ps.snapshot_index,
         }
     }
 
@@ -1033,13 +1159,20 @@ impl<T: Transport> RaftNode<T> {
             self.become_follower(reply.term);
             return;
         }
-        if self.role != RaftRole::Leader {
+        if self.role != RaftRole::Leader || !reply.success {
+            return;
+        }
+        if reply.last_included_index > self.ps.snapshot_index {
+            // A follower cannot legitimately acknowledge a boundary newer than
+            // the leader's active snapshot. Ignore the impossible/future reply.
             return;
         }
         if let Some(leader) = &mut self.leader {
-            let snap_idx = self.ps.snapshot_index;
-            leader.match_index.insert(from.clone(), snap_idx);
-            leader.next_index.insert(from, snap_idx + 1);
+            let acknowledged = reply.last_included_index;
+            let match_index = leader.match_index.entry(from.clone()).or_insert(0);
+            *match_index = (*match_index).max(acknowledged);
+            let next_index = leader.next_index.entry(from).or_insert(1);
+            *next_index = (*next_index).max(acknowledged.saturating_add(1));
         }
     }
 
