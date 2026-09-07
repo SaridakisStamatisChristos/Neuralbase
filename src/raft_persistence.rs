@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Durable Raft stable storage backed by NeuralBase's RocksDB meta column family.
 //!
-//! Term, voted-for, log, snapshot-boundary metadata, and snapshot bytes are
-//! written in one RocksDB WriteBatch. The store reports storage/codec errors;
-//! `RaftNode` treats required persistence errors as fatal and fail-stops. The
-//! clustered runtime additionally wraps this store in `FailClosedPersistenceStore`
-//! as defense in depth.
+//! Term, voted-for, log, snapshot-boundary metadata, and active snapshot bytes
+//! are written in one RocksDB WriteBatch. SQL-aware snapshot creation first
+//! writes candidate bytes to a separate staging key; publishing compacted Raft
+//! state atomically writes the active state/snapshot and deletes that staging
+//! key. A crash can therefore leave an unused candidate artifact, but never a
+//! compacted active state without recoverable snapshot bytes.
 
 use std::sync::Arc;
 
@@ -16,6 +17,7 @@ use crate::storage::{StorageEngine, CF_META};
 
 const RAFT_STATE_KEY: &[u8] = b"raft/core/persistent-state-v1";
 const RAFT_SNAPSHOT_KEY: &[u8] = b"raft/core/snapshot-v1";
+const RAFT_STAGED_SNAPSHOT_KEY: &[u8] = b"raft/core/snapshot-staged-v1";
 
 pub struct RocksDbRaftPersistenceStore {
     engine: Arc<StorageEngine>,
@@ -40,9 +42,23 @@ impl RaftPersistenceStore for RocksDbRaftPersistenceStore {
         let mut batch = WriteBatch::default();
         batch.put_cf(&meta_cf, RAFT_STATE_KEY, encoded);
         batch.put_cf(&meta_cf, RAFT_SNAPSHOT_KEY, snapshot_data);
+        batch.delete_cf(&meta_cf, RAFT_STAGED_SNAPSHOT_KEY);
         self.engine
             .write_batch(batch)
             .map_err(|error| format!("persist Raft state to RocksDB: {error}"))
+    }
+
+    fn stage_snapshot(&self, snapshot_data: &[u8]) -> Result<(), String> {
+        let meta_cf = self
+            .engine
+            .db
+            .cf_handle(CF_META)
+            .ok_or_else(|| "CF_META unavailable while staging Raft snapshot".to_string())?;
+        let mut batch = WriteBatch::default();
+        batch.put_cf(&meta_cf, RAFT_STAGED_SNAPSHOT_KEY, snapshot_data);
+        self.engine
+            .write_batch(batch)
+            .map_err(|error| format!("stage Raft snapshot in RocksDB: {error}"))
     }
 
     fn load(&self) -> Result<Option<(PersistentState, Vec<u8>)>, String> {
@@ -100,6 +116,35 @@ mod tests {
         assert_eq!(loaded.log[1].command, b"mutation-1");
         assert_eq!(loaded.log[2].command, b"mutation-2");
         assert_eq!(snapshot, b"snapshot-bytes");
+    }
+
+    #[test]
+    fn staged_snapshot_is_removed_by_atomic_publish() {
+        let dir = TempDir::new().unwrap();
+        let engine = Arc::new(StorageEngine::open(dir.path()).unwrap());
+        let store = RocksDbRaftPersistenceStore::new(Arc::clone(&engine));
+        let meta_cf = engine.db.cf_handle(CF_META).unwrap();
+
+        store.stage_snapshot(b"candidate").unwrap();
+        assert_eq!(
+            engine
+                .db
+                .get_cf(&meta_cf, RAFT_STAGED_SNAPSHOT_KEY)
+                .unwrap()
+                .as_deref(),
+            Some(b"candidate".as_slice())
+        );
+
+        store.save(&PersistentState::new(), b"active").unwrap();
+        assert!(engine
+            .db
+            .get_cf(&meta_cf, RAFT_STAGED_SNAPSHOT_KEY)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            engine.db.get_cf(&meta_cf, RAFT_SNAPSHOT_KEY).unwrap().as_deref(),
+            Some(b"active".as_slice())
+        );
     }
 
     #[test]
