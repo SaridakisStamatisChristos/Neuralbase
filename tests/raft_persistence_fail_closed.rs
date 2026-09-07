@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Consensus-level fail-closed persistence tests.
 //!
-//! These tests go beyond exercising the persistence adapter directly: they
-//! prove a live Raft client cannot observe success when the stable-log write for
-//! its command fails.
+//! These tests exercise `RaftNode` with raw persistence stores. They prove the
+//! consensus core itself refuses to start after a load failure and cannot let a
+//! live client observe success after a required stable-log save fails.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use neuralbase::consensus::{
-    ChannelTransport, ClientCommand, FailClosedPersistenceStore, PersistentState, RaftNode,
-    RaftPersistenceStore, RaftRole,
+    ChannelTransport, ClientCommand, PersistentState, RaftNode, RaftPersistenceStore, RaftRole,
 };
 use tokio::sync::oneshot;
 
@@ -42,6 +41,30 @@ impl RaftPersistenceStore for FailAfterFirstSave {
     }
 }
 
+struct FailLoad;
+
+impl RaftPersistenceStore for FailLoad {
+    fn save(&self, _state: &PersistentState, _snapshot_data: &[u8]) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn load(&self) -> Result<Option<(PersistentState, Vec<u8>)>, String> {
+        Err("injected load failure".to_string())
+    }
+}
+
+#[tokio::test]
+#[should_panic(expected = "fatal Raft persistence load failure: injected load failure")]
+async fn persistence_load_failure_prevents_node_startup() {
+    let bus = ChannelTransport::new_bus();
+    let transport = Arc::new(
+        ChannelTransport::register("persist_load_fail".to_string(), Arc::clone(&bus)).await,
+    );
+    let store: Arc<dyn RaftPersistenceStore> = Arc::new(FailLoad);
+    let _ = RaftNode::new("persist_load_fail".to_string(), vec![], transport)
+        .with_persistence(store);
+}
+
 #[tokio::test]
 async fn command_persistence_failure_cannot_return_success() {
     let bus = ChannelTransport::new_bus();
@@ -50,12 +73,11 @@ async fn command_persistence_failure_cannot_return_success() {
     );
 
     // The first save is the node's self-vote/current-term election record. The
-    // second save is the first client log append and is injected to fail.
-    let raw: Arc<dyn RaftPersistenceStore> = Arc::new(FailAfterFirstSave::new());
-    let strict: Arc<dyn RaftPersistenceStore> =
-        Arc::new(FailClosedPersistenceStore::new(raw));
+    // second save is the first client log append and is injected to fail. This
+    // store is attached directly: no fail-closed adapter is involved.
+    let store: Arc<dyn RaftPersistenceStore> = Arc::new(FailAfterFirstSave::new());
     let mut node = RaftNode::new("persist_fail_node".to_string(), vec![], transport)
-        .with_persistence(strict);
+        .with_persistence(store);
     node.set_election_timeout_ms(20);
     let (cmd_tx, shared, _handle) = node.spawn();
 
