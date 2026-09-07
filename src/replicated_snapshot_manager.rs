@@ -110,7 +110,9 @@ pub enum SnapshotManagerError {
     RowDataWithoutCommitTimestamp { table: String },
     #[error("snapshot contains a tombstone/empty value as a live row for table {table}")]
     SnapshotContainsTombstone { table: String },
-    #[error("restore target contains secondary index column families and cannot be replaced safely")]
+    #[error(
+        "restore target contains secondary index column families and cannot be replaced safely"
+    )]
     RestoreTargetHasSecondaryIndexes,
     #[cfg(test)]
     #[error("injected snapshot restore storage failure")]
@@ -301,9 +303,8 @@ impl ReplicatedSqlSnapshotManager {
         // Publish volatile state only after the durable replacement succeeded.
         self.catalog.replace_all(schemas);
         if snapshot.metadata.latest_commit_ts != 0 {
-            self.clock.observe_committed(HlcTimestamp::from_u64(
-                snapshot.metadata.latest_commit_ts,
-            ));
+            self.clock
+                .observe_committed(HlcTimestamp::from_u64(snapshot.metadata.latest_commit_ts));
         }
         Ok(snapshot.metadata)
     }
@@ -357,12 +358,11 @@ fn read_logical_rows<D: rocksdb::DBAccess>(
         if key.len() < 12 || key[..4] != prefix {
             break;
         }
-        let primary_key = decode_pk_from_key(key).ok_or_else(|| {
-            SnapshotManagerError::MalformedDataKey {
+        let primary_key =
+            decode_pk_from_key(key).ok_or_else(|| SnapshotManagerError::MalformedDataKey {
                 table: table.to_string(),
                 key_len: key.len(),
-            }
-        })?;
+            })?;
         let row_ts = decode_ts_from_key(key)
             .ok_or_else(|| SnapshotManagerError::MalformedDataKey {
                 table: table.to_string(),
@@ -383,7 +383,9 @@ fn read_logical_rows<D: rocksdb::DBAccess>(
         }
         latest.insert(
             primary_key,
-            iter.value().expect("valid iterator must have value").to_vec(),
+            iter.value()
+                .expect("valid iterator must have value")
+                .to_vec(),
         );
         iter.next();
     }
@@ -454,13 +456,7 @@ mod tests {
         .unwrap();
     }
 
-    fn seed_source(
-        dir: &TempDir,
-    ) -> (
-        Arc<StorageEngine>,
-        Arc<InMemoryCatalog>,
-        Arc<HlcClock>,
-    ) {
+    fn seed_source(dir: &TempDir) -> (Arc<StorageEngine>, Arc<InMemoryCatalog>, Arc<HlcClock>) {
         let engine = Arc::new(StorageEngine::open(dir.path()).unwrap());
         let catalog = Arc::new(InMemoryCatalog::default());
         let clock = Arc::new(HlcClock::new(500));
@@ -472,11 +468,7 @@ mod tests {
         .unwrap();
         let tid = table_id_for("items");
 
-        apply(
-            &sm,
-            1,
-            ReplicatedMutation::CreateTable { schema: schema() },
-        );
+        apply(&sm, 1, ReplicatedMutation::CreateTable { schema: schema() });
         apply(
             &sm,
             2,
@@ -549,11 +541,8 @@ mod tests {
     fn export_restore_fresh_db_is_logically_and_byte_identical() {
         let source_dir = TempDir::new().unwrap();
         let (source_engine, source_catalog, source_clock) = seed_source(&source_dir);
-        let source_manager = ReplicatedSqlSnapshotManager::new(
-            source_engine,
-            source_catalog,
-            source_clock,
-        );
+        let source_manager =
+            ReplicatedSqlSnapshotManager::new(source_engine, source_catalog, source_clock);
         let bytes = source_manager.export(5, 2).unwrap();
         let decoded = ReplicatedSqlSnapshot::decode(&bytes).unwrap();
         assert_eq!(decoded.metadata.latest_sql_apply_index, 4);
@@ -574,11 +563,8 @@ mod tests {
     fn restart_after_restore_preserves_snapshot_state() {
         let source_dir = TempDir::new().unwrap();
         let (source_engine, source_catalog, source_clock) = seed_source(&source_dir);
-        let source_manager = ReplicatedSqlSnapshotManager::new(
-            source_engine,
-            source_catalog,
-            source_clock,
-        );
+        let source_manager =
+            ReplicatedSqlSnapshotManager::new(source_engine, source_catalog, source_clock);
         let bytes = source_manager.export(5, 2).unwrap();
 
         let target_dir = TempDir::new().unwrap();
@@ -605,13 +591,9 @@ mod tests {
     fn replay_at_or_before_restored_marker_is_idempotent() {
         let source_dir = TempDir::new().unwrap();
         let (source_engine, source_catalog, source_clock) = seed_source(&source_dir);
-        let bytes = ReplicatedSqlSnapshotManager::new(
-            source_engine,
-            source_catalog,
-            source_clock,
-        )
-        .export(5, 2)
-        .unwrap();
+        let bytes = ReplicatedSqlSnapshotManager::new(source_engine, source_catalog, source_clock)
+            .export(5, 2)
+            .unwrap();
 
         let target_dir = TempDir::new().unwrap();
         let (target_manager, engine, catalog, clock) = manager_for(&target_dir);
@@ -619,12 +601,7 @@ mod tests {
         let before = engine
             .raw_scan_table_versions(table_id_for("items"))
             .unwrap();
-        let sm = ReplicatedSqlStateMachine::new(
-            Arc::clone(&engine),
-            catalog,
-            clock,
-        )
-        .unwrap();
+        let sm = ReplicatedSqlStateMachine::new(Arc::clone(&engine), catalog, clock).unwrap();
         let outcome = sm
             .apply_log_entry(&LogEntry {
                 term: 1,
@@ -655,13 +632,10 @@ mod tests {
     fn corrupt_snapshot_leaves_existing_target_unchanged() {
         let source_dir = TempDir::new().unwrap();
         let (source_engine, source_catalog, source_clock) = seed_source(&source_dir);
-        let mut bytes = ReplicatedSqlSnapshotManager::new(
-            source_engine,
-            source_catalog,
-            source_clock,
-        )
-        .export(5, 2)
-        .unwrap();
+        let mut bytes =
+            ReplicatedSqlSnapshotManager::new(source_engine, source_catalog, source_clock)
+                .export(5, 2)
+                .unwrap();
         bytes[12] ^= 0x80;
 
         let target_dir = TempDir::new().unwrap();
@@ -686,13 +660,9 @@ mod tests {
     fn injected_write_failure_does_not_publish_partial_restore() {
         let source_dir = TempDir::new().unwrap();
         let (source_engine, source_catalog, source_clock) = seed_source(&source_dir);
-        let bytes = ReplicatedSqlSnapshotManager::new(
-            source_engine,
-            source_catalog,
-            source_clock,
-        )
-        .export(5, 2)
-        .unwrap();
+        let bytes = ReplicatedSqlSnapshotManager::new(source_engine, source_catalog, source_clock)
+            .export(5, 2)
+            .unwrap();
         let decoded = ReplicatedSqlSnapshot::decode(&bytes).unwrap();
 
         let target_dir = TempDir::new().unwrap();
