@@ -229,14 +229,13 @@ fn read_rows(port: u16) -> Result<BTreeSet<(String, String)>, postgres::Error> {
 
 fn wait_rows(node: &mut NodeProcess, expected: &BTreeSet<(String, String)>) {
     let deadline = Instant::now() + CONVERGENCE_TIMEOUT;
-    let mut last_read = String::from("no read attempted");
     loop {
         assert!(node.is_running(), "{} exited before convergence", node.spec.id);
-        match read_rows(node.spec.sql_port) {
+        let last_read = match read_rows(node.spec.sql_port) {
             Ok(rows) if &rows == expected => return,
-            Ok(rows) => last_read = format!("rows={rows:?}"),
-            Err(error) => last_read = format!("error={error}"),
-        }
+            Ok(rows) => format!("rows={rows:?}"),
+            Err(error) => format!("error={error}"),
+        };
         assert!(
             Instant::now() < deadline,
             "{} did not converge to rows {:?}; last read={}",
