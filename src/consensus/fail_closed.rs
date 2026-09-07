@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Defense-in-depth fail-closed adapter for Raft stable storage.
 //!
-//! `RaftNode` itself treats `RaftPersistenceStore::load`/`save` errors as fatal
-//! consensus failures and fail-stops rather than logging and continuing. This
-//! adapter preserves that invariant at the store boundary too by converting an
-//! underlying storage error into an explicit fatal-consensus panic before it
-//! can be accidentally handled as recoverable by another caller.
+//! `RaftNode` itself treats required persistence errors as fatal consensus
+//! failures and fail-stops rather than logging and continuing. This adapter
+//! preserves that invariant at the store boundary too by converting underlying
+//! save/load/snapshot-staging errors into explicit fatal-consensus panics before
+//! they can be accidentally handled as recoverable by another caller.
 
 use std::sync::Arc;
 
@@ -13,10 +13,10 @@ use super::log::{PersistentState, RaftPersistenceStore};
 
 /// Strict adapter for consensus-critical persistence.
 ///
-/// `save` and `load` never return an underlying storage error. They panic with
-/// an explicit fatal-consensus message instead. `RaftNode` independently
-/// fail-stops returned persistence errors; this adapter is defense in depth and
-/// makes misuse through another caller fail closed as well.
+/// Required stable-storage operations never return an underlying storage error.
+/// They panic with an explicit fatal-consensus message instead. `RaftNode`
+/// independently fail-stops returned persistence errors; this adapter is defense
+/// in depth and makes misuse through another caller fail closed as well.
 pub struct FailClosedPersistenceStore {
     inner: Arc<dyn RaftPersistenceStore>,
 }
@@ -32,6 +32,13 @@ impl RaftPersistenceStore for FailClosedPersistenceStore {
         match self.inner.save(state, snapshot_data) {
             Ok(()) => Ok(()),
             Err(error) => panic!("fatal Raft persistence save failure: {error}"),
+        }
+    }
+
+    fn stage_snapshot(&self, snapshot_data: &[u8]) -> Result<(), String> {
+        match self.inner.stage_snapshot(snapshot_data) {
+            Ok(()) => Ok(()),
+            Err(error) => panic!("fatal Raft snapshot staging failure: {error}"),
         }
     }
 
@@ -51,6 +58,7 @@ mod tests {
     struct FailingStore {
         fail_save: AtomicBool,
         fail_load: AtomicBool,
+        fail_stage: AtomicBool,
     }
 
     impl FailingStore {
@@ -58,6 +66,7 @@ mod tests {
             Self {
                 fail_save: AtomicBool::new(true),
                 fail_load: AtomicBool::new(false),
+                fail_stage: AtomicBool::new(false),
             }
         }
 
@@ -65,6 +74,15 @@ mod tests {
             Self {
                 fail_save: AtomicBool::new(false),
                 fail_load: AtomicBool::new(true),
+                fail_stage: AtomicBool::new(false),
+            }
+        }
+
+        fn stage_failure() -> Self {
+            Self {
+                fail_save: AtomicBool::new(false),
+                fail_load: AtomicBool::new(false),
+                fail_stage: AtomicBool::new(true),
             }
         }
     }
@@ -73,6 +91,14 @@ mod tests {
         fn save(&self, _state: &PersistentState, _snapshot_data: &[u8]) -> Result<(), String> {
             if self.fail_save.load(Ordering::SeqCst) {
                 Err("injected save failure".to_string())
+            } else {
+                Ok(())
+            }
+        }
+
+        fn stage_snapshot(&self, _snapshot_data: &[u8]) -> Result<(), String> {
+            if self.fail_stage.load(Ordering::SeqCst) {
+                Err("injected stage failure".to_string())
             } else {
                 Ok(())
             }
@@ -93,6 +119,14 @@ mod tests {
         let inner: Arc<dyn RaftPersistenceStore> = Arc::new(FailingStore::save_failure());
         let strict = FailClosedPersistenceStore::new(inner);
         strict.save(&PersistentState::new(), &[]).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "fatal Raft snapshot staging failure: injected stage failure")]
+    fn injected_snapshot_stage_failure_is_fail_closed() {
+        let inner: Arc<dyn RaftPersistenceStore> = Arc::new(FailingStore::stage_failure());
+        let strict = FailClosedPersistenceStore::new(inner);
+        strict.stage_snapshot(b"candidate").unwrap();
     }
 
     #[test]
