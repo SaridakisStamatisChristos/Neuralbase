@@ -79,11 +79,7 @@ fn insert_plan(id: i64) -> InsertPlan {
 
 async fn spawn_solo(bus: ChannelBus, dir: TempDir) -> SoloNode {
     let engine = Arc::new(StorageEngine::open(dir.path()).unwrap());
-    let catalog = Arc::new(
-        RocksDbCatalog::new(Arc::clone(&engine))
-            .load_all()
-            .unwrap(),
-    );
+    let catalog = Arc::new(RocksDbCatalog::new(Arc::clone(&engine)).load_all().unwrap());
     let clock = Arc::new(HlcClock::new(500));
     let state_machine = Arc::new(
         ReplicatedSqlStateMachine::new(
@@ -98,11 +94,9 @@ async fn spawn_solo(bus: ChannelBus, dir: TempDir) -> SoloNode {
         Arc::clone(&catalog),
         Arc::clone(&clock),
     ));
-    let persistence: Arc<dyn RaftPersistenceStore> = Arc::new(
-        FailClosedPersistenceStore::new(Arc::new(RocksDbRaftPersistenceStore::new(Arc::clone(
-            &engine,
-        )))),
-    );
+    let persistence: Arc<dyn RaftPersistenceStore> = Arc::new(FailClosedPersistenceStore::new(
+        Arc::new(RocksDbRaftPersistenceStore::new(Arc::clone(&engine))),
+    ));
     let transport = Arc::new(ChannelTransport::register("cycle-solo".to_string(), bus).await);
     let (apply_tx, mut apply_rx) = mpsc::channel::<CommittedEntry>(32);
     let apply_state_machine = Arc::clone(&state_machine);
