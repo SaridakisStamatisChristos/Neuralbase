@@ -48,14 +48,17 @@ impl RocksDbCatalog {
     }
 
     /// Load the full catalog into an in-memory snapshot (for startup warm-up).
+    ///
+    /// Corrupt persisted schema bytes fail the whole hydration instead of
+    /// silently returning a partial catalog. Clustered startup relies on this
+    /// fail-closed behavior before it begins serving SQL.
     pub fn load_all(&self) -> Result<InMemoryCatalog, StorageError> {
         let mem = InMemoryCatalog::default();
         for key in self.engine.list_catalog_keys()? {
             if let Some(bytes) = self.engine.read_catalog_entry(&key)? {
-                match serde_json::from_slice::<TableSchema>(&bytes) {
-                    Ok(schema) => mem.register_table(schema),
-                    Err(e) => eprintln!("[catalog] bad schema for {key}: {e}"),
-                }
+                let schema =
+                    serde_json::from_slice::<TableSchema>(&bytes).map_err(StorageError::Serde)?;
+                mem.register_table(schema);
             }
         }
         Ok(mem)
@@ -139,6 +142,21 @@ mod tests {
         for i in 0..5u32 {
             assert!(mem.get_table(&format!("table_{i}")).is_some());
         }
+    }
+
+    #[test]
+    fn load_all_rejects_corrupt_schema_instead_of_partial_hydration() {
+        let (cat, _dir) = setup();
+        cat.register_table(&TableSchema {
+            name: "valid".to_string(),
+            columns: vec![],
+        })
+        .unwrap();
+        cat.engine
+            .write_catalog_entry("broken", b"{not-valid-json")
+            .unwrap();
+
+        assert!(matches!(cat.load_all(), Err(StorageError::Serde(_))));
     }
 
     #[test]
