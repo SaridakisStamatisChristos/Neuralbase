@@ -2,9 +2,10 @@
 //! SQL-aware implementation of the Raft state-machine snapshot contract.
 //!
 //! This adapter keeps snapshot wire-format knowledge out of consensus code. It
-//! validates the embedded Raft boundary before restore, delegates canonical SQL
-//! export/restore to `ReplicatedSqlSnapshotManager`, and avoids regressing an
-//! already-applied SQL suffix when restarting from an older active snapshot.
+//! validates the embedded Raft boundary before durable install staging, delegates
+//! canonical SQL export/restore to `ReplicatedSqlSnapshotManager`, and avoids
+//! regressing an already-applied SQL suffix when restarting from an older active
+//! snapshot.
 
 use std::sync::Arc;
 
@@ -76,27 +77,15 @@ impl ReplicatedSqlSnapshotHooks {
             last_commit_ts,
         })
     }
-}
 
-impl StateMachineSnapshotStore for ReplicatedSqlSnapshotHooks {
-    fn create_snapshot(
-        &self,
-        last_included_index: u64,
-        last_included_term: u64,
-    ) -> Result<Vec<u8>, String> {
-        self.manager
-            .export(last_included_index, last_included_term)
-            .map_err(|error| format!("export replicated SQL snapshot: {error}"))
-    }
-
-    fn restore_snapshot(
+    fn decode_and_validate(
         &self,
         last_included_index: u64,
         last_included_term: u64,
         snapshot_data: &[u8],
-    ) -> Result<(), String> {
+    ) -> Result<ReplicatedSqlSnapshot, String> {
         let decoded = ReplicatedSqlSnapshot::decode(snapshot_data)
-            .map_err(|error| format!("decode replicated SQL snapshot before restore: {error}"))?;
+            .map_err(|error| format!("decode replicated SQL snapshot: {error}"))?;
         if decoded.metadata.last_included_index != last_included_index
             || decoded.metadata.last_included_term != last_included_term
         {
@@ -117,11 +106,7 @@ impl StateMachineSnapshotStore for ReplicatedSqlSnapshotHooks {
                     decoded.metadata.latest_commit_ts
                 ));
             }
-            // Restart after a snapshot can legitimately find SQL state that has
-            // already applied retained log entries beyond the active snapshot.
-            // Replaying those entries is idempotent; restoring the older snapshot
-            // would incorrectly erase that durable suffix.
-            return Ok(());
+            return Ok(decoded);
         }
 
         if current.last_applied_index > decoded.metadata.latest_sql_apply_index {
@@ -132,7 +117,49 @@ impl StateMachineSnapshotStore for ReplicatedSqlSnapshotHooks {
                 decoded.metadata.latest_sql_apply_index
             ));
         }
+        Ok(decoded)
+    }
+}
 
+impl StateMachineSnapshotStore for ReplicatedSqlSnapshotHooks {
+    fn create_snapshot(
+        &self,
+        last_included_index: u64,
+        last_included_term: u64,
+    ) -> Result<Vec<u8>, String> {
+        self.manager
+            .export(last_included_index, last_included_term)
+            .map_err(|error| format!("export replicated SQL snapshot: {error}"))
+    }
+
+    fn validate_snapshot(
+        &self,
+        last_included_index: u64,
+        last_included_term: u64,
+        snapshot_data: &[u8],
+    ) -> Result<(), String> {
+        self.decode_and_validate(last_included_index, last_included_term, snapshot_data)
+            .map(|_| ())
+    }
+
+    fn restore_snapshot(
+        &self,
+        last_included_index: u64,
+        last_included_term: u64,
+        snapshot_data: &[u8],
+    ) -> Result<(), String> {
+        let decoded =
+            self.decode_and_validate(last_included_index, last_included_term, snapshot_data)?;
+        let current = self.durable_apply_state()?;
+        if current.last_applied_index > last_included_index {
+            // Restart after a snapshot can legitimately find SQL state that has
+            // already applied retained log entries beyond the active snapshot.
+            // Replaying those entries is idempotent; restoring the older snapshot
+            // would incorrectly erase that durable suffix.
+            return Ok(());
+        }
+
+        debug_assert!(current.last_applied_index <= decoded.metadata.latest_sql_apply_index);
         self.manager
             .restore(snapshot_data)
             .map(|_| ())
@@ -158,20 +185,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn restore_rejects_rpc_boundary_mismatch_before_mutation() {
-        let dir = TempDir::new().unwrap();
-        let engine = Arc::new(StorageEngine::open(dir.path()).unwrap());
-        let catalog = Arc::new(InMemoryCatalog::default());
-        let clock = Arc::new(HlcClock::new(500));
-        let hooks = ReplicatedSqlSnapshotHooks::new(
-            Arc::clone(&engine),
-            Arc::clone(&catalog),
-            clock,
-        );
-        catalog.create_table(schema());
-
-        let snapshot = crate::replicated_snapshot::ReplicatedSqlSnapshot {
+    fn snapshot_bytes() -> Vec<u8> {
+        crate::replicated_snapshot::ReplicatedSqlSnapshot {
             metadata: SnapshotMetadata {
                 last_included_index: 3,
                 last_included_term: 2,
@@ -186,9 +201,40 @@ mod tests {
             metadata_extension: vec![],
         }
         .encode()
-        .unwrap();
+        .unwrap()
+    }
 
-        let error = hooks.restore_snapshot(4, 2, &snapshot).unwrap_err();
+    #[test]
+    fn validation_rejects_rpc_boundary_mismatch_before_mutation() {
+        let dir = TempDir::new().unwrap();
+        let engine = Arc::new(StorageEngine::open(dir.path()).unwrap());
+        let catalog = Arc::new(InMemoryCatalog::default());
+        let clock = Arc::new(HlcClock::new(500));
+        let hooks = ReplicatedSqlSnapshotHooks::new(
+            Arc::clone(&engine),
+            Arc::clone(&catalog),
+            clock,
+        );
+        catalog.create_table(schema());
+
+        let error = hooks.validate_snapshot(4, 2, &snapshot_bytes()).unwrap_err();
+        assert!(error.contains("snapshot boundary mismatch"));
+        assert!(engine.list_catalog_keys().unwrap().is_empty());
+    }
+
+    #[test]
+    fn restore_rejects_rpc_boundary_mismatch_before_mutation() {
+        let dir = TempDir::new().unwrap();
+        let engine = Arc::new(StorageEngine::open(dir.path()).unwrap());
+        let catalog = Arc::new(InMemoryCatalog::default());
+        let clock = Arc::new(HlcClock::new(500));
+        let hooks = ReplicatedSqlSnapshotHooks::new(
+            Arc::clone(&engine),
+            Arc::clone(&catalog),
+            clock,
+        );
+
+        let error = hooks.restore_snapshot(4, 2, &snapshot_bytes()).unwrap_err();
         assert!(error.contains("snapshot boundary mismatch"));
         assert!(engine.list_catalog_keys().unwrap().is_empty());
     }
