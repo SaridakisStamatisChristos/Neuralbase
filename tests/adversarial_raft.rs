@@ -679,9 +679,9 @@ async fn s13_apply_tx_backpressure_does_not_drop_entries() {
             continue;
         }
         let mut rx = rx.take().expect("follower apply receiver present");
-        follower_drainers.push(tokio::spawn(async move {
-            while rx.recv().await.is_some() {}
-        }));
+        follower_drainers.push(tokio::spawn(
+            async move { while rx.recv().await.is_some() {} },
+        ));
     }
 
     let count = 20u32;

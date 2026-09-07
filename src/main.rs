@@ -342,10 +342,7 @@ async fn main() -> io::Result<()> {
         .as_ref()
         .zip(hlc_clock.as_ref())
         .map(|(engine, clock)| {
-            Arc::new(TransactionManager::new(
-                engine.clone(),
-                Arc::clone(clock),
-            ))
+            Arc::new(TransactionManager::new(engine.clone(), Arc::clone(clock)))
         });
 
     let _gc_handle = txn_mgr
@@ -396,10 +393,9 @@ async fn main() -> io::Result<()> {
         storage_engine.as_ref(),
         hlc_clock.as_ref(),
     ) {
-        (Some(runtime), Some(engine), Some(clock)) => Some(runtime.sql_gateway(
-            Arc::clone(engine),
-            Arc::clone(clock),
-        )),
+        (Some(runtime), Some(engine), Some(clock)) => {
+            Some(runtime.sql_gateway(Arc::clone(engine), Arc::clone(clock)))
+        }
         _ => None,
     };
     server::configure_replicated_sql_gateway(replicated_sql_gateway);

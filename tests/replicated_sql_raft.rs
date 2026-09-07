@@ -90,21 +90,18 @@ async fn spawn_three_node_cluster() -> Vec<NodeHarness> {
             .unwrap(),
         );
 
-        let transport = Arc::new(
-            ChannelTransport::register((*id).to_string(), Arc::clone(&bus)).await,
-        );
+        let transport =
+            Arc::new(ChannelTransport::register((*id).to_string(), Arc::clone(&bus)).await);
         let peers = ids
             .iter()
             .filter(|peer| *peer != id)
             .map(|peer| (*peer).to_string())
             .collect();
-        let raw_store: Arc<dyn RaftPersistenceStore> = Arc::new(
-            RocksDbRaftPersistenceStore::new(Arc::clone(&engine)),
-        );
+        let raw_store: Arc<dyn RaftPersistenceStore> =
+            Arc::new(RocksDbRaftPersistenceStore::new(Arc::clone(&engine)));
         let strict_store: Arc<dyn RaftPersistenceStore> =
             Arc::new(FailClosedPersistenceStore::new(raw_store));
-        let (apply_tx, mut apply_rx) =
-            mpsc::channel::<CommittedEntry>(APPLY_CHANNEL_CAPACITY);
+        let (apply_tx, mut apply_rx) = mpsc::channel::<CommittedEntry>(APPLY_CHANNEL_CAPACITY);
         let sm = Arc::clone(&state_machine);
         let apply_task = tokio::spawn(async move {
             while let Some(committed) = apply_rx.recv().await {
@@ -277,12 +274,11 @@ async fn restart_recovers_acknowledged_sql_and_replays_without_duplicate_effects
     let clock = Arc::new(HlcClock::new(500));
     let bus = ChannelTransport::new_bus();
 
-    let transport = Arc::new(
-        ChannelTransport::register("restart-solo".to_string(), Arc::clone(&bus)).await,
-    );
-    let store: Arc<dyn RaftPersistenceStore> = Arc::new(FailClosedPersistenceStore::new(
-        Arc::new(RocksDbRaftPersistenceStore::new(Arc::clone(&engine))),
-    ));
+    let transport =
+        Arc::new(ChannelTransport::register("restart-solo".to_string(), Arc::clone(&bus)).await);
+    let store: Arc<dyn RaftPersistenceStore> = Arc::new(FailClosedPersistenceStore::new(Arc::new(
+        RocksDbRaftPersistenceStore::new(Arc::clone(&engine)),
+    )));
     let sm = Arc::new(
         ReplicatedSqlStateMachine::new(
             Arc::clone(&engine),
@@ -313,19 +309,18 @@ async fn restart_recovers_acknowledged_sql_and_replays_without_duplicate_effects
         assert!(tokio::time::Instant::now() < deadline);
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    let gateway = ReplicatedSqlGateway::new(
-        client_tx,
-        shared,
-        Arc::clone(&engine),
-        Arc::clone(&clock),
-    );
+    let gateway =
+        ReplicatedSqlGateway::new(client_tx, shared, Arc::clone(&engine), Arc::clone(&clock));
     let table = schema();
     gateway.create_table(table.clone()).await.unwrap();
     gateway
         .insert(&InsertPlan {
             table: table.clone(),
             columns: vec!["id".to_string(), "name".to_string()],
-            rows: vec![vec![SqlValue::Int(7), SqlValue::Text("durable".to_string())]],
+            rows: vec![vec![
+                SqlValue::Int(7),
+                SqlValue::Text("durable".to_string()),
+            ]],
         })
         .await
         .unwrap();
@@ -356,9 +351,8 @@ async fn restart_recovers_acknowledged_sql_and_replays_without_duplicate_effects
     );
     assert_eq!(engine.raw_scan_table_versions(tid).unwrap().len(), 1);
 
-    let transport2 = Arc::new(
-        ChannelTransport::register("restart-solo".to_string(), Arc::clone(&bus)).await,
-    );
+    let transport2 =
+        Arc::new(ChannelTransport::register("restart-solo".to_string(), Arc::clone(&bus)).await);
     let store2: Arc<dyn RaftPersistenceStore> = Arc::new(FailClosedPersistenceStore::new(
         Arc::new(RocksDbRaftPersistenceStore::new(Arc::clone(&engine))),
     ));
@@ -396,7 +390,10 @@ async fn restart_recovers_acknowledged_sql_and_replays_without_duplicate_effects
     let ack = gateway2
         .update(&UpdatePlan {
             table,
-            assignments: vec![("name".to_string(), SqlValue::Text("after-restart".to_string()))],
+            assignments: vec![(
+                "name".to_string(),
+                SqlValue::Text("after-restart".to_string()),
+            )],
             predicate: Some(DmlPredicate {
                 column: "id".to_string(),
                 op: DmlCmpOp::Eq,

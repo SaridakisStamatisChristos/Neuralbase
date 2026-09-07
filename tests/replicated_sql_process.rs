@@ -123,13 +123,7 @@ fn build_specs(root: &TempDir) -> Vec<NodeSpec> {
             let id = format!("proc_node{}", i + 1);
             let peers = (0..3)
                 .filter(|peer| *peer != i)
-                .map(|peer| {
-                    format!(
-                        "proc_node{}=127.0.0.1:{}",
-                        peer + 1,
-                        raft_ports[peer]
-                    )
-                })
+                .map(|peer| format!("proc_node{}=127.0.0.1:{}", peer + 1, raft_ports[peer]))
                 .collect::<Vec<_>>()
                 .join(",");
             NodeSpec {
@@ -147,9 +141,7 @@ fn build_specs(root: &TempDir) -> Vec<NodeSpec> {
 
 fn connect(port: u16) -> Result<Client, postgres::Error> {
     Client::connect(
-        &format!(
-            "host=127.0.0.1 port={port} user=postgres dbname=postgres connect_timeout=1"
-        ),
+        &format!("host=127.0.0.1 port={port} user=postgres dbname=postgres connect_timeout=1"),
         NoTls,
     )
 }
@@ -266,7 +258,11 @@ fn read_rows(port: u16) -> Result<BTreeSet<(String, String)>, String> {
 fn wait_rows(node: &mut NodeProcess, expected: &BTreeSet<(String, String)>) {
     let deadline = Instant::now() + CONVERGENCE_TIMEOUT;
     loop {
-        assert!(node.is_running(), "{} exited before convergence", node.spec.id);
+        assert!(
+            node.is_running(),
+            "{} exited before convergence",
+            node.spec.id
+        );
         let last_read = match read_rows(node.spec.sql_port) {
             Ok(rows) if &rows == expected => return,
             Ok(rows) => format!("rows={rows:?}"),
@@ -314,10 +310,7 @@ fn process_cluster_mutations_survive_failover_and_restart() {
         &mut nodes,
         "UPDATE replicated_items SET name = 'updated' WHERE id = 1",
     );
-    let delete_leader = mutate_on_leader(
-        &mut nodes,
-        "DELETE FROM replicated_items WHERE id = 2",
-    );
+    let delete_leader = mutate_on_leader(&mut nodes, "DELETE FROM replicated_items WHERE id = 2");
 
     let expected_before_failover = BTreeSet::from([("1".to_string(), "updated".to_string())]);
     wait_all_rows(&mut nodes, &expected_before_failover);
@@ -331,8 +324,7 @@ fn process_cluster_mutations_survive_failover_and_restart() {
     );
     assert_ne!(new_leader, killed, "dead leader cannot acknowledge a write");
 
-    let expected_after_failover =
-        BTreeSet::from([("1".to_string(), "after_failover".to_string())]);
+    let expected_after_failover = BTreeSet::from([("1".to_string(), "after_failover".to_string())]);
     for (index, node) in nodes.iter_mut().enumerate() {
         if index != killed {
             wait_rows(node, &expected_after_failover);
@@ -357,8 +349,7 @@ fn process_cluster_mutations_survive_failover_and_restart() {
         &mut nodes,
         "UPDATE replicated_items SET name = 'after_restart' WHERE id = 1",
     );
-    let expected_after_restart =
-        BTreeSet::from([("1".to_string(), "after_restart".to_string())]);
+    let expected_after_restart = BTreeSet::from([("1".to_string(), "after_restart".to_string())]);
     wait_all_rows(&mut nodes, &expected_after_restart);
 
     // Race a real PostgreSQL write against SIGKILL of the current leader. A
@@ -375,9 +366,7 @@ fn process_cluster_mutations_survive_failover_and_restart() {
                 .send(())
                 .map_err(|error| format!("signal crash-write readiness: {error}"))?;
             client
-                .simple_query(
-                    "UPDATE replicated_items SET name = 'crash_candidate' WHERE id = 1",
-                )
+                .simple_query("UPDATE replicated_items SET name = 'crash_candidate' WHERE id = 1")
                 .map(|_| ())
                 .map_err(|error| error.to_string())
         })();
@@ -403,8 +392,7 @@ fn process_cluster_mutations_survive_failover_and_restart() {
             &mut nodes,
             "DELETE FROM replicated_items WHERE id = -999999",
         );
-        let acknowledged =
-            BTreeSet::from([("1".to_string(), "crash_candidate".to_string())]);
+        let acknowledged = BTreeSet::from([("1".to_string(), "crash_candidate".to_string())]);
         for (index, node) in nodes.iter_mut().enumerate() {
             if index != crash_leader {
                 wait_rows(node, &acknowledged);

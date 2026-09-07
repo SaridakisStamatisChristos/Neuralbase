@@ -97,10 +97,7 @@ pub enum ReplicatedSqlApplyError {
     #[error(
         "replicated DML timestamp {commit_ts} is not newer than durable timestamp {last_commit_ts}"
     )]
-    NonMonotonicCommitTimestamp {
-        commit_ts: u64,
-        last_commit_ts: u64,
-    },
+    NonMonotonicCommitTimestamp { commit_ts: u64, last_commit_ts: u64 },
 }
 
 pub struct ReplicatedSqlStateMachine {
@@ -185,7 +182,11 @@ impl ReplicatedSqlStateMachine {
         match &mutation {
             ReplicatedMutation::CreateTable { schema } => {
                 let serialized = serde_json::to_vec(schema)?;
-                batch.put_cf(&catalog_cf, schema.name.to_lowercase().as_bytes(), serialized);
+                batch.put_cf(
+                    &catalog_cf,
+                    schema.name.to_lowercase().as_bytes(),
+                    serialized,
+                );
             }
             ReplicatedMutation::DropTable {
                 table, table_id, ..
