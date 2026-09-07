@@ -18,6 +18,8 @@
 //   - Required stable-storage load/save failures fail-stop the Raft node.
 //   - SQL-aware snapshots are created only at an applied/committed boundary,
 //     durably staged before log truncation, and restored before install ACK.
+//   - Interrupted follower snapshot installs are resumed from staged metadata on
+//     restart, closing the SQL-restore/Raft-publication crash window.
 //
 // CONFIDENCE: raw=0.76 effective=0.68
 // DEPENDS_ON: log, rpc, snapshot, transport
@@ -31,7 +33,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::consensus::log::{PersistentState, RaftPersistenceStore};
+use crate::consensus::log::{
+    PersistentState, RaftPersistenceStore, StagedSnapshot, StagedSnapshotKind,
+};
 use crate::consensus::rpc::{
     AppendEntriesArgs, AppendEntriesReply, InstallSnapshotArgs, InstallSnapshotReply, LogEntry,
     MembershipChange, NodeId, RaftMessage, RequestVoteArgs, RequestVoteReply,
@@ -208,17 +212,11 @@ pub struct RaftNode<T: Transport> {
     leader: Option<LeaderState>,
 
     // Snapshot state (Session 13 / replicated SQL Phase 2).
-    /// Active snapshot bytes held by the leader for forwarding to laggard
-    /// followers via InstallSnapshot. Empty = no active snapshot held.
     snapshot_data: Arc<Vec<u8>>,
-    /// Optional complete state-machine snapshot creator/restorer. Replicated SQL
-    /// attaches this so Raft can enforce lifecycle ordering without knowing the
-    /// SQL snapshot format.
     snapshot_store: Option<Arc<dyn StateMachineSnapshotStore>>,
+    pending_staged_snapshot: Option<StagedSnapshot>,
 
     // Membership-change state (Session 13).
-    /// True while a single-step membership change is being committed.
-    /// Client commands are rejected while this flag is set.
     membership_change_in_progress: bool,
 
     // Leadership transfer state (Session 13 — Raft §3.10).
@@ -230,22 +228,18 @@ pub struct RaftNode<T: Transport> {
     // Election timeout; overrideable for tests.
     election_timeout_base_ms: u64,
 
-    // Legacy apply handoff retained for existing callers/tests. Delivery to
-    // this channel is treated as the apply point because it has no completion
-    // protocol. Replicated SQL uses confirmed_apply_tx instead.
+    // Legacy apply handoff retained for existing callers/tests.
     apply_tx: Option<mpsc::Sender<LogEntry>>,
 
-    // Confirmed apply handoff used by replicated SQL. The Raft loop waits for
-    // the consumer's completion acknowledgement before advancing last_applied.
+    // Confirmed apply handoff used by replicated SQL.
     confirmed_apply_tx: Option<mpsc::Sender<CommittedEntry>>,
 
-    // Regular client replies keyed by appended log index. They remain pending
-    // through local append and quorum replication, and resolve only on apply.
+    // Regular client replies keyed by appended log index.
     pending_clients: HashMap<u64, oneshot::Sender<Result<u64, String>>>,
 }
 
 impl<T: Transport> RaftNode<T> {
-    /// Create a node.  Call `spawn` to start it.
+    /// Create a node. Call `spawn` to start it.
     pub fn new(id: NodeId, peers: Vec<NodeId>, transport: Arc<T>) -> Self {
         Self {
             id,
@@ -260,6 +254,7 @@ impl<T: Transport> RaftNode<T> {
             leader: None,
             snapshot_data: Arc::new(vec![]),
             snapshot_store: None,
+            pending_staged_snapshot: None,
             membership_change_in_progress: false,
             transfer_in_progress: None,
             persistence: None,
@@ -270,8 +265,6 @@ impl<T: Transport> RaftNode<T> {
         }
     }
 
-    /// Attach the legacy bounded apply channel. Committed `LogEntry` values are
-    /// sent in order. Delivery is the apply acknowledgement point for this mode.
     pub fn with_apply_tx(mut self, tx: mpsc::Sender<LogEntry>) -> Self {
         self.apply_tx = Some(tx);
         self.confirmed_apply_tx = None;
@@ -279,40 +272,26 @@ impl<T: Transport> RaftNode<T> {
     }
 
     /// Attach a complete state-machine snapshot creator/restorer.
-    ///
-    /// If persistence was attached first and loaded an active snapshot, restore
-    /// it now before the node can spawn. This makes the builder safe in either
-    /// `snapshot_store -> persistence` or `persistence -> snapshot_store` order.
     pub fn with_snapshot_store(mut self, store: Arc<dyn StateMachineSnapshotStore>) -> Self {
-        if self.ps.snapshot_index != 0 || !self.snapshot_data.is_empty() {
-            if self.ps.snapshot_index == 0 || self.snapshot_data.is_empty() {
-                panic!(
-                    "fatal Raft snapshot recovery: snapshot boundary metadata and active snapshot bytes are inconsistent"
-                );
-            }
-            if let Err(error) = store.restore_snapshot(
-                self.ps.snapshot_index,
-                self.ps.snapshot_term,
-                &self.snapshot_data,
-            ) {
-                panic!("fatal state-machine snapshot recovery failure: {error}");
-            }
-        }
         self.snapshot_store = Some(store);
+        let recovered_install = self.recover_staged_snapshot_if_possible();
+        if !recovered_install {
+            self.restore_active_snapshot_if_possible();
+        }
         self
     }
 
     /// Attach a bounded state-machine channel with explicit completion.
-    ///
-    /// This is the required mode for replicated SQL: a committed entry is sent
-    /// to the consumer and ClientCommand success waits until `completion`
-    /// reports that the durable state-machine apply finished successfully.
-    /// Persisted snapshots are accepted only when a SQL-aware snapshot store has
-    /// already validated/restored them; legacy opaque snapshots remain rejected.
     pub fn with_confirmed_apply_tx(mut self, tx: mpsc::Sender<CommittedEntry>) -> Self {
-        if (self.ps.snapshot_index != 0 || !self.snapshot_data.is_empty())
-            && self.snapshot_store.is_none()
-        {
+        let has_unrecoverable_snapshot =
+            (self.ps.snapshot_index != 0 || !self.snapshot_data.is_empty())
+                && self.snapshot_store.is_none();
+        let has_unrecoverable_install = self
+            .pending_staged_snapshot
+            .as_ref()
+            .is_some_and(|staged| staged.kind == StagedSnapshotKind::Installation)
+            && self.snapshot_store.is_none();
+        if has_unrecoverable_snapshot || has_unrecoverable_install {
             panic!(
                 "replicated SQL confirmed apply cannot start from a legacy Raft snapshot; SQL state snapshot restore is not implemented"
             );
@@ -322,50 +301,129 @@ impl<T: Transport> RaftNode<T> {
         self
     }
 
-    /// Attach a persistence store. If a previously-saved state exists it is
-    /// loaded immediately (restoring term, votedFor, log, snapshot).
-    ///
-    /// When a state-machine snapshot store is already attached, active snapshot
-    /// bytes are validated/restored before the recovered Raft state is accepted.
-    /// A required stable-storage load or snapshot-restore failure is fatal.
-    /// MUST be called before `spawn`. Calling after spawn has no effect.
+    /// Attach a persistence store and recover any active/staged snapshot state.
     pub fn with_persistence(mut self, store: Arc<dyn RaftPersistenceStore>) -> Self {
-        match store.load() {
-            Ok(Some((ps, snap))) => {
-                if ps.snapshot_index != 0 || !snap.is_empty() {
-                    if ps.snapshot_index == 0 || snap.is_empty() {
-                        panic!(
-                            "fatal Raft snapshot recovery: snapshot boundary metadata and active snapshot bytes are inconsistent"
-                        );
-                    }
-                    if let Some(snapshot_store) = &self.snapshot_store {
-                        if let Err(error) = snapshot_store.restore_snapshot(
-                            ps.snapshot_index,
-                            ps.snapshot_term,
-                            &snap,
-                        ) {
-                            panic!("fatal state-machine snapshot recovery failure: {error}");
-                        }
-                    } else if self.confirmed_apply_tx.is_some() {
-                        panic!(
-                            "replicated SQL confirmed apply cannot load a legacy Raft snapshot; SQL state snapshot restore is not implemented"
-                        );
-                    }
-                }
-                self.snapshot_data = Arc::new(snap);
-                let snap_idx = ps.snapshot_index;
-                self.ps = ps;
-                self.commit_index = snap_idx;
-                self.last_applied = snap_idx;
-            }
-            Ok(None) => {}
+        let loaded = match store.load() {
+            Ok(state) => state,
             Err(error) => panic!("fatal Raft persistence load failure: {error}"),
+        };
+        let staged = match store.load_staged_snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => panic!("fatal staged Raft snapshot load failure: {error}"),
+        };
+
+        if let Some((ps, snap)) = loaded {
+            let has_boundary = ps.snapshot_index != 0;
+            let has_bytes = !snap.is_empty();
+            if has_boundary != has_bytes {
+                panic!(
+                    "fatal Raft snapshot recovery: snapshot boundary metadata and active snapshot bytes are inconsistent"
+                );
+            }
+            self.snapshot_data = Arc::new(snap);
+            let snap_idx = ps.snapshot_index;
+            self.ps = ps;
+            self.commit_index = snap_idx;
+            self.last_applied = snap_idx;
         }
+
         self.persistence = Some(store);
+        self.pending_staged_snapshot = staged;
+        let recovered_install = self.recover_staged_snapshot_if_possible();
+        if !recovered_install {
+            self.restore_active_snapshot_if_possible();
+        }
         self
     }
 
-    /// Override the election timeout (ms) — used by tests for speed.
+    /// Restore the currently active snapshot if both active state and a state-
+    /// machine snapshot implementation are available.
+    fn restore_active_snapshot_if_possible(&self) {
+        let has_boundary = self.ps.snapshot_index != 0;
+        let has_bytes = !self.snapshot_data.is_empty();
+        if has_boundary != has_bytes {
+            panic!(
+                "fatal Raft snapshot recovery: snapshot boundary metadata and active snapshot bytes are inconsistent"
+            );
+        }
+        if !has_boundary {
+            return;
+        }
+        let Some(snapshot_store) = &self.snapshot_store else {
+            return;
+        };
+        if let Err(error) = snapshot_store.restore_snapshot(
+            self.ps.snapshot_index,
+            self.ps.snapshot_term,
+            &self.snapshot_data,
+        ) {
+            panic!("fatal state-machine snapshot recovery failure: {error}");
+        }
+    }
+
+    /// Resolve a crash-left staged snapshot transition when enough components
+    /// are attached. Returns true only when an interrupted installation was
+    /// promoted to the active snapshot, in which case active restore is complete.
+    fn recover_staged_snapshot_if_possible(&mut self) -> bool {
+        let Some(staged) = self.pending_staged_snapshot.clone() else {
+            return false;
+        };
+        let Some(persistence) = self.persistence.as_ref().cloned() else {
+            return false;
+        };
+
+        match staged.kind {
+            StagedSnapshotKind::Creation => {
+                if let Err(error) = persistence.clear_staged_snapshot() {
+                    panic!("fatal staged Raft snapshot clear failure: {error}");
+                }
+                self.pending_staged_snapshot = None;
+                false
+            }
+            StagedSnapshotKind::Installation => {
+                let Some(snapshot_store) = self.snapshot_store.as_ref().cloned() else {
+                    return false;
+                };
+
+                if staged.last_included_index <= self.ps.snapshot_index {
+                    if let Err(error) = persistence.clear_staged_snapshot() {
+                        panic!("fatal staged Raft snapshot clear failure: {error}");
+                    }
+                    self.pending_staged_snapshot = None;
+                    return false;
+                }
+
+                if let Err(error) = snapshot_store.validate_snapshot(
+                    staged.last_included_index,
+                    staged.last_included_term,
+                    staged.data.as_slice(),
+                ) {
+                    panic!("fatal staged state-machine snapshot validation failure: {error}");
+                }
+                if let Err(error) = snapshot_store.restore_snapshot(
+                    staged.last_included_index,
+                    staged.last_included_term,
+                    staged.data.as_slice(),
+                ) {
+                    panic!("fatal staged state-machine snapshot recovery failure: {error}");
+                }
+
+                self.ps.install_snapshot(
+                    staged.last_included_index,
+                    staged.last_included_term,
+                );
+                self.snapshot_data = Arc::clone(&staged.data);
+                self.commit_index = self.commit_index.max(staged.last_included_index);
+                self.last_applied = self.last_applied.max(staged.last_included_index);
+                if let Err(error) = persistence.save(&self.ps, &self.snapshot_data) {
+                    panic!("fatal Raft snapshot recovery publish failure: {error}");
+                }
+                self.pending_staged_snapshot = None;
+                true
+            }
+        }
+    }
+
     pub fn set_election_timeout_ms(&mut self, ms: u64) {
         self.election_timeout_base_ms = ms;
     }
@@ -377,14 +435,6 @@ impl<T: Transport> RaftNode<T> {
         Duration::from_millis(base + extra)
     }
 
-    // ── Persistence helper ─────────────────────────────────────────────────
-
-    /// Flush current persistent state to stable storage.
-    ///
-    /// Per Raft safety: called BEFORE the node responds to any RPC that
-    /// depends on the state just mutated (term, vote, log, snapshot). A save
-    /// failure is fail-stop: the task panics before it can acknowledge the
-    /// consensus transition or continue from non-durable state.
     fn persist(&self) {
         if let Some(store) = &self.persistence {
             if let Err(error) = store.save(&self.ps, &self.snapshot_data) {
@@ -415,9 +465,7 @@ impl<T: Transport> RaftNode<T> {
         }
     }
 
-    // ── Spawn ──────────────────────────────────────────────────────────────
-
-    /// Spawn the Raft event loop.  Returns a handle to submit client commands.
+    /// Spawn the Raft event loop.
     pub fn spawn(
         mut self,
     ) -> (
@@ -425,6 +473,16 @@ impl<T: Transport> RaftNode<T> {
         Arc<Mutex<RaftShared>>,
         RaftTaskHandle,
     ) {
+        if self
+            .pending_staged_snapshot
+            .as_ref()
+            .is_some_and(|staged| staged.kind == StagedSnapshotKind::Installation)
+        {
+            panic!(
+                "fatal Raft snapshot recovery: staged installation requires a state-machine snapshot store"
+            );
+        }
+
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<ClientCommand>(64);
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
         let (transfer_tx, mut transfer_rx) =
@@ -447,8 +505,6 @@ impl<T: Transport> RaftNode<T> {
                         self.fail_all_clients("raft node shutting down before command apply");
                         break;
                     }
-
-                    // Incoming RPC.
                     msg = self.transport.recv() => {
                         match msg {
                             Some((from, rmsg)) => {
@@ -460,15 +516,11 @@ impl<T: Transport> RaftNode<T> {
                             }
                         }
                     }
-
-                    // Heartbeat tick (only meaningful when leader).
                     _ = hb_interval.tick() => {
                         if self.role == RaftRole::Leader {
                             self.send_heartbeats().await;
                         }
                     }
-
-                    // Election timeout.
                     _ = time::sleep_until(election_deadline) => {
                         if self.role != RaftRole::Leader {
                             self.start_election().await;
@@ -477,13 +529,7 @@ impl<T: Transport> RaftNode<T> {
                             election_deadline = Instant::now() + self.election_timeout();
                         }
                     }
-
-                    // Client command.
                     Some(cmd) = cmd_rx.recv() => {
-                        // Session-13 membership and compaction admin commands keep
-                        // their historical immediate acknowledgement semantics.
-                        // SQL-aware compaction does all snapshot creation/staging/
-                        // publication synchronously before this acknowledgement.
                         let legacy_admin_ack = cmd.payload.starts_with(MEMBERSHIP_CHANGE_TAG)
                             || cmd.payload.starts_with(COMPACT_LOG_TAG);
                         match self.handle_client_command(cmd.payload) {
@@ -492,11 +538,7 @@ impl<T: Transport> RaftNode<T> {
                             }
                             Ok(index) => {
                                 self.pending_clients.insert(index, cmd.reply);
-                                // Majority-of-one must commit without waiting for an
-                                // AppendEntriesReply that can never exist.
                                 self.try_advance_commit();
-                                // Replicate a newly appended entry immediately rather
-                                // than waiting for the next 50 ms heartbeat tick.
                                 if self.role == RaftRole::Leader {
                                     self.send_heartbeats().await;
                                 }
@@ -506,8 +548,6 @@ impl<T: Transport> RaftNode<T> {
                             }
                         }
                     }
-
-                    // Leader transfer request (from RaftTaskHandle).
                     Some(reply_tx) = transfer_rx.recv() => {
                         let result = if self.role != RaftRole::Leader {
                             Err("not leader".to_string())
@@ -522,9 +562,6 @@ impl<T: Transport> RaftNode<T> {
                     }
                 }
 
-                // Apply all newly committed entries in Raft order. `last_applied`
-                // advances only after the configured state machine acknowledges
-                // completion; regular client success is resolved at that point.
                 while self.last_applied < self.commit_index {
                     let next_index = self.last_applied + 1;
                     let physical = (next_index - self.ps.snapshot_index) as usize;
@@ -533,8 +570,6 @@ impl<T: Transport> RaftNode<T> {
                         return;
                     };
 
-                    // Membership changes remain an internal consensus state-machine
-                    // concern. Replicated SQL commands do not use this tag.
                     if entry.command.starts_with(MEMBERSHIP_CHANGE_TAG) {
                         let payload = &entry.command[MEMBERSHIP_CHANGE_TAG.len()..];
                         if let Ok(change) = serde_json::from_slice::<MembershipChange>(payload) {
@@ -604,7 +639,6 @@ impl<T: Transport> RaftNode<T> {
                     }
                 }
 
-                // ── Session 13: leadership transfer timeout ────────────────
                 if let Some((_target, deadline)) = &self.transfer_in_progress {
                     if Instant::now() >= *deadline {
                         self.transfer_in_progress = None;
@@ -614,7 +648,6 @@ impl<T: Transport> RaftNode<T> {
                     self.transfer_in_progress = None;
                 }
 
-                // Publish shared state.
                 {
                     let mut s = shared_clone.lock().await;
                     s.role = self.role;
@@ -635,8 +668,6 @@ impl<T: Transport> RaftNode<T> {
             },
         )
     }
-
-    // ── Message dispatch ───────────────────────────────────────────────────
 
     async fn handle_message(
         &mut self,
@@ -719,8 +750,6 @@ impl<T: Transport> RaftNode<T> {
         election_deadline
     }
 
-    // ── Election ───────────────────────────────────────────────────────────
-
     async fn start_election(&mut self) {
         self.role = RaftRole::Candidate;
         self.ps.current_term += 1;
@@ -794,8 +823,6 @@ impl<T: Transport> RaftNode<T> {
             }
         }
     }
-
-    // ── Log replication ────────────────────────────────────────────────────
 
     async fn send_heartbeats(&self) {
         for peer in &self.peers {
@@ -922,12 +949,7 @@ impl<T: Transport> RaftNode<T> {
         }
     }
 
-    // ── Role transitions ───────────────────────────────────────────────────
-
     fn become_follower(&mut self, term: u64) {
-        // A client whose entry is already committed may still receive success
-        // after this node applies it as a follower. Uncommitted proposals become
-        // outcome-uncertain on leadership loss and must never be reported as success.
         self.fail_uncommitted_clients("leadership lost before command reached quorum commit");
         self.ps.current_term = term;
         self.ps.voted_for = None;
@@ -953,25 +975,19 @@ impl<T: Transport> RaftNode<T> {
         self.send_heartbeats().await;
     }
 
-    // ── Client command ─────────────────────────────────────────────────────
-
     fn handle_client_command(&mut self, payload: Vec<u8>) -> Result<u64, String> {
         if self.role != RaftRole::Leader {
             return Err(format!("not leader; redirect to {:?}", self.leader_id));
         }
-
         if self.transfer_in_progress.is_some() {
             return Err("leadership transfer in progress; retry later".to_string());
         }
-
         if payload.starts_with(COMPACT_LOG_TAG) {
             return self.handle_compact_log_cmd(payload);
         }
-
         if payload.starts_with(LEADER_TRANSFER_TAG) {
             return Err("use LeaderTransfer RPC, not client command".to_string());
         }
-
         if payload.starts_with(MEMBERSHIP_CHANGE_TAG) {
             if self.membership_change_in_progress {
                 return Err("membership change already in progress".to_string());
@@ -982,13 +998,10 @@ impl<T: Transport> RaftNode<T> {
         }
 
         let idx = self.ps.append(self.ps.current_term, payload);
-        // The append must be durable before replication starts. The public
-        // regular-client reply is intentionally NOT resolved here anymore.
         self.persist();
         Ok(idx)
     }
 
-    /// Handle a compact-log admin command embedded in a ClientCommand payload.
     fn handle_compact_log_cmd(&mut self, payload: Vec<u8>) -> Result<u64, String> {
         if payload.len() < 2 + 8 {
             return Err("compact-log payload too short (need at least 10 bytes)".to_string());
@@ -1011,26 +1024,30 @@ impl<T: Transport> RaftNode<T> {
                 ));
             }
 
-            // Snapshot bytes must be fully created before any log mutation.
-            let data = snapshot_store
-                .create_snapshot(safe_last, last_term)
-                .map_err(|error| format!("state-machine snapshot creation failed: {error}"))?;
+            let data = Arc::new(
+                snapshot_store
+                    .create_snapshot(safe_last, last_term)
+                    .map_err(|error| format!("state-machine snapshot creation failed: {error}"))?,
+            );
+            snapshot_store
+                .validate_snapshot(safe_last, last_term, data.as_slice())
+                .map_err(|error| format!("created state-machine snapshot failed validation: {error}"))?;
 
-            // Production SQL-aware compaction requires durable staging. If a
-            // persistence implementation cannot stage the artifact, fail before
-            // touching the in-memory or durable Raft prefix.
             let persistence = self.persistence.as_ref().ok_or_else(|| {
                 "SQL-aware Raft compaction requires durable persistence".to_string()
             })?;
+            let staged = StagedSnapshot {
+                kind: StagedSnapshotKind::Creation,
+                last_included_index: safe_last,
+                last_included_term: last_term,
+                data: Arc::clone(&data),
+            };
             persistence
-                .stage_snapshot(&data)
+                .stage_snapshot(&staged)
                 .map_err(|error| format!("stage state-machine snapshot: {error}"))?;
 
-            // Only after staging succeeds may the Raft prefix be compacted.
-            // `persist()` atomically publishes compacted state + active snapshot;
-            // the RocksDB implementation clears the staging key in that batch.
             self.ps.install_snapshot(safe_last, last_term);
-            self.snapshot_data = Arc::new(data);
+            self.snapshot_data = data;
             self.persist();
             return Ok(safe_last);
         }
@@ -1042,7 +1059,6 @@ impl<T: Transport> RaftNode<T> {
             );
         }
 
-        // Legacy opaque/non-SQL compaction path retained for compatibility.
         let data = payload[10..].to_vec();
         let safe_last = last_index.min(self.commit_index);
         if safe_last == 0 {
@@ -1058,8 +1074,6 @@ impl<T: Transport> RaftNode<T> {
         self.persist();
         Ok(safe_last)
     }
-
-    // ── Session 13: membership change application ─────────────────────────
 
     fn apply_membership_change(&mut self, change: MembershipChange) {
         match change {
@@ -1082,8 +1096,6 @@ impl<T: Transport> RaftNode<T> {
         }
         self.membership_change_in_progress = false;
     }
-
-    // ── Session 13 / Phase 2: InstallSnapshot handlers ────────────────────
 
     fn on_install_snapshot(&mut self, args: InstallSnapshotArgs) -> InstallSnapshotReply {
         if args.term < self.ps.current_term {
@@ -1115,17 +1127,49 @@ impl<T: Transport> RaftNode<T> {
         }
 
         if let Some(snapshot_store) = &self.snapshot_store {
-            // State-machine validation/restore must complete before Raft discards
-            // any prefix or acknowledges this snapshot. Manager restore is
-            // fail-closed and atomic across SQL data/catalog/apply marker.
+            if snapshot_store
+                .validate_snapshot(
+                    args.last_included_index,
+                    args.last_included_term,
+                    args.data.as_slice(),
+                )
+                .is_err()
+            {
+                return InstallSnapshotReply {
+                    term: self.ps.current_term,
+                    success: false,
+                    last_included_index: args.last_included_index,
+                };
+            }
+
+            let Some(persistence) = &self.persistence else {
+                return InstallSnapshotReply {
+                    term: self.ps.current_term,
+                    success: false,
+                    last_included_index: args.last_included_index,
+                };
+            };
+            let staged = StagedSnapshot {
+                kind: StagedSnapshotKind::Installation,
+                last_included_index: args.last_included_index,
+                last_included_term: args.last_included_term,
+                data: Arc::clone(&args.data),
+            };
+            if let Err(error) = persistence.stage_snapshot(&staged) {
+                panic!("fatal Raft snapshot staging failure: {error}");
+            }
+
             if snapshot_store
                 .restore_snapshot(
                     args.last_included_index,
                     args.last_included_term,
-                    &args.data,
+                    args.data.as_slice(),
                 )
                 .is_err()
             {
+                if let Err(error) = persistence.clear_staged_snapshot() {
+                    panic!("fatal staged Raft snapshot clear failure: {error}");
+                }
                 return InstallSnapshotReply {
                     term: self.ps.current_term,
                     success: false,
@@ -1143,8 +1187,6 @@ impl<T: Transport> RaftNode<T> {
         self.snapshot_data = args.data;
         self.commit_index = self.commit_index.max(args.last_included_index);
         self.last_applied = self.last_applied.max(args.last_included_index);
-
-        // Persist the accepted Raft boundary + exact active bytes before reply.
         self.persist();
 
         InstallSnapshotReply {
@@ -1163,8 +1205,6 @@ impl<T: Transport> RaftNode<T> {
             return;
         }
         if reply.last_included_index > self.ps.snapshot_index {
-            // A follower cannot legitimately acknowledge a boundary newer than
-            // the leader's active snapshot. Ignore the impossible/future reply.
             return;
         }
         if let Some(leader) = &mut self.leader {
@@ -1175,8 +1215,6 @@ impl<T: Transport> RaftNode<T> {
             *next_index = (*next_index).max(acknowledged.saturating_add(1));
         }
     }
-
-    // ── Session 13: leader transfer (Raft §3.10) ──────────────────────────
 
     async fn on_leader_transfer(&mut self, from: &NodeId, target: NodeId) {
         if self.role != RaftRole::Leader {
@@ -1239,7 +1277,6 @@ impl<T: Transport> RaftNode<T> {
             .await;
     }
 
-    /// Handle a TimeoutNow message: immediately start an election.
     async fn on_timeout_now(&mut self, term: u64, election_deadline: &mut Instant) {
         if self.role == RaftRole::Leader {
             return;
@@ -1252,9 +1289,6 @@ impl<T: Transport> RaftNode<T> {
     }
 }
 
-// ── RaftShared ─────────────────────────────────────────────────────────────
-
-/// Publicly observable state snapshot published after each event loop tick.
 #[derive(Debug, Clone)]
 pub struct RaftShared {
     pub role: RaftRole,
