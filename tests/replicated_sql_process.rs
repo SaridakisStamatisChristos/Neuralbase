@@ -19,6 +19,7 @@ use tempfile::TempDir;
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 const LEADER_TIMEOUT: Duration = Duration::from_secs(10);
 const CONVERGENCE_TIMEOUT: Duration = Duration::from_secs(10);
+const QUERY_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Debug)]
 struct NodeSpec {
@@ -184,6 +185,37 @@ fn is_retryable_leadership_loss(error: &postgres::Error) -> bool {
     })
 }
 
+enum MutationAttempt {
+    Success,
+    Retryable,
+    Fatal(String),
+    TimedOut,
+}
+
+fn mutation_attempt(port: u16, sql: &str) -> MutationAttempt {
+    let sql = sql.to_string();
+    let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+    let _worker = thread::spawn(move || {
+        let outcome = match connect(port) {
+            Err(_) => MutationAttempt::Retryable,
+            Ok(mut client) => match client.simple_query(&sql) {
+                Ok(_) => MutationAttempt::Success,
+                Err(error)
+                    if is_follower_error(&error) || is_retryable_leadership_loss(&error) =>
+                {
+                    MutationAttempt::Retryable
+                }
+                Err(error) => MutationAttempt::Fatal(error.to_string()),
+            },
+        };
+        let _ = result_tx.send(outcome);
+    });
+
+    result_rx
+        .recv_timeout(QUERY_TIMEOUT)
+        .unwrap_or(MutationAttempt::TimedOut)
+}
+
 fn mutate_on_leader(nodes: &mut [NodeProcess], sql: &str) -> usize {
     let deadline = Instant::now() + LEADER_TIMEOUT;
     loop {
@@ -191,16 +223,16 @@ fn mutate_on_leader(nodes: &mut [NodeProcess], sql: &str) -> usize {
             if !node.is_running() {
                 continue;
             }
-            let Ok(mut client) = connect(node.spec.sql_port) else {
-                continue;
-            };
-            match client.simple_query(sql) {
-                Ok(_) => return index,
-                Err(error) if is_follower_error(&error) || is_retryable_leadership_loss(&error) => {
-                }
-                Err(error) => panic!(
+            match mutation_attempt(node.spec.sql_port, sql) {
+                MutationAttempt::Success => return index,
+                MutationAttempt::Retryable => {}
+                MutationAttempt::Fatal(error) => panic!(
                     "mutation on {} failed with non-retryable error: {error}; SQL={sql}",
                     node.spec.id
+                ),
+                MutationAttempt::TimedOut => panic!(
+                    "mutation on {} exceeded {:?}; outcome is ambiguous and MUST NOT be retried: {sql}",
+                    node.spec.id, QUERY_TIMEOUT
                 ),
             }
         }
@@ -212,9 +244,11 @@ fn mutate_on_leader(nodes: &mut [NodeProcess], sql: &str) -> usize {
     }
 }
 
-fn read_rows(port: u16) -> Result<BTreeSet<(String, String)>, postgres::Error> {
-    let mut client = connect(port)?;
-    let messages = client.simple_query("SELECT id, name FROM replicated_items")?;
+fn read_rows_blocking(port: u16) -> Result<BTreeSet<(String, String)>, String> {
+    let mut client = connect(port).map_err(|error| error.to_string())?;
+    let messages = client
+        .simple_query("SELECT id, name FROM replicated_items")
+        .map_err(|error| error.to_string())?;
     let mut rows = BTreeSet::new();
     for message in messages {
         if let SimpleQueryMessage::Row(row) = message {
@@ -225,6 +259,16 @@ fn read_rows(port: u16) -> Result<BTreeSet<(String, String)>, postgres::Error> {
         }
     }
     Ok(rows)
+}
+
+fn read_rows(port: u16) -> Result<BTreeSet<(String, String)>, String> {
+    let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+    let _worker = thread::spawn(move || {
+        let _ = result_tx.send(read_rows_blocking(port));
+    });
+    result_rx
+        .recv_timeout(QUERY_TIMEOUT)
+        .map_err(|_| format!("read query exceeded {QUERY_TIMEOUT:?}"))?
 }
 
 fn wait_rows(node: &mut NodeProcess, expected: &BTreeSet<(String, String)>) {
@@ -331,17 +375,21 @@ fn process_cluster_mutations_survive_failover_and_restart() {
     // must remain visible on the surviving quorum after leader death.
     let crash_port = nodes[crash_leader].spec.sql_port;
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(0);
-    let writer = thread::spawn(move || -> Result<(), String> {
-        let mut client = connect(crash_port).map_err(|error| error.to_string())?;
-        ready_tx
-            .send(())
-            .map_err(|error| format!("signal crash-write readiness: {error}"))?;
-        client
-            .simple_query(
-                "UPDATE replicated_items SET name = 'crash_candidate' WHERE id = 1",
-            )
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+    let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+    let writer = thread::spawn(move || {
+        let outcome = (|| -> Result<(), String> {
+            let mut client = connect(crash_port).map_err(|error| error.to_string())?;
+            ready_tx
+                .send(())
+                .map_err(|error| format!("signal crash-write readiness: {error}"))?;
+            client
+                .simple_query(
+                    "UPDATE replicated_items SET name = 'crash_candidate' WHERE id = 1",
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        })();
+        let _ = result_tx.send(outcome);
     });
 
     ready_rx
@@ -349,7 +397,10 @@ fn process_cluster_mutations_survive_failover_and_restart() {
         .expect("crash-write client did not become ready");
     thread::sleep(Duration::from_millis(2));
     nodes[crash_leader].kill();
-    let crash_write = writer.join().expect("crash-write thread panicked");
+    let crash_write = result_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("crash-write client did not unblock after leader kill");
+    writer.join().expect("crash-write thread panicked");
 
     if crash_write.is_ok() {
         let acknowledged =
