@@ -29,6 +29,7 @@ use tempfile::TempDir;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 const IDS: [&str; 3] = ["snapshot-a", "snapshot-b", "snapshot-c"];
+const REPLACEMENT_ELECTION_TIMEOUT_MS: u64 = 250;
 
 struct SnapshotNode {
     id: String,
@@ -130,8 +131,7 @@ async fn spawn_node(
         Arc::new(RocksDbRaftPersistenceStore::new(Arc::clone(&engine)));
     let strict_store: Arc<dyn RaftPersistenceStore> =
         Arc::new(FailClosedPersistenceStore::new(raw_store));
-    let (apply_tx, mut apply_rx) =
-        mpsc::channel::<CommittedEntry>(APPLY_CHANNEL_CAPACITY);
+    let (apply_tx, mut apply_rx) = mpsc::channel::<CommittedEntry>(APPLY_CHANNEL_CAPACITY);
     let apply_state_machine = Arc::clone(&state_machine);
     let apply_task = tokio::spawn(async move {
         while let Some(committed) = apply_rx.recv().await {
@@ -285,13 +285,13 @@ async fn empty_disk_fixed_member_bootstraps_from_snapshot_suffix_and_survives_fa
     let leader_gateway = nodes[leader_pos].gateway();
 
     leader_gateway.create_table(schema()).await.unwrap();
-    leader_gateway
+    let first_ack = leader_gateway
         .insert(&insert_plan(1, "before-snapshot"))
         .await
         .unwrap();
     wait_for_rows(&nodes, 1).await;
 
-    let boundary = nodes[leader_pos].shared.lock().await.last_applied;
+    let boundary = first_ack.raft_index;
     assert!(boundary > 0);
     assert_eq!(compact_at(&nodes[leader_pos], boundary).await, boundary);
 
@@ -329,7 +329,7 @@ async fn empty_disk_fixed_member_bootstraps_from_snapshot_suffix_and_survives_fa
     let replacement = spawn_node(
         Arc::clone(&bus),
         &victim_id,
-        45,
+        REPLACEMENT_ELECTION_TIMEOUT_MS,
         TempDir::new().unwrap(),
     )
     .await;
@@ -393,7 +393,15 @@ async fn empty_disk_fixed_member_bootstraps_from_snapshot_suffix_and_survives_fa
 
     // Restart the same reconstructed member from its recovered disk. Active SQL
     // snapshot restore must not erase the already-applied post-snapshot suffix.
-    nodes.push(spawn_node(Arc::clone(&bus), &victim_id, 45, recovered_dir).await);
+    nodes.push(
+        spawn_node(
+            Arc::clone(&bus),
+            &victim_id,
+            REPLACEMENT_ELECTION_TIMEOUT_MS,
+            recovered_dir,
+        )
+        .await,
+    );
     let replacement_pos = nodes.iter().position(|node| node.id == victim_id).unwrap();
     wait_until_ready(&nodes[replacement_pos]).await;
     wait_for_rows(&nodes, 3).await;

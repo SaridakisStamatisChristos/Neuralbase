@@ -162,8 +162,8 @@ async fn repeated_compaction_restart_and_suffix_replay_remain_safe() {
     let gateway = node.gateway();
 
     gateway.create_table(schema()).await.unwrap();
-    gateway.insert(&insert_plan(1)).await.unwrap();
-    let first_boundary = node.shared.lock().await.last_applied;
+    let first_insert = gateway.insert(&insert_plan(1)).await.unwrap();
+    let first_boundary = first_insert.raft_index;
     assert_eq!(compact_at(&node, first_boundary).await, first_boundary);
     let first_persisted = RocksDbRaftPersistenceStore::new(Arc::clone(&node.engine))
         .load()
@@ -172,8 +172,8 @@ async fn repeated_compaction_restart_and_suffix_replay_remain_safe() {
     assert_eq!(first_persisted.0.snapshot_index, first_boundary);
     assert!(!first_persisted.1.is_empty());
 
-    gateway.insert(&insert_plan(2)).await.unwrap();
-    let second_boundary = node.shared.lock().await.last_applied;
+    let second_insert = gateway.insert(&insert_plan(2)).await.unwrap();
+    let second_boundary = second_insert.raft_index;
     assert!(second_boundary > first_boundary);
     assert_eq!(compact_at(&node, second_boundary).await, second_boundary);
     let second_persisted = RocksDbRaftPersistenceStore::new(Arc::clone(&node.engine))
