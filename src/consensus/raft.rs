@@ -16,6 +16,8 @@
 //   - Single-node regular commands commit immediately (majority of one).
 //   - Pending uncommitted clients fail if leadership is lost.
 //   - Required stable-storage load/save failures fail-stop the Raft node.
+//   - Legacy opaque snapshots are rejected in confirmed SQL-apply mode until
+//     a SQL state snapshot/restore format is implemented.
 //
 // CONFIDENCE: raw=0.76 effective=0.68
 // DEPENDS_ON: log, rpc, transport
@@ -273,7 +275,14 @@ impl<T: Transport> RaftNode<T> {
     /// This is the required mode for replicated SQL: a committed entry is sent
     /// to the consumer and ClientCommand success waits until `completion`
     /// reports that the durable state-machine apply finished successfully.
+    /// Legacy opaque Raft snapshots are rejected because they do not contain a
+    /// NeuralBase SQL-state snapshot and therefore cannot safely restore tables.
     pub fn with_confirmed_apply_tx(mut self, tx: mpsc::Sender<CommittedEntry>) -> Self {
+        if self.ps.snapshot_index != 0 || !self.snapshot_data.is_empty() {
+            panic!(
+                "replicated SQL confirmed apply cannot start from a legacy Raft snapshot; SQL state snapshot restore is not implemented"
+            );
+        }
         self.confirmed_apply_tx = Some(tx);
         self.apply_tx = None;
         self
@@ -288,6 +297,13 @@ impl<T: Transport> RaftNode<T> {
     pub fn with_persistence(mut self, store: Arc<dyn RaftPersistenceStore>) -> Self {
         match store.load() {
             Ok(Some((ps, snap))) => {
+                if self.confirmed_apply_tx.is_some()
+                    && (ps.snapshot_index != 0 || !snap.is_empty())
+                {
+                    panic!(
+                        "replicated SQL confirmed apply cannot load a legacy Raft snapshot; SQL state snapshot restore is not implemented"
+                    );
+                }
                 self.snapshot_data = Arc::new(snap);
                 let snap_idx = ps.snapshot_index;
                 self.ps = ps;
@@ -925,6 +941,12 @@ impl<T: Transport> RaftNode<T> {
 
     /// Handle a compact-log admin command embedded in a ClientCommand payload.
     fn handle_compact_log_cmd(&mut self, payload: Vec<u8>) -> Result<u64, String> {
+        if self.confirmed_apply_tx.is_some() {
+            return Err(
+                "Raft log compaction is disabled in replicated SQL mode until SQL state snapshots are implemented"
+                    .to_string(),
+            );
+        }
         if payload.len() < 2 + 8 {
             return Err("compact-log payload too short (need at least 10 bytes)".to_string());
         }
@@ -974,6 +996,11 @@ impl<T: Transport> RaftNode<T> {
     // ── Session 13: InstallSnapshot handlers ──────────────────────────────
 
     fn on_install_snapshot(&mut self, args: InstallSnapshotArgs) -> InstallSnapshotReply {
+        if self.confirmed_apply_tx.is_some() {
+            panic!(
+                "fatal replicated SQL snapshot install: SQL state snapshot restore is not implemented"
+            );
+        }
         if args.term < self.ps.current_term {
             return InstallSnapshotReply {
                 term: self.ps.current_term,
