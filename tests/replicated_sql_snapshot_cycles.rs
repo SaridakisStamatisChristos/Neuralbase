@@ -16,6 +16,7 @@ use neuralbase::raft_persistence::RocksDbRaftPersistenceStore;
 use neuralbase::replicated_gateway::ReplicatedSqlGateway;
 use neuralbase::replicated_snapshot_hooks::ReplicatedSqlSnapshotHooks;
 use neuralbase::replicated_state_machine::ReplicatedSqlStateMachine;
+use neuralbase::rocksdb_catalog::RocksDbCatalog;
 use neuralbase::storage::StorageEngine;
 use neuralbase::storage_executor::table_id_for;
 use tempfile::TempDir;
@@ -78,7 +79,11 @@ fn insert_plan(id: i64) -> InsertPlan {
 
 async fn spawn_solo(bus: ChannelBus, dir: TempDir) -> SoloNode {
     let engine = Arc::new(StorageEngine::open(dir.path()).unwrap());
-    let catalog = Arc::new(InMemoryCatalog::default());
+    let catalog = Arc::new(
+        RocksDbCatalog::new(Arc::clone(&engine))
+            .load_all()
+            .unwrap(),
+    );
     let clock = Arc::new(HlcClock::new(500));
     let state_machine = Arc::new(
         ReplicatedSqlStateMachine::new(
