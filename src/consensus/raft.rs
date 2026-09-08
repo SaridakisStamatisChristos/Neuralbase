@@ -128,8 +128,9 @@ struct LeaderState {
 
 /// A client command submitted to the leader for replication.
 ///
-/// For regular data commands, `reply` is resolved only after quorum commit.
-/// The historical Session-13 membership/compaction admin commands retain their
+/// For regular data commands, `reply` is resolved only after the entry is
+/// quorum-committed and reaches the configured state-machine apply point. The
+/// historical Session-13 membership/compaction admin commands retain their
 /// legacy acknowledgement behavior until coordinated membership work is done.
 pub struct ClientCommand {
     pub payload: Vec<u8>,
