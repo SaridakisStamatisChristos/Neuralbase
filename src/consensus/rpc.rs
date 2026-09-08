@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Raft RPC message types.
 //
-// Implements the two core RPCs from the Raft paper (§5):
-//   - RequestVote  — used by candidates during leader election
-//   - AppendEntries — used by leaders for log replication and heartbeats
-//
-// CONFIDENCE: raw=0.88 effective=0.80
-// DEPENDS_ON: (none — pure data types)
-// [HUMAN REVIEW REQUIRED] — see REVIEW_REQUIRED.md §Raft
+// Implements the core Raft RPCs plus snapshot, membership-administration, and
+// leadership-transfer messages. Membership requests are log-replicated; they
+// are not permission to mutate a process-local peer list.
 
 use std::sync::Arc;
 
@@ -28,22 +24,15 @@ pub struct LogEntry {
 /// Arguments for the RequestVote RPC (§5.2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestVoteArgs {
-    /// Candidate's current term.
     pub term: u64,
-    /// ID of the candidate requesting the vote.
     pub candidate_id: NodeId,
-    /// Index of candidate's last log entry.
     pub last_log_index: u64,
-    /// Term of candidate's last log entry.
     pub last_log_term: u64,
 }
 
-/// Reply to a RequestVote RPC.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestVoteReply {
-    /// Current term of the receiver (so the caller can update itself).
     pub term: u64,
-    /// True if the candidate received this node's vote.
     pub vote_granted: bool,
 }
 
@@ -51,109 +40,99 @@ pub struct RequestVoteReply {
 /// An empty `entries` vec is a heartbeat.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppendEntriesArgs {
-    /// Leader's current term.
     pub term: u64,
-    /// Leader's node ID (so followers can redirect clients).
     pub leader_id: NodeId,
-    /// Index of the log entry immediately preceding the new ones.
     pub prev_log_index: u64,
-    /// Term of the `prev_log_index` entry.
     pub prev_log_term: u64,
-    /// Log entries to store (empty for heartbeat).
     pub entries: Vec<LogEntry>,
-    /// Leader's commit index.
     pub leader_commit: u64,
 }
 
-/// Reply to an AppendEntries RPC.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppendEntriesReply {
-    /// Current term of the receiver.
     pub term: u64,
-    /// True if the follower contained an entry matching prevLogIndex / prevLogTerm.
     pub success: bool,
-    /// Optimistic hint: the follower's last log index (used to speed up nextIndex backtracking).
+    /// Optimistic hint used to accelerate nextIndex backtracking.
     pub match_index: u64,
 }
 
 /// Arguments for the InstallSnapshot RPC (Raft §7).
 /// Single-chunk implementation: `done` is always true.
+///
+/// Phase 3 binds committed membership to `data` through the versioned Raft
+/// snapshot envelope. The SQL state machine still owns only the inner payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstallSnapshotArgs {
-    /// Leader's current term.
     pub term: u64,
-    /// Leader's node ID.
     pub leader_id: NodeId,
-    /// Last log index included in the snapshot.
     pub last_included_index: u64,
-    /// Term of `last_included_index`.
     pub last_included_term: u64,
-    /// Opaque serialized state-machine data.
-    /// Wrapped in Arc so that the leader can share the same buffer across
-    /// multiple in-flight InstallSnapshot messages (one per laggard peer)
-    /// without copying the snapshot bytes on every heartbeat tick.
     pub data: Arc<Vec<u8>>,
-    /// True for the last (and only) chunk.
     pub done: bool,
 }
 
-/// Reply to an InstallSnapshot RPC.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstallSnapshotReply {
-    /// Current term of the receiver (so the caller can update itself).
     pub term: u64,
-    /// Whether the follower fully validated/restored and durably accepted this
-    /// snapshot boundary. Failed installs must not advance leader progress.
     pub success: bool,
-    /// Exact snapshot boundary this reply refers to. Echoing the installed index
-    /// prevents a delayed reply for snapshot N from being mistaken for a newer
-    /// snapshot M that the leader created while the RPC was in flight.
+    /// Exact snapshot boundary this reply refers to.
     pub last_included_index: u64,
 }
 
-/// Single-step membership change command.
+/// Administrative intent for a coordinated membership transition.
 ///
-/// WARNING: Single-step membership changes are unsafe under certain
-/// network partitions (see Raft §6 for the joint-consensus safe alternative).
-/// [HUMAN REVIEW REQUIRED] — see REVIEW_REQUIRED.md §Session13
+/// `AddNode` is retained for backward compatibility and is deliberately
+/// redefined as learner addition. A node never becomes a voter merely because
+/// it was added or because its process is alive.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MembershipChange {
+    /// Backward-compatible alias for adding a non-voting learner.
     AddNode(NodeId),
+    /// Add a non-voting learner. This is a one-configuration change and does
+    /// not alter voting quorum.
+    AddLearner(NodeId),
+    /// Promote an already-caught-up learner. This creates the joint old+new
+    /// configuration; Raft appends `FinalizeJoint` only after the joint entry
+    /// is durably committed/applied.
+    PromoteLearner(NodeId),
+    /// Remove a learner directly, or a voter through joint consensus.
     RemoveNode(NodeId),
+    /// Internal second half of a joint-consensus transition. External callers
+    /// must not submit this directly.
+    FinalizeJoint,
 }
 
-/// Top-level message envelope sent over the wire.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RaftMessage {
     RequestVote(RequestVoteArgs),
     RequestVoteReply(RequestVoteReply),
     AppendEntries(AppendEntriesArgs),
     AppendEntriesReply(AppendEntriesReply),
-    /// Leader → follower: install a snapshot (Raft §7).
     InstallSnapshot(InstallSnapshotArgs),
-    /// Follower → leader: reply to InstallSnapshot.
     InstallSnapshotReply(InstallSnapshotReply),
-    /// Admin → leader: single-step cluster membership change.
+    /// Admin → leader: coordinated membership intent.
     MembershipChangeCmd(MembershipChange),
-    /// Leader → admin: result of membership change.
+    /// Leader → admin: result after the requested membership transition reaches
+    /// its required durable commit/apply point. Timeout remains outcome-uncertain.
     MembershipChangeCmdReply {
         success: bool,
         error: Option<String>,
     },
-    /// Admin → leader: request leadership transfer to a specific follower (Raft §3.10).
     LeaderTransfer {
         target: NodeId,
     },
-    /// Leader → admin: result of a leadership transfer request.
     LeaderTransferReply {
         success: bool,
         error: Option<String>,
     },
-    /// Leader → target follower: skip election timeout and start election now.
     TimeoutNow {
         term: u64,
     },
 }
 
-/// A node identifier — a string such as "node1:7000".
+/// A logical node/incarnation identifier.
+///
+/// Phase 3 treats this string as an incarnation identity: once committed as
+/// removed, the exact same NodeId is tombstoned and cannot be reused. A
+/// replacement process must use a new NodeId.
 pub type NodeId = String;

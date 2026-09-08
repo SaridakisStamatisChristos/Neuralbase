@@ -124,10 +124,7 @@ fn all_single_byte_keys_valid() {
     let router = default_router(&reg);
     for b in 0u8..=255 {
         let shard = router.key_to_shard(&[b]);
-        assert!(
-            shard < reg.shard_count(),
-            "byte {b} \u{2192} shard out of range"
-        );
+        assert!(shard < reg.shard_count(), "byte {b} → shard out of range");
     }
 }
 
@@ -148,9 +145,7 @@ fn shard_to_node_at_boundaries() {
     let shard_count = cfg.shard_count;
     let reg = Arc::new(NodeRegistry::new(cfg));
     let router = ConsistentHashRouter::new(Arc::clone(&reg));
-    // shard 0
     let _ = router.shard_to_node(0);
-    // last shard
     let _ = router.shard_to_node(shard_count - 1);
 }
 
@@ -210,7 +205,6 @@ async fn two_of_three_form_quorum() {
     let ids = ["n1", "n2", "n3"];
     let mut shareds = vec![];
     let mut _handles: Vec<RaftTaskHandle> = vec![];
-    // Only register n1 and n2; n3 drops all incoming messages.
     for &id in &ids[..2] {
         let peers: Vec<String> = ids
             .iter()
@@ -247,14 +241,11 @@ async fn rapid_reelection_never_split_brain() {
             .collect();
         let transport = Arc::new(ChannelTransport::register(id.into(), Arc::clone(&bus)).await);
         let mut node = RaftNode::new(id.into(), peers, transport);
-        node.set_election_timeout_ms(1); // adversarial: 1 ms
+        node.set_election_timeout_ms(1);
         let (_cmd_tx, shared, handle) = node.spawn();
         shareds.push(shared);
         _handles.push(handle);
     }
-    // Sample for 500 ms; at no point should leaders > 1.
-    // Hard 3 s outer timeout: if elections livelock and the inner loop
-    // stalls, the test fails with a clear message instead of hanging CI.
     let poll_result = tokio::time::timeout(Duration::from_secs(3), async {
         let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
         while tokio::time::Instant::now() < deadline {
@@ -286,7 +277,6 @@ fn all_fragments_exhausted_does_not_deadlock() {
         plan_bytes: vec![],
     });
     let frag_count = manifest.len();
-    // Exhaust all retries for every fragment.
     for fid in 0..frag_count {
         for _ in 0..=(max_retries as usize + 1) {
             let _ = coord.handle_failure(&mut manifest, fid as u32, "injected".into());
@@ -353,16 +343,12 @@ fn reroute_assigns_different_node() {
     if let Some(frag) = frags.into_iter().next() {
         let original_node = frag.assigned_node.clone();
         let rerouted = planner.reroute(&frag);
-        // Either no alternative exists (single-node cluster scenario) or
-        // the new fragment has a node (possibly different).
         if let Some(rf) = rerouted {
-            // Must be same shard.
             assert_eq!(
                 rf.shard_id, frag.shard_id,
                 "shard must not change on reroute"
             );
-            // Node may differ; either value is valid (cluster could have only 1 live node).
-            let _ = rf.assigned_node; // accessing it must not panic
+            let _ = rf.assigned_node;
             let _ = original_node;
         }
     }
@@ -375,7 +361,6 @@ fn reroute_assigns_different_node() {
 async fn sender_receives_error_when_receiver_dropped() {
     let (tx, rx) = bounded_channel::<u32>(4, 2);
     drop(rx);
-    // First send may succeed (slot available); eventually must fail.
     let mut errors = 0u32;
     for i in 0..20 {
         if tx.send(i).await.is_err() {
@@ -460,12 +445,10 @@ async fn follower_state_stable_after_leader_elected() {
         shareds.push(shared);
         _handles.push(handle);
     }
-    // Wait for stable leader.
     let _ = wait_for_leader(&shareds, Duration::from_millis(1_000)).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     let leaders = leader_count(&shareds).await;
     assert_eq!(leaders, 1, "exactly one leader after stabilisation");
-    // Followers must not be in a Candidate state — they received heartbeats.
     let mut candidates = 0;
     for s in &shareds {
         if s.lock().await.role == RaftRole::Candidate {
@@ -479,12 +462,12 @@ async fn follower_state_stable_after_leader_elected() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// Session 13 adversarial tests — snapshot install invariants, compaction
-// boundary clamping, and membership-change concurrency rejection.
+// Session 13 / Phase 3 adversarial tests — snapshot install invariants,
+// compaction boundaries, learner quorum isolation, and apply backpressure.
 // ══════════════════════════════════════════════════════════════════════════
 
 // [S13-A] A stale InstallSnapshot (last_included_index <= current snapshot_index)
-// must be silently rejected.  The node's last_applied must not advance.
+// must be silently rejected. The node's last_applied must not advance.
 #[tokio::test]
 async fn s13_stale_snapshot_rejected_by_follower() {
     use neuralbase::consensus::{InstallSnapshotArgs, RaftMessage, Transport};
@@ -495,9 +478,6 @@ async fn s13_stale_snapshot_rejected_by_follower() {
     let spy_transport =
         Arc::new(ChannelTransport::register("s13_spy".into(), Arc::clone(&bus)).await);
 
-    // Node has "s13_spy" as a peer; can't form quorum alone so stays in
-    // Candidate/Follower.  Give it a long timeout so it doesn't immediately
-    // fire its election before we send the rogue snapshot.
     let mut node = RaftNode::new(
         "s13_follower".into(),
         vec!["s13_spy".into()],
@@ -506,32 +486,24 @@ async fn s13_stale_snapshot_rejected_by_follower() {
     node.set_election_timeout_ms(500);
     let (_cmd_tx, shared, _handle) = node.spawn();
 
-    // Let the node initialize.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Send a snapshot whose last_included_index=0 equals the initial
-    // snapshot_index=0: this must be rejected as stale.
     spy_transport
         .send(
             &"s13_follower".to_string(),
             RaftMessage::InstallSnapshot(InstallSnapshotArgs {
                 term: 1,
                 leader_id: "s13_spy".into(),
-                last_included_index: 0, // stale: 0 <= snapshot_index=0
+                last_included_index: 0,
                 last_included_term: 0,
                 data: Arc::new(b"rogue_snapshot".to_vec()),
                 done: true,
             }),
         )
         .await;
-    // Drop spy_transport immediately after sending so its inbox Receiver is
-    // closed.  Any subsequent follower → "s13_spy" messages (e.g. RequestVote
-    // if the election timer fires under CI load) are now silently discarded
-    // rather than buffering in the mpsc channel without a consumer.
     drop(spy_transport);
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // A stale snapshot must not advance last_applied.
     let s = shared.lock().await;
     assert_eq!(
         s.last_applied, 0,
@@ -566,58 +538,85 @@ fn s13_compact_log_payload_header_correct() {
     );
 }
 
-// [S13-C] While a membership change is in progress (uncommitted), a regular
-// data command to the same leader must be rejected with an error.
-// We exploit the fact that single-node commit_index never advances past 0,
-// so the AddNode entry is never applied and the flag stays set.
+// [S13-C / Phase 3] Adding a non-voting learner must not change the voter
+// quorum or block ordinary committed writes when that learner is unavailable.
+// This supersedes the historical Session-13 rule that rejected all data while
+// a membership operation was present; Phase 3 explicitly permits writes while
+// preserving the current committed voter quorum semantics.
 #[tokio::test]
-async fn s13_data_cmd_rejected_while_membership_change_in_progress() {
+async fn phase3_unavailable_learner_does_not_block_voter_writes() {
     use neuralbase::consensus::{encode_membership_change, ClientCommand, MembershipChange};
     use tokio::sync::oneshot;
 
     let bus = ChannelTransport::new_bus();
-    let transport =
-        Arc::new(ChannelTransport::register("s13_mc_solo".into(), Arc::clone(&bus)).await);
-    let mut node = RaftNode::new("s13_mc_solo".into(), vec![], transport);
-    node.set_election_timeout_ms(30);
-    let (cmd_tx, shared, _handle) = node.spawn();
+    let ids = ["p3_mc_a", "p3_mc_b", "p3_mc_c"];
+    let mut shareds = vec![];
+    let mut cmd_txs = vec![];
+    let mut _handles = vec![];
 
-    let elected = wait_for_leader(&[shared], Duration::from_millis(500)).await;
-    assert!(elected, "single node must self-elect");
+    for &id in &ids {
+        let peers = ids
+            .iter()
+            .filter(|&&peer| peer != id)
+            .map(|peer| peer.to_string())
+            .collect();
+        let transport = Arc::new(ChannelTransport::register(id.into(), Arc::clone(&bus)).await);
+        let mut node = RaftNode::new(id.into(), peers, transport);
+        node.set_election_timeout_ms(50);
+        let (cmd_tx, shared, handle) = node.spawn();
+        cmd_txs.push(cmd_tx);
+        shareds.push(shared);
+        _handles.push(handle);
+    }
 
-    // Submit AddNode — sets membership_change_in_progress = true.
-    // In single-node mode commit_index never advances, so the flag stays set.
-    let (tx1, rx1) = oneshot::channel::<Result<u64, String>>();
-    cmd_tx
-        .send(ClientCommand {
-            payload: encode_membership_change(&MembershipChange::AddNode("extra_node".to_string())),
-            reply: tx1,
-        })
-        .await
-        .expect("channel must be open");
-    let r1 = tokio::time::timeout(Duration::from_millis(500), rx1)
-        .await
-        .expect("AddNode reply within 500ms")
-        .expect("channel not dropped");
-    assert!(r1.is_ok(), "AddNode must be accepted by leader: {r1:?}");
-
-    // Immediately submit a regular data command — must be rejected.
-    let (tx2, rx2) = oneshot::channel::<Result<u64, String>>();
-    cmd_tx
-        .send(ClientCommand {
-            payload: b"regular_payload".to_vec(),
-            reply: tx2,
-        })
-        .await
-        .expect("channel must still be open");
-    let r2 = tokio::time::timeout(Duration::from_millis(500), rx2)
-        .await
-        .expect("data cmd reply within 500ms")
-        .expect("channel not dropped");
     assert!(
-        r2.is_err(),
-        "data command must be rejected while membership change is in progress"
+        wait_for_leader(&shareds, Duration::from_millis(1_500)).await,
+        "3-voter cluster must elect a leader"
     );
+    let leader_idx = shareds
+        .iter()
+        .enumerate()
+        .find_map(|(index, shared)| {
+            shared
+                .try_lock()
+                .ok()
+                .filter(|state| state.role == RaftRole::Leader)
+                .map(|_| index)
+        })
+        .expect("leader index");
+
+    // The learner is deliberately not registered on the bus. Its absence must
+    // not enter quorum arithmetic.
+    let (membership_tx, membership_rx) = oneshot::channel();
+    cmd_txs[leader_idx]
+        .send(ClientCommand {
+            payload: encode_membership_change(&MembershipChange::AddLearner(
+                "p3_mc_learner".to_string(),
+            )),
+            reply: membership_tx,
+        })
+        .await
+        .expect("membership command channel open");
+    tokio::time::timeout(Duration::from_secs(2), membership_rx)
+        .await
+        .expect("learner add must complete under voter quorum")
+        .expect("membership reply channel open")
+        .expect("learner add must commit and apply");
+
+    let (write_tx, write_rx) = oneshot::channel();
+    cmd_txs[leader_idx]
+        .send(ClientCommand {
+            payload: b"phase3_write_with_unavailable_learner".to_vec(),
+            reply: write_tx,
+        })
+        .await
+        .expect("data command channel open");
+    let index = tokio::time::timeout(Duration::from_secs(2), write_rx)
+        .await
+        .expect("data write must not be blocked by unavailable learner")
+        .expect("data reply channel open")
+        .expect("voter quorum must commit the data write");
+    assert!(index > 0, "committed write must have a nonzero Raft index");
 }
 
 // ── Session 13: bounded apply_tx tests ─────────────────────────────────────
@@ -637,7 +636,6 @@ async fn s13_apply_tx_backpressure_does_not_drop_entries() {
     let mut cmd_txs = vec![];
     let mut _handles = vec![];
 
-    // Attach a small bounded apply channel (capacity 4) to each node.
     let mut apply_rxs = vec![];
     for &id in &ids {
         let peers: Vec<String> = ids
@@ -659,7 +657,6 @@ async fn s13_apply_tx_backpressure_does_not_drop_entries() {
 
     let elected = wait_for_leader(&shareds, Duration::from_millis(2_000)).await;
     assert!(elected, "3-node cluster must elect a leader");
-    // Let the leader stabilize.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let mut leader_idx = 0usize;
@@ -670,9 +667,6 @@ async fn s13_apply_tx_backpressure_does_not_drop_entries() {
         }
     }
 
-    // A blocked follower state-machine handoff also blocks that follower's
-    // legacy Raft event loop. Drain followers continuously so this test isolates
-    // leader apply backpressure rather than deliberately destroying quorum.
     let mut follower_drainers = vec![];
     for (i, rx) in apply_rxs.iter_mut().enumerate() {
         if i == leader_idx {
@@ -750,7 +744,6 @@ async fn s13_apply_tx_full_slows_commit_not_crashes() {
     let mut cmd_txs = vec![];
     let mut handles = vec![];
 
-    // Capacity 2: even a few commits will saturate the channel on the leader.
     let mut apply_rxs = vec![];
     for &id in &ids {
         let peers: Vec<String> = ids
@@ -781,7 +774,6 @@ async fn s13_apply_tx_full_slows_commit_not_crashes() {
         }
     }
 
-    // Submit 5 entries without draining the apply channel.
     for i in 0u32..5 {
         let (tx, _rx) = oneshot::channel::<Result<u64, String>>();
         let _ = cmd_txs[leader_idx]
@@ -792,21 +784,10 @@ async fn s13_apply_tx_full_slows_commit_not_crashes() {
             .await;
     }
 
-    // Wait a bit for the channel to fill.
     tokio::time::sleep(Duration::from_millis(200)).await;
-
-    // Drop the leader's receiver — simulates executor shutdown.
-    // This unblocks the Raft apply loop's .send().await (returns Err).
     drop(apply_rxs.remove(leader_idx));
-
-    // The node must not panic.  Give it time to process the broken channel.
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    // Verify the node is still alive (event loop didn't panic).
-    // The shared state may or may not have been updated depending on timing,
-    // but the critical assertion is that we reach here without a panic.
-
-    // Clean shutdown — no panics.
     for h in handles {
         h.shutdown().await;
     }

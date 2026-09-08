@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use neuralbase::binder::{DeletePlan, DmlCmpOp, DmlPredicate, SqlValue, UpdatePlan};
 use neuralbase::catalog::{ColumnDef, TableSchema};
-use neuralbase::consensus::{ClientCommand, RaftRole, RaftShared};
+use neuralbase::consensus::{ClientCommand, ClusterMembership, RaftRole, RaftShared};
 use neuralbase::hlc::{HlcClock, HlcTimestamp};
 use neuralbase::replicated_gateway::ReplicatedSqlGateway;
 use neuralbase::replicated_sql::ReplicatedMutation;
@@ -61,6 +61,7 @@ fn leader_shared() -> Arc<Mutex<RaftShared>> {
         leader_id: Some("leader-a".to_string()),
         commit_index: 0,
         last_applied: 0,
+        membership: ClusterMembership::bootstrap("leader-a".to_string(), Vec::<String>::new()),
     }))
 }
 

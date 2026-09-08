@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Deterministic RocksDB-backed state machine for committed replicated SQL.
 //!
-//! A committed Raft entry is decoded exactly once into a `ReplicatedMutation`.
-//! DML applies concrete row bytes at the leader-chosen HLC timestamp embedded in
-//! the command; followers do not re-plan SQL, re-evaluate predicates, generate
-//! keys, or consult their wall clocks. The SQL effects and durable apply marker
-//! are written in one RocksDB WriteBatch, making replay idempotent across crashes.
+//! A committed Raft entry advances one durable apply cursor even when the entry
+//! is a Raft control command rather than SQL. SQL mutations are decoded into
+//! deterministic concrete effects; non-SQL entries only advance the apply
+//! marker. This matters for Phase-3 membership snapshots: a snapshot boundary
+//! immediately after a membership transition must not be blocked by a stale SQL
+//! apply cursor.
 
 use std::sync::Arc;
 
@@ -130,27 +131,52 @@ impl ReplicatedSqlStateMachine {
         &self,
         entry: &LogEntry,
     ) -> Result<ReplicatedApplyOutcome, ReplicatedSqlApplyError> {
+        let previous = self.load_state()?;
+        if entry.index <= previous.last_applied_index {
+            return Ok(ReplicatedApplyOutcome::AlreadyApplied { index: entry.index });
+        }
         if !is_replicated_mutation(&entry.command) {
+            self.advance_control_apply(entry.index, previous)?;
             return Ok(ReplicatedApplyOutcome::IgnoredNonSql);
         }
         let mutation = ReplicatedMutation::decode(&entry.command)?;
-        self.apply(entry.index, mutation)
+        self.apply(entry.index, mutation, previous)
     }
 
     pub fn durable_state(&self) -> Result<ReplicatedApplyState, ReplicatedSqlApplyError> {
         self.load_state()
     }
 
+    fn advance_control_apply(
+        &self,
+        raft_index: u64,
+        previous: ReplicatedApplyState,
+    ) -> Result<(), ReplicatedSqlApplyError> {
+        let meta_cf = self
+            .engine
+            .db
+            .cf_handle(CF_META)
+            .expect("CF_META must exist after StorageEngine::open");
+        let mut batch = WriteBatch::default();
+        batch.put_cf(
+            &meta_cf,
+            APPLY_STATE_KEY,
+            ReplicatedApplyState {
+                last_applied_index: raft_index,
+                last_commit_ts: previous.last_commit_ts,
+            }
+            .encode(),
+        );
+        self.engine.write_batch(batch)?;
+        Ok(())
+    }
+
     fn apply(
         &self,
         raft_index: u64,
         mutation: ReplicatedMutation,
+        previous: ReplicatedApplyState,
     ) -> Result<ReplicatedApplyOutcome, ReplicatedSqlApplyError> {
-        let previous = self.load_state()?;
-        if raft_index <= previous.last_applied_index {
-            return Ok(ReplicatedApplyOutcome::AlreadyApplied { index: raft_index });
-        }
-
         if let Some(commit_ts) = mutation.commit_ts() {
             if commit_ts <= previous.last_commit_ts {
                 return Err(ReplicatedSqlApplyError::NonMonotonicCommitTimestamp {
@@ -234,12 +260,8 @@ impl ReplicatedSqlStateMachine {
         };
         batch.put_cf(&meta_cf, APPLY_STATE_KEY, new_state.encode());
 
-        // The SQL effect and replay marker share one RocksDB WriteBatch across
-        // column families. A crash cannot expose one without the other.
         self.engine.write_batch(batch)?;
 
-        // In-memory catalog mutation happens only after the durable batch. A
-        // restart hydrates this cache from the durable catalog before replay.
         match &mutation {
             ReplicatedMutation::CreateTable { schema } => self.catalog.create_table(schema.clone()),
             ReplicatedMutation::DropTable { table, .. } => self.catalog.drop_table(table),
@@ -358,6 +380,27 @@ mod tests {
                 data_type: "TEXT".to_string(),
             }],
         }
+    }
+
+    #[test]
+    fn non_sql_entry_advances_durable_apply_index_without_changing_hlc_floor() {
+        let (sm, _engine, _catalog, _clock, _dir) = setup();
+        let control = LogEntry {
+            term: 1,
+            index: 4,
+            command: b"raft-control".to_vec(),
+        };
+        assert_eq!(
+            sm.apply_log_entry(&control).unwrap(),
+            ReplicatedApplyOutcome::IgnoredNonSql
+        );
+        let state = sm.durable_state().unwrap();
+        assert_eq!(state.last_applied_index, 4);
+        assert_eq!(state.last_commit_ts, 0);
+        assert_eq!(
+            sm.apply_log_entry(&control).unwrap(),
+            ReplicatedApplyOutcome::AlreadyApplied { index: 4 }
+        );
     }
 
     #[test]

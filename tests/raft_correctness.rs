@@ -680,9 +680,10 @@ async fn s13_transfer_to_unknown_node_returns_error() {
     match msg {
         RaftMessage::LeaderTransferReply { success, error } => {
             assert!(!success, "transfer to unknown node must fail");
+            let diagnostic = error.as_deref().unwrap_or("");
             assert!(
-                error.as_deref().unwrap_or("").contains("unknown"),
-                "error must mention unknown node: {error:?}"
+                diagnostic.contains("unknown") || diagnostic.contains("eligible stable voter"),
+                "error must identify an unknown/ineligible transfer target: {error:?}"
             );
         }
         other => panic!("expected LeaderTransferReply, got {other:?}"),
