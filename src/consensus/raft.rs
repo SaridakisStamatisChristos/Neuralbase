@@ -128,9 +128,8 @@ struct LeaderState {
 
 /// A client command submitted to the leader for replication.
 ///
-/// For regular data commands, `reply` is resolved only after the entry is
-/// quorum-committed and reaches the configured state-machine apply point. The
-/// historical Session-13 membership/compaction admin commands retain their
+/// For regular data commands, `reply` is resolved only after quorum commit.
+/// The historical Session-13 membership/compaction admin commands retain their
 /// legacy acknowledgement behavior until coordinated membership work is done.
 pub struct ClientCommand {
     pub payload: Vec<u8>,
@@ -947,7 +946,9 @@ impl<T: Transport> RaftNode<T> {
                 self.try_advance_commit();
             } else {
                 let cur = leader.next_index.get(&from).copied().unwrap_or(1);
-                leader.next_index.insert(from, cur.saturating_sub(1).max(1));
+                let follower_next = reply.match_index.saturating_add(1);
+                let retry = cur.saturating_sub(1).min(follower_next).max(1);
+                leader.next_index.insert(from, retry);
             }
         }
     }
