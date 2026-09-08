@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Safety boundary between legacy opaque Raft snapshots and replicated SQL.
 //!
-//! The legacy snapshot payload is not a NeuralBase SQL-state snapshot. Until a
-//! real table/catalog snapshot format exists, confirmed SQL apply must reject
-//! compaction and refuse to start from persisted snapshot state rather than
-//! advancing `last_applied` without restoring SQL data.
+//! Phase 2 has a real SQL-aware state-machine snapshot store. These tests protect
+//! the remaining legacy boundary: confirmed SQL apply **without** that store must
+//! still reject arbitrary opaque Raft snapshot bytes rather than advancing a Raft
+//! boundary with no reconstructable SQL/catalog state.
 
 use std::sync::Arc;
 use std::time::Duration;

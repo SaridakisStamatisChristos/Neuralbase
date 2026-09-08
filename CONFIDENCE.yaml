@@ -2,7 +2,7 @@ version: 2
 updated: 2026-09-07
 
 system:
-  scope: local_sql_engine_plus_fixed_membership_replicated_table_mutations
+  scope: local_sql_engine_plus_fixed_membership_replicated_table_mutations_and_sql_snapshot_recovery
   effective_confidence: 0.78
   production_ready: false
   distributed_sql_replication: true
@@ -19,15 +19,17 @@ system:
     follower_reads_linearizable: false
     auth_replication: false
     dynamic_membership: false
-    sql_snapshots: false
+    sql_snapshots: true
+    fixed_member_empty_storage_bootstrap: true
     production_ha: false
   summary: >-
-    Confidence covers the tested local SQL/MVCC engine and a fixed-membership
-    replicated mutation path for persistent table CREATE/DROP/INSERT/UPDATE/DELETE.
-    Clustered write success waits for Raft quorum commit and confirmed durable
+    Confidence covers the tested local SQL/MVCC engine, fixed-membership replicated
+    persistent-table mutations, and SQL-aware snapshot recovery for a known fixed
+    member reconstructed from empty local storage plus the remaining Raft suffix.
+    Clustered write success still waits for Raft quorum commit and confirmed durable
     local state-machine apply. This does not imply production HA, linearizable
-    follower reads, replicated authentication state, dynamic membership, or
-    SQL snapshot/node-replacement recovery.
+    follower reads, replicated authentication state, dynamic membership, automatic
+    node replacement, backup/restore, or disaster recovery.
 
 artifacts:
   - artifact: wire_protocol_v3
@@ -76,6 +78,7 @@ artifacts:
       - tests/mvcc_correctness.rs
       - tests/dml_correctness.rs
       - tests/replicated_sql_process.rs
+      - tests/replicated_sql_snapshot_bootstrap.rs
 
   - artifact: mvcc_txn_manager
     effective: 0.76
@@ -99,33 +102,37 @@ artifacts:
       - tests/auth_correctness.rs
     limitation: >-
       CREATE/ALTER/DROP USER remains per-node. Authentication state is not part
-      of the replicated table-mutation command model in this phase.
+      of the replicated table-mutation or SQL-snapshot consistency model.
 
   - artifact: raft_consensus
     effective: 0.76
-    status: fixed_membership_replicated_sql_path_tested
+    status: fixed_membership_replicated_sql_and_snapshot_path_tested
     evidence:
       - tests/raft_correctness.rs
       - tests/adversarial_raft.rs
       - tests/raft_client_ack.rs
       - tests/raft_persistence_fail_closed.rs
       - tests/replicated_sql_raft.rs
+      - tests/replicated_sql_snapshot_bootstrap.rs
+      - tests/replicated_sql_snapshot_cycles.rs
     limitation: >-
       No TLA+ proof or coordinated operator-safe dynamic membership workflow.
-      Legacy opaque Raft snapshots are rejected in replicated-SQL mode until a
-      SQL-aware snapshot/restore format exists.
+      SQL-aware snapshot install is tested for fixed-member recovery; legacy opaque
+      snapshots remain rejected when no SQL snapshot store is attached.
 
   - artifact: raft_persistence
     effective: 0.76
-    status: durable_and_fail_closed
+    status: durable_fail_closed_and_snapshot_staged
     evidence:
       - src/raft_persistence.rs
       - src/consensus/raft.rs
       - tests/raft_persistence_fail_closed.rs
+      - tests/replicated_sql_snapshot_bootstrap.rs
     note: >-
-      Term, vote, log, and snapshot metadata are persisted through RocksDB.
-      Required persistence load/save failures fail-stop the Raft node rather
-      than logging and continuing.
+      Term, vote, log, active snapshot metadata/bytes, and staged snapshot
+      transitions are persisted through RocksDB. Snapshot creation is durably staged
+      before log truncation; interrupted follower installation is recoverable on
+      restart. Required persistence failures fail-stop the Raft node.
 
   - artifact: raft_tcp_transport
     effective: 0.74
@@ -138,23 +145,29 @@ artifacts:
       Logical Raft node IDs are mapped separately to connectable peer addresses.
 
   - artifact: sql_replication
-    effective: 0.74
-    status: fixed_membership_table_mutations_tested
+    effective: 0.76
+    status: fixed_membership_table_mutations_and_snapshot_recovery_tested
     criticality: release_boundary
     evidence:
       - src/replicated_sql.rs
       - src/replicated_gateway.rs
       - src/replicated_state_machine.rs
+      - src/replicated_snapshot.rs
+      - src/replicated_snapshot_manager.rs
+      - src/replicated_snapshot_hooks.rs
       - tests/replicated_mutation_materialization.rs
       - tests/replicated_sql_raft.rs
       - tests/replicated_sql_process.rs
       - tests/replicated_sql_snapshot_guard.rs
+      - tests/replicated_sql_snapshot_bootstrap.rs
+      - tests/replicated_sql_snapshot_cycles.rs
     limitation: >-
-      Scope is persistent table CREATE/DROP/INSERT/UPDATE/DELETE in configured
-      fixed-membership clusters. Followers reject writes; reads remain local and
-      may be stale; auth/users are not replicated; SQL-aware snapshots,
-      bootstrap/node replacement, coordinated membership, backup/restore, and
-      production HA are not implemented.
+      Scope is persistent table CREATE/DROP/INSERT/UPDATE/DELETE plus SQL-aware
+      snapshot/compaction and empty-storage recovery of an already-configured fixed
+      logical member. Followers reject writes; reads remain local and may be stale;
+      auth/users are not replicated; new-ID membership changes, automatic node
+      replacement, backup/restore, disaster recovery, and production HA are not
+      implemented.
 
   - artifact: deployment_manifests
     effective: 0.70
@@ -170,14 +183,14 @@ artifacts:
 verification_policy:
   - No performance claim without a reproducible benchmark and workload context.
   - distributed_sql_replication means only the machine-readable replication_scope above.
+  - sql_snapshots means only the tested SQL-aware fixed-member snapshot/bootstrap path.
   - distributed_sql_replication must not be interpreted as production_ready or production HA.
   - Keep SQL correctness claims synchronized with executable PostgreSQL reference tests.
   - Keep deployment examples fixed-membership until safe membership orchestration exists.
   - A release head must pass tests, lint, confidence checks, adversarial tests, TPC-H reference validation, and Helm rendering.
 
 next_high_value_work:
-  - Define SQL-aware snapshot/bootstrap and node-replacement recovery before enabling Raft log compaction in replicated-SQL mode.
+  - Add coordinated Raft membership changes only after preserving the tested snapshot/bootstrap safety boundary.
   - Replicate authentication/user mutations or document a separate strongly consistent identity design.
-  - Add coordinated membership changes and operator recovery workflows.
-  - Add backup/restore and disaster-recovery procedures.
-  - Add stronger read-consistency modes and deeper PostgreSQL compatibility only after these safety boundaries.
+  - Add operator-facing backup/restore and disaster-recovery workflows using verified snapshot machinery where appropriate.
+  - Add stronger read-consistency modes and deeper PostgreSQL compatibility without weakening lifecycle safety.

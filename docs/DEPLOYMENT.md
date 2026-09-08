@@ -1,6 +1,6 @@
 # Deployment
 
-NeuralBase ships deployment assets for development, integration testing, and architecture evaluation. Configured fixed-membership clusters replicate persistent table mutations through Raft, but the manifests are **not** a production-HA database deployment.
+NeuralBase ships deployment assets for development, integration testing, and architecture evaluation. Configured fixed-membership clusters replicate persistent table mutations and support SQL-aware snapshot recovery of an already-configured fixed member, but the manifests are **not** a production-HA database deployment.
 
 ## Single process
 
@@ -20,13 +20,14 @@ Without `NEURALBASE_NODE_ID`, persistent table DDL/DML uses the local single-nod
 
 ## Clustered startup requirements
 
-Setting `NEURALBASE_NODE_ID` enables the replicated table-mutation runtime and changes the durability prerequisites:
+Setting `NEURALBASE_NODE_ID` enables the replicated-table runtime and requires:
 
-- durable `NEURALBASE_DB_PATH`/`DB_PATH` is required;
-- RocksDB open failure prevents a usable clustered runtime rather than silently creating an authoritative in-memory cluster;
-- persisted catalog hydration failure aborts clustered startup;
-- persisted Raft state is loaded from RocksDB;
-- required Raft persistence load/save failure fail-stops the node.
+- durable `NEURALBASE_DB_PATH`/`DB_PATH`;
+- successful RocksDB open and persisted catalog hydration;
+- persisted Raft state loaded from RocksDB;
+- fail-stop handling of required Raft persistence and snapshot-staging failures.
+
+A truly fresh fixed member starts with SQL serving gated closed until Raft snapshot/log catch-up is complete.
 
 ## Environment reference
 
@@ -42,9 +43,6 @@ Setting `NEURALBASE_NODE_ID` enables the replicated table-mutation runtime and c
 | `NEURALBASE_RAFT_TLS` | false | Select feature-gated TLS Raft transport |
 | `NEURALBASE_USERS_FILE` | `users.json` | Persistent **per-node** credential registry |
 | `NEURALBASE_AUTH_REQUIRED` | false unless enabled | Require client authentication |
-| `NEURALBASE_MAX_CONNECTIONS` | engine default | Global connection admission limit |
-| `NEURALBASE_MAX_CONNECTIONS_PER_IP` | engine default | Per-IP connection admission limit |
-| `NEURALBASE_MAX_CONNECTIONS_PER_USER` | optional/unlimited unless set | Per-user admission limit |
 
 Use `.env.example` as a starting point. Legacy unprefixed aliases remain in selected code paths for compatibility.
 
@@ -54,46 +52,27 @@ Use `.env.example` as a starting point. Legacy unprefixed aliases remain in sele
 docker compose up --build -d --wait
 ```
 
-The Compose file starts a fixed three-node topology with explicit Raft peer mappings and per-node persistent volumes.
+The Compose file starts a fixed three-node topology with explicit Raft peer mappings and per-node persistent volumes. SQL ports are `5432`, `5433`, and `5434`.
 
-SQL ports:
-
-- node1: `5432`
-- node2: `5433`
-- node3: `5434`
-
-Each node owns an independent RocksDB database. Persistent table `CREATE`, `DROP`, `INSERT`, `UPDATE`, and `DELETE` are replicated as deterministic Raft commands; the volumes are not shared storage.
-
-A client connected to a follower receives a write rejection rather than local mutation. The client must direct the mutation to the elected leader.
+Each node owns independent RocksDB storage. Persistent table `CREATE`, `DROP`, `INSERT`, `UPDATE`, and `DELETE` are replicated as deterministic Raft commands; volumes are not shared storage. A client connected to a follower receives a write rejection rather than local mutation.
 
 ## Read behavior
 
-Reads are local to the connected process. This phase does not provide a linearizable follower-read protocol, so follower reads may lag until committed entries are learned/applied locally.
+Reads are local to the connected process. There is no linearizable follower-read protocol, so follower reads may lag until committed entries are applied locally.
 
-Do not place a generic load balancer in front of all SQL endpoints and assume arbitrary read-after-write or write routing semantics. An operator/client layer must understand leader-directed writes and the selected read-consistency policy.
+The fresh-member readiness gate is narrower: a member reconstructing from empty storage does not enter the PostgreSQL serving loop until snapshot/suffix catch-up is confirmed. This does not make ordinary follower reads linearizable.
 
 ## Kubernetes and Helm
 
-The raw `k8s/` manifests and Helm chart use StatefulSet/fixed-membership assumptions. Stable pod identity maps naturally to logical Raft identity and persistent volumes keep each node's RocksDB state.
+The raw `k8s/` manifests and Helm chart use StatefulSet/fixed-membership assumptions. Stable pod identity maps to logical Raft identity and persistent volumes keep per-node RocksDB state.
 
-The chart validates:
+CI validates Helm lint, default render, authentication render, TLS render, and explicit rejection of unsafe HPA configuration.
 
-```bash
-helm lint helm/neuralbase
-helm template neuralbase helm/neuralbase
-```
-
-Authentication and TLS render paths are also exercised in CI.
-
-Automatic HPA enablement is rejected because changing `replicaCount` or StatefulSet size does not perform a coordinated Raft membership change. The PodDisruptionBudget is an availability aid that preserves a configured majority; it is not a membership controller.
+Automatic HPA remains rejected because changing StatefulSet replica count does not perform a coordinated Raft membership change. Phase 2 does not relax this rule.
 
 ## Authentication
 
-Seed credentials may be supplied by the deployment Secret mechanism when authentication is enabled. Runtime `CREATE USER`, `ALTER USER`, and `DROP USER` write the live registry to `NEURALBASE_USERS_FILE`.
-
-Authentication mutations remain per-node. A user created on one node does not automatically become cluster-wide simply because table data is replicated.
-
-Do not place the writable live user-registry path directly on a read-only Secret mount.
+Runtime `CREATE USER`, `ALTER USER`, and `DROP USER` remain per-node. Credential state is not included in the replicated table/snapshot guarantee. Do not infer cluster-wide authentication consistency from table replication.
 
 ## TLS
 
@@ -103,32 +82,30 @@ Build with:
 cargo build --release --locked --features tls
 ```
 
-SQL TLS uses the certificate/key settings documented by `src/tls.rs`. Node-to-node Raft TLS is selected with `NEURALBASE_RAFT_TLS=1` when the binary includes the `tls` feature.
+SQL TLS uses settings documented by `src/tls.rs`. Node-to-node Raft TLS is selected with `NEURALBASE_RAFT_TLS=1` when the binary includes the `tls` feature.
 
-See [THREAT_MODEL.md](THREAT_MODEL.md) before treating TLS/auth defaults as a production security profile.
+## Persistence and SQL-aware recovery
 
-## Persistence and recovery boundary
+Each process owns local RocksDB and a local credential registry. Replicated SQL state now has a versioned logical snapshot format integrated with Raft compaction and InstallSnapshot.
 
-Each process owns local RocksDB and a local credential registry. Persistent table mutations and Raft stable state survive the tested process kill/re-election/full-cluster restart path.
+For snapshot creation, NeuralBase validates and durably stages the SQL snapshot before making prefix truncation durable. For follower installation, it stages and restores durable SQL state before publishing the Raft snapshot boundary or acknowledging success. Interrupted installation is resumable from the staged artifact after restart.
 
-However, replicated-SQL mode intentionally rejects legacy opaque Raft snapshot/compaction state. NeuralBase does not yet have a SQL-aware snapshot/bootstrap format for replacement nodes or safe log truncation.
+A known fixed member that loses its entire RocksDB directory can be restarted with the **same configured logical member ID** and empty local storage. It remains non-serving while it receives the leader snapshot and remaining log suffix, then becomes serving-ready after catch-up. This exact path is regression-tested, including later leadership, acknowledged writes, failure and restart.
 
-Backup/restore, disaster recovery, and replacement-node procedures are therefore still release boundaries.
+This is not a general operator replacement controller. It does not change membership, add a new logical ID, automatically recreate volumes/pods, restore authentication state, or provide backup/disaster-recovery semantics.
 
 ## Scaling
 
-Increasing replicas is not an operator-safe membership-change workflow.
-
-Before dynamic scaling is supported, NeuralBase needs coordinated consensus membership changes, state catch-up/bootstrap, address discovery/reconciliation, and explicit rollback/recovery behavior.
+Increasing replicas is not an operator-safe membership-change workflow. Coordinated consensus membership changes, bootstrap/promotion semantics, address reconciliation and failure rollback are still required before scaling restrictions can change.
 
 ## Operational readiness boundary
 
-Current manifests demonstrate packaging plus a tested fixed-membership replicated table-mutation topology. Production readiness additionally requires at minimum:
+Current manifests demonstrate packaging plus a tested fixed-membership replicated mutation and SQL snapshot-recovery topology. Production readiness additionally requires at minimum:
 
-- SQL-aware snapshot/bootstrap and replacement-node recovery;
-- coordinated membership operations;
+- coordinated membership operations and automatic lifecycle reconciliation;
 - an explicit replicated/strongly consistent identity design;
-- defined read-consistency modes and appropriate routing;
-- backup/restore and disaster-recovery procedures;
+- defined stronger read-consistency modes and routing;
+- backup/restore, PITR and disaster-recovery procedures;
 - security review for the target environment;
-- broader partition/storage-fault/upgrade validation.
+- broader partition/storage-fault/upgrade validation;
+- production performance characterization.

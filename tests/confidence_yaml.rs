@@ -67,12 +67,12 @@ fn replicated_sql_claim_is_narrow_and_production_readiness_stays_false() {
     assert_eq!(
         system["production_ready"].as_bool(),
         Some(false),
-        "replicated table mutations do not make NeuralBase production-ready"
+        "replicated SQL lifecycle work does not make NeuralBase production-ready"
     );
     assert_eq!(
         system["distributed_sql_replication"].as_bool(),
         Some(true),
-        "fixed-membership persistent table mutations are now exercised through Raft"
+        "fixed-membership persistent table mutations are exercised through Raft"
     );
 
     let scope = &system["replication_scope"];
@@ -81,7 +81,11 @@ fn replicated_sql_claim_is_narrow_and_production_readiness_stays_false() {
     assert_eq!(scope["follower_reads_linearizable"].as_bool(), Some(false));
     assert_eq!(scope["auth_replication"].as_bool(), Some(false));
     assert_eq!(scope["dynamic_membership"].as_bool(), Some(false));
-    assert_eq!(scope["sql_snapshots"].as_bool(), Some(false));
+    assert_eq!(scope["sql_snapshots"].as_bool(), Some(true));
+    assert_eq!(
+        scope["fixed_member_empty_storage_bootstrap"].as_bool(),
+        Some(true)
+    );
     assert_eq!(scope["production_ha"].as_bool(), Some(false));
 
     let ddl = scope["table_ddl"]
@@ -108,6 +112,6 @@ fn replicated_sql_claim_is_narrow_and_production_readiness_stays_false() {
         .expect("sql_replication boundary must be explicit");
     assert_eq!(
         replication["status"].as_str(),
-        Some("fixed_membership_table_mutations_tested")
+        Some("fixed_membership_table_mutations_and_snapshot_recovery_tested")
     );
 }
