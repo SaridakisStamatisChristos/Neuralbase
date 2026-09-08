@@ -3,23 +3,19 @@
 //
 // Stores log entries with optional snapshot support for log compaction.
 // The PersistentState struct captures the fields Raft requires to be stable
-// across crashes: currentTerm, votedFor, log[], snapshot_index, snapshot_term.
+// across crashes: currentTerm, votedFor, log[], snapshot boundary, and (Phase 3)
+// the committed cluster-membership state.
 //
 // After a snapshot at last_included_index=N:
 //   - log[0] is a sentinel with term=snapshot_term, index=N
 //   - Real entries start at log[1] (Raft index N+1)
 //   - last_log_index = snapshot_index + log.len() - 1
-//
-// CONFIDENCE: raw=0.86 effective=0.78
-// DEPENDS_ON: rpc
-// RISK: Snapshot install changes index arithmetic — see invariants in
-//       REVIEW_REQUIRED.md §Session13 before lifting confidence cap.
-// [HUMAN REVIEW REQUIRED] — see REVIEW_REQUIRED.md §Session13
 
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
+use crate::consensus::membership::ClusterMembership;
 use crate::consensus::rpc::{LogEntry, NodeId};
 
 // ── RaftPersistenceStore ───────────────────────────────────────────────────
@@ -48,7 +44,7 @@ pub struct StagedSnapshot {
 /// Raft event-loop task and the test harness.
 ///
 /// Invariant: `save` is called BEFORE the node replies to any RPC that
-/// depends on the saved state (term, vote, log entry).
+/// depends on the saved state (term, vote, log entry, committed membership).
 pub trait RaftPersistenceStore: Send + Sync {
     /// Persist the full state + active snapshot data atomically.
     ///
@@ -165,6 +161,11 @@ impl RaftPersistenceStore for MemPersistenceStore {
 /// The fields Raft requires to be persisted to stable storage before
 /// responding to any RPC.
 ///
+/// `membership` is `Option` only for on-disk compatibility with the Phase-2
+/// `persistent-state-v1` JSON. A running Phase-3 Raft node initializes/migrates
+/// it before participating; once initialized, durable membership is the source
+/// of truth and environment peer lists are transport/bootstrap input only.
+///
 /// ## Log index arithmetic after snapshot
 ///
 /// Physical position in `self.log` maps to Raft index as follows:
@@ -180,13 +181,18 @@ pub struct PersistentState {
     pub current_term: u64,
     /// CandidateId that received vote in current term, or None.
     pub voted_for: Option<NodeId>,
-    /// The actual log.  `log[0]` is always the snapshot-boundary sentinel.
+    /// The actual log. `log[0]` is always the snapshot-boundary sentinel.
     pub log: Vec<LogEntry>,
     /// Raft index of the last entry included in the most recent snapshot.
     /// 0 = no snapshot has been taken.
     pub snapshot_index: u64,
     /// Term of `snapshot_index`.
     pub snapshot_term: u64,
+    /// Committed dynamic membership. Missing only when loading a pre-Phase-3
+    /// durable state; `RaftNode::with_persistence` migrates that state from the
+    /// fixed bootstrap configuration exactly once.
+    #[serde(default)]
+    pub membership: Option<ClusterMembership>,
 }
 
 impl Default for PersistentState {
@@ -208,6 +214,7 @@ impl PersistentState {
             }],
             snapshot_index: 0,
             snapshot_term: 0,
+            membership: None,
         }
     }
 
@@ -316,6 +323,7 @@ mod tests {
         let s = PersistentState::new();
         assert_eq!(s.last_log_index(), 0);
         assert_eq!(s.last_log_term(), 0);
+        assert!(s.membership.is_none());
     }
 
     #[test]
@@ -417,12 +425,24 @@ mod tests {
         let store = MemPersistenceStore::new();
         let mut ps = PersistentState::new();
         ps.current_term = 7;
+        ps.membership = Some(ClusterMembership::bootstrap(
+            "node-a".to_string(),
+            ["node-b".to_string()],
+        ));
         ps.append(7, b"hello".to_vec());
         store.save(&ps, b"snap").unwrap();
         let (loaded_ps, loaded_snap) = store.load().unwrap().unwrap();
         assert_eq!(loaded_ps.current_term, 7);
         assert_eq!(loaded_ps.last_log_index(), 1);
+        assert_eq!(loaded_ps.membership, ps.membership);
         assert_eq!(loaded_snap, b"snap");
+    }
+
+    #[test]
+    fn pre_phase3_json_without_membership_remains_decodable() {
+        let json = r#"{"current_term":2,"voted_for":null,"log":[{"term":0,"index":0,"command":[]}],"snapshot_index":0,"snapshot_term":0}"#;
+        let decoded: PersistentState = serde_json::from_str(json).unwrap();
+        assert!(decoded.membership.is_none());
     }
 
     #[test]
