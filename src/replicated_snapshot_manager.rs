@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Logical replicated-SQL snapshot export and restore against RocksDB.
 //!
-//! Export reads the durable SQL apply marker, catalog, and table rows through one
-//! RocksDB snapshot so the artifact represents one consistent storage point.
-//! Restore validates the complete artifact before mutating storage, then replaces
-//! SQL catalog/data plus the durable apply marker in one RocksDB WriteBatch. The
-//! in-memory catalog and HLC floor are published only after that batch succeeds.
+//! Export reads the durable apply marker, identity state, catalog, and table rows
+//! through one RocksDB snapshot so the artifact represents one consistent state-
+//! machine point. Restore validates the complete artifact before mutating storage,
+//! then replaces SQL catalog/data, replicated identity, and the durable apply
+//! marker in one RocksDB WriteBatch. Volatile catalog/HLC state is published only
+//! after that batch succeeds.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -15,6 +16,12 @@ use thiserror::Error;
 
 use crate::catalog::{InMemoryCatalog, TableSchema};
 use crate::hlc::{HlcClock, HlcTimestamp};
+use crate::replicated_identity_snapshot::{
+    IdentitySnapshotExtensionError, ReplicatedIdentitySnapshotExtension,
+};
+use crate::replicated_identity_store::{
+    IdentityStateError, ReplicatedIdentityState, REPLICATED_IDENTITY_STATE_KEY,
+};
 use crate::replicated_snapshot::{
     ReplicatedSqlSnapshot, SnapshotCodecError, SnapshotMetadata, SnapshotRow, SnapshotTable,
 };
@@ -69,6 +76,10 @@ impl DurableApplyState {
 pub enum SnapshotManagerError {
     #[error("invalid replicated SQL snapshot: {0}")]
     Codec(#[from] SnapshotCodecError),
+    #[error("invalid replicated identity snapshot extension: {0}")]
+    IdentitySnapshot(#[from] IdentitySnapshotExtensionError),
+    #[error("invalid replicated identity state during snapshot operation: {0}")]
+    IdentityState(#[from] IdentityStateError),
     #[error("storage failure during replicated SQL snapshot operation: {0}")]
     Storage(#[from] StorageError),
     #[error("rocksdb failure during replicated SQL snapshot operation: {0}")]
@@ -152,9 +163,9 @@ impl ReplicatedSqlSnapshotManager {
         }
     }
 
-    /// Export one canonical logical SQL snapshot from a single RocksDB snapshot.
+    /// Export one canonical logical state-machine snapshot from one RocksDB snapshot.
     ///
-    /// `last_included_index`/`last_included_term` come from Raft. The durable SQL
+    /// `last_included_index`/`last_included_term` come from Raft. The durable
     /// apply marker may be lower when the Raft prefix also contains non-SQL
     /// commands, but it must never be newer than the requested snapshot index.
     pub fn export(
@@ -190,6 +201,14 @@ impl ReplicatedSqlSnapshotManager {
             });
         }
 
+        let identity_extension = match db_snapshot.get_cf(&meta_cf, REPLICATED_IDENTITY_STATE_KEY)? {
+            Some(bytes) => ReplicatedIdentitySnapshotExtension::Initialized(
+                ReplicatedIdentityState::decode(&bytes)?,
+            ),
+            None => ReplicatedIdentitySnapshotExtension::Uninitialized,
+        }
+        .encode()?;
+
         let schemas = read_catalog(&db_snapshot, &catalog_cf)?;
         let mut ids = HashMap::<u32, String>::with_capacity(schemas.len());
         let mut tables = Vec::with_capacity(schemas.len());
@@ -224,17 +243,18 @@ impl ReplicatedSqlSnapshotManager {
                 latest_commit_ts: apply_state.last_commit_ts,
             },
             tables,
-            metadata_extension: Vec::new(),
+            metadata_extension: identity_extension,
         }
         .encode()
         .map_err(Into::into)
     }
 
-    /// Restore a complete logical SQL snapshot into this storage engine.
+    /// Restore a complete logical state-machine snapshot into this storage engine.
     ///
     /// Validation and batch construction happen before any write. SQL data,
-    /// catalog, and the durable apply marker are replaced atomically. Only after
-    /// the RocksDB batch succeeds are the in-memory catalog and HLC floor updated.
+    /// catalog, identity, and the durable apply marker are replaced atomically.
+    /// Only after the RocksDB batch succeeds are the in-memory catalog and HLC
+    /// floor updated.
     pub fn restore(&self, bytes: &[u8]) -> Result<SnapshotMetadata, SnapshotManagerError> {
         let snapshot = ReplicatedSqlSnapshot::decode(bytes)?;
         self.restore_decoded(snapshot, |batch| {
@@ -253,6 +273,14 @@ impl ReplicatedSqlSnapshotManager {
         if !self.engine.list_index_cfs()?.is_empty() {
             return Err(SnapshotManagerError::RestoreTargetHasSecondaryIndexes);
         }
+
+        let identity_extension = if snapshot.metadata_extension.is_empty() {
+            // Phase-2 snapshots predate replicated identity. Preserve their
+            // meaning explicitly as an uninitialized identity registry.
+            ReplicatedIdentitySnapshotExtension::Uninitialized
+        } else {
+            ReplicatedIdentitySnapshotExtension::decode(&snapshot.metadata_extension)?
+        };
 
         let data_cf = self
             .engine
@@ -321,6 +349,19 @@ impl ReplicatedSqlSnapshotManager {
                 );
             }
             schemas.push(table.schema.clone());
+        }
+
+        match identity_extension {
+            ReplicatedIdentitySnapshotExtension::Uninitialized => {
+                batch.delete_cf(&meta_cf, REPLICATED_IDENTITY_STATE_KEY);
+            }
+            ReplicatedIdentitySnapshotExtension::Initialized(identity) => {
+                batch.put_cf(
+                    &meta_cf,
+                    REPLICATED_IDENTITY_STATE_KEY,
+                    identity.encode()?,
+                );
+            }
         }
 
         let restored_apply_state = DurableApplyState {
@@ -459,6 +500,7 @@ mod tests {
     use super::*;
     use crate::catalog::{Catalog, ColumnDef};
     use crate::consensus::rpc::LogEntry;
+    use crate::replicated_identity::{ReplicatedIdentityUser, ReplicatedScramCredential};
     use crate::replicated_sql::{ReplicatedMutation, ReplicatedRowWrite};
     use crate::replicated_state_machine::{ReplicatedApplyOutcome, ReplicatedSqlStateMachine};
     use crate::rocksdb_catalog::RocksDbCatalog;
@@ -478,6 +520,31 @@ mod tests {
                 },
             ],
         }
+    }
+
+    fn identity_state(username: &str, seed: u8) -> ReplicatedIdentityState {
+        ReplicatedIdentityState::new(vec![ReplicatedIdentityUser {
+            username: username.to_string(),
+            credential: ReplicatedScramCredential {
+                salt: vec![seed; 16],
+                iterations: 4_096,
+                stored_key: [seed.wrapping_add(1); 32],
+                server_key: [seed.wrapping_add(2); 32],
+            },
+        }])
+        .unwrap()
+    }
+
+    fn persist_identity(engine: &Arc<StorageEngine>, identity: &ReplicatedIdentityState) {
+        let meta_cf = engine.db.cf_handle(CF_META).unwrap();
+        engine
+            .db
+            .put_cf(
+                &meta_cf,
+                REPLICATED_IDENTITY_STATE_KEY,
+                identity.encode().unwrap(),
+            )
+            .unwrap();
     }
 
     fn ts(wall_ms: u64, logical: u16) -> u64 {
@@ -578,8 +645,13 @@ mod tests {
     fn export_restore_fresh_db_is_logically_and_byte_identical() {
         let source_dir = TempDir::new().unwrap();
         let (source_engine, source_catalog, source_clock) = seed_source(&source_dir);
-        let source_manager =
-            ReplicatedSqlSnapshotManager::new(source_engine, source_catalog, source_clock);
+        let expected_identity = identity_state("alice", 7);
+        persist_identity(&source_engine, &expected_identity);
+        let source_manager = ReplicatedSqlSnapshotManager::new(
+            Arc::clone(&source_engine),
+            source_catalog,
+            source_clock,
+        );
         let bytes = source_manager.export(5, 2).unwrap();
         let decoded = ReplicatedSqlSnapshot::decode(&bytes).unwrap();
         assert_eq!(decoded.metadata.latest_sql_apply_index, 4);
@@ -587,14 +659,65 @@ mod tests {
         assert_eq!(decoded.tables[0].rows.len(), 1);
         assert_eq!(decoded.tables[0].rows[0].primary_key, b"a");
         assert_eq!(decoded.tables[0].rows[0].value, b"a-v2");
+        assert_eq!(
+            ReplicatedIdentitySnapshotExtension::decode(&decoded.metadata_extension).unwrap(),
+            ReplicatedIdentitySnapshotExtension::Initialized(expected_identity.clone())
+        );
 
         let target_dir = TempDir::new().unwrap();
-        let (target_manager, _engine, catalog, clock) = manager_for(&target_dir);
+        let (target_manager, target_engine, catalog, clock) = manager_for(&target_dir);
         assert_eq!(target_manager.restore(&bytes).unwrap(), decoded.metadata);
         assert_eq!(catalog.get_table("items"), Some(schema()));
         assert!(catalog.get_table("lineitem").is_some());
         assert_eq!(clock.now().to_u64(), decoded.metadata.latest_commit_ts);
+        assert_eq!(
+            ReplicatedIdentityState::load(&target_engine).unwrap(),
+            Some(expected_identity)
+        );
         assert_eq!(target_manager.export(5, 2).unwrap(), bytes);
+    }
+
+    #[test]
+    fn legacy_snapshot_without_identity_extension_clears_stale_identity() {
+        let source_dir = TempDir::new().unwrap();
+        let (source_engine, source_catalog, source_clock) = seed_source(&source_dir);
+        let manager = ReplicatedSqlSnapshotManager::new(source_engine, source_catalog, source_clock);
+        let mut snapshot = ReplicatedSqlSnapshot::decode(&manager.export(5, 2).unwrap()).unwrap();
+        snapshot.metadata_extension.clear();
+        let legacy_bytes = snapshot.encode().unwrap();
+
+        let target_dir = TempDir::new().unwrap();
+        let (target_manager, target_engine, _catalog, _clock) = manager_for(&target_dir);
+        persist_identity(&target_engine, &identity_state("stale", 9));
+        target_manager.restore(&legacy_bytes).unwrap();
+        assert_eq!(ReplicatedIdentityState::load(&target_engine).unwrap(), None);
+    }
+
+    #[test]
+    fn malformed_identity_extension_fails_before_mutation() {
+        let source_dir = TempDir::new().unwrap();
+        let (source_engine, source_catalog, source_clock) = seed_source(&source_dir);
+        let manager = ReplicatedSqlSnapshotManager::new(source_engine, source_catalog, source_clock);
+        let mut snapshot = ReplicatedSqlSnapshot::decode(&manager.export(5, 2).unwrap()).unwrap();
+        snapshot.metadata_extension = b"NBIX\x01\x01\0\0\0\x10bad".to_vec();
+        let corrupt = snapshot.encode().unwrap();
+
+        let target_dir = TempDir::new().unwrap();
+        let (target_manager, target_engine, catalog, clock) = manager_for(&target_dir);
+        let stale = identity_state("sentinel", 10);
+        persist_identity(&target_engine, &stale);
+        catalog.register_table(TableSchema {
+            name: "sentinel".to_string(),
+            columns: vec![],
+        });
+        let before_clock = clock.now();
+        assert!(matches!(
+            target_manager.restore(&corrupt),
+            Err(SnapshotManagerError::IdentitySnapshot(_))
+        ));
+        assert_eq!(ReplicatedIdentityState::load(&target_engine).unwrap(), Some(stale));
+        assert!(catalog.get_table("sentinel").is_some());
+        assert_eq!(clock.now(), before_clock);
     }
 
     #[test]
@@ -698,6 +821,8 @@ mod tests {
     fn injected_write_failure_does_not_publish_partial_restore() {
         let source_dir = TempDir::new().unwrap();
         let (source_engine, source_catalog, source_clock) = seed_source(&source_dir);
+        let source_identity = identity_state("source", 11);
+        persist_identity(&source_engine, &source_identity);
         let bytes = ReplicatedSqlSnapshotManager::new(source_engine, source_catalog, source_clock)
             .export(5, 2)
             .unwrap();
@@ -705,6 +830,8 @@ mod tests {
 
         let target_dir = TempDir::new().unwrap();
         let (target_manager, engine, catalog, clock) = manager_for(&target_dir);
+        let target_identity = identity_state("target", 12);
+        persist_identity(&engine, &target_identity);
         let existing_schema = TableSchema {
             name: "existing".to_string(),
             columns: vec![],
@@ -722,8 +849,12 @@ mod tests {
             Err(SnapshotManagerError::InjectedStorageFailure)
         ));
         assert_eq!(
-            RocksDbCatalog::new(engine).get_table("existing"),
+            RocksDbCatalog::new(Arc::clone(&engine)).get_table("existing"),
             Some(existing_schema.clone())
+        );
+        assert_eq!(
+            ReplicatedIdentityState::load(&engine).unwrap(),
+            Some(target_identity)
         );
         assert_eq!(catalog.get_table("existing"), Some(existing_schema));
         assert!(catalog.get_table("items").is_none());
