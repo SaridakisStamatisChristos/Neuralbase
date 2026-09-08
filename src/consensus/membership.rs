@@ -39,6 +39,9 @@ pub struct ClusterMembership {
 }
 
 impl ClusterMembership {
+    /// Initial fixed-membership bootstrap. This is the only path that turns the
+    /// configured peer list into voters without an already-committed dynamic
+    /// configuration.
     pub fn bootstrap(local_id: NodeId, peers: impl IntoIterator<Item = NodeId>) -> Self {
         let mut voters = BTreeSet::new();
         voters.insert(local_id);
@@ -52,6 +55,35 @@ impl ClusterMembership {
             joint: None,
             removed: BTreeSet::new(),
         }
+    }
+
+    /// Safe seed view for a brand-new joining process. The local node is a
+    /// learner and therefore cannot campaign or vote before it receives the
+    /// authoritative committed membership through log/snapshot replication.
+    pub fn bootstrap_learner(
+        local_id: NodeId,
+        voters: impl IntoIterator<Item = NodeId>,
+    ) -> Result<Self, String> {
+        let voters: BTreeSet<_> = voters.into_iter().collect();
+        if voters.is_empty() {
+            return Err("joining learner requires at least one seed voter".to_string());
+        }
+        if voters.contains(&local_id) {
+            return Err("joining learner id cannot also be a seed voter".to_string());
+        }
+        let mut learners = BTreeSet::new();
+        learners.insert(local_id);
+        let config = Self {
+            format_version: MEMBERSHIP_FORMAT_VERSION,
+            generation: 1,
+            config_index: 0,
+            voters,
+            learners,
+            joint: None,
+            removed: BTreeSet::new(),
+        };
+        config.validate()?;
+        Ok(config)
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -303,6 +335,17 @@ mod tests {
         assert!(cfg.has_vote_quorum(&votes));
         let one = BTreeSet::from(["n1".to_string()]);
         assert!(!cfg.has_vote_quorum(&one));
+    }
+
+    #[test]
+    fn joining_learner_cannot_vote() {
+        let cfg = ClusterMembership::bootstrap_learner(
+            "n4".to_string(),
+            ["n1".to_string(), "n2".to_string(), "n3".to_string()],
+        )
+        .unwrap();
+        assert!(cfg.is_learner(&"n4".to_string()));
+        assert!(!cfg.is_voter(&"n4".to_string()));
     }
 
     #[test]
