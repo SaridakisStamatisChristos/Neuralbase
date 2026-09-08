@@ -65,7 +65,7 @@ where
 {
     let deadline = tokio::time::Instant::now() + TEST_TIMEOUT;
     loop {
-        if predicate(&shared.lock().await) {
+        if predicate(&*shared.lock().await) {
             return;
         }
         assert!(
