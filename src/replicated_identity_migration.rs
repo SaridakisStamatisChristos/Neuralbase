@@ -247,11 +247,14 @@ mod tests {
     fn md5_registry_is_never_a_migration_candidate() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("users.json");
-        std::fs::write(
-            &path,
-            br#"{"users":[{"method":"md5","username":"legacy","md5_hash":"0123456789abcdef0123456789abcdef"}]}"#,
-        )
-        .unwrap();
+        let doc = serde_json::json!({
+            "users": [{
+                "method": "md5",
+                "username": "legacy",
+                "md5_hash": "0123456789abcdef0123456789abcdef"
+            }]
+        });
+        std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
         assert!(matches!(
             load_legacy_identity_candidate(&path).unwrap_err(),
             LegacyIdentityMigrationError::ReusableMd5Credential(user) if user == "legacy"
