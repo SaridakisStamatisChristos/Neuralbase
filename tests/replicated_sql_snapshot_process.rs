@@ -383,9 +383,7 @@ fn empty_disk_fixed_member_recovers_from_snapshot_over_tcp_and_survives_restart_
     for id in 1..=11 {
         mutate_on_leader(
             &mut nodes,
-            &format!(
-                "INSERT INTO snapshot_process_items (id, name) VALUES ({id}, 'v{id}')"
-            ),
+            &format!("INSERT INTO snapshot_process_items (id, name) VALUES ({id}, 'v{id}')"),
         );
     }
     let leader = mutate_on_leader(
@@ -465,10 +463,7 @@ fn empty_disk_fixed_member_recovers_from_snapshot_over_tcp_and_survives_restart_
         "UPDATE snapshot_process_items SET name = 'after_replacement_failover' WHERE id = 2",
     );
     expected.remove(&("2".to_string(), "v2".to_string()));
-    expected.insert((
-        "2".to_string(),
-        "after_replacement_failover".to_string(),
-    ));
+    expected.insert(("2".to_string(), "after_replacement_failover".to_string()));
     wait_rows(&mut nodes[survivor], &expected);
     wait_rows(&mut nodes[victim], &expected);
 
