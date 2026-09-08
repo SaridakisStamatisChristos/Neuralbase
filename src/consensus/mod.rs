@@ -2,13 +2,14 @@
 // Consensus module — Raft consensus engine for NeuralBase.
 //
 // Sub-modules:
-//   fail_closed — strict persistence adapter for consensus-critical storage
-//   log         — persistent log (PersistentState, RaftPersistenceStore)
-//   membership  — durable voter/learner/joint-consensus configuration
-//   raft        — state machine (RaftNode, RaftRole, RaftShared)
-//   rpc         — wire message types
-//   snapshot    — state-machine snapshot create/restore contract
-//   transport   — Transport trait + ChannelTransport + TcpTransport + optional TLS
+//   fail_closed      — strict persistence adapter for consensus-critical storage
+//   log              — persistent log (PersistentState, RaftPersistenceStore)
+//   membership       — durable voter/learner/joint-consensus configuration
+//   raft             — state machine (RaftNode, RaftRole, RaftShared)
+//   rpc              — wire message types
+//   snapshot         — state-machine snapshot create/restore contract
+//   snapshot_payload — membership-bound Raft snapshot envelope
+//   transport        — Transport trait + ChannelTransport + TcpTransport + optional TLS
 //
 // Replicated-SQL / phased distributed-correctness additions:
 //   - confirmed state-machine apply acknowledgement
@@ -23,6 +24,7 @@ pub mod membership;
 pub mod raft;
 pub mod rpc;
 pub mod snapshot;
+pub mod snapshot_payload;
 pub mod transport;
 
 // Re-exports used by integration tests and production cluster wiring.
@@ -47,6 +49,8 @@ pub use rpc::{
 };
 #[allow(unused_imports)]
 pub use snapshot::StateMachineSnapshotStore;
+#[allow(unused_imports)]
+pub use snapshot_payload::{decode_snapshot_payload, encode_snapshot_payload};
 #[cfg(feature = "tls")]
 #[allow(unused_imports)]
 pub use transport::TlsTcpTransport;
