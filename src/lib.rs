@@ -18,6 +18,7 @@ pub mod query_executor;
 pub mod raft_persistence;
 pub mod replicated_gateway;
 pub mod replicated_identity;
+pub mod replicated_identity_migration;
 pub mod replicated_identity_store;
 pub mod replicated_snapshot;
 pub mod replicated_snapshot_hooks;
