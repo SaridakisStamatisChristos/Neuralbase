@@ -24,8 +24,8 @@ pub fn encode_snapshot_payload(
         .map_err(|error| format!("serialize snapshot membership: {error}"))?;
     let membership_len = u32::try_from(membership_bytes.len())
         .map_err(|_| "snapshot membership metadata is too large".to_string())?;
-    let sql_len = u64::try_from(sql_snapshot.len())
-        .map_err(|_| "SQL snapshot is too large".to_string())?;
+    let sql_len =
+        u64::try_from(sql_snapshot.len()).map_err(|_| "SQL snapshot is too large".to_string())?;
 
     let mut digest = Sha256::new();
     digest.update(&membership_bytes);
@@ -47,9 +47,7 @@ pub fn encode_snapshot_payload(
 /// Decode a Phase-3 snapshot payload. `Ok(None)` means the bytes are a legacy
 /// Phase-2 raw SQL snapshot and should be handled using the already-durable
 /// bootstrap membership migration rules.
-pub fn decode_snapshot_payload(
-    bytes: &[u8],
-) -> Result<Option<(ClusterMembership, &[u8])>, String> {
+pub fn decode_snapshot_payload(bytes: &[u8]) -> Result<Option<(ClusterMembership, &[u8])>, String> {
     if bytes.len() < 4 || &bytes[..4] != MAGIC {
         return Ok(None);
     }
@@ -116,10 +114,8 @@ mod tests {
 
     #[test]
     fn envelope_roundtrip_is_exact() {
-        let membership = ClusterMembership::bootstrap(
-            "n1".to_string(),
-            ["n2".to_string(), "n3".to_string()],
-        );
+        let membership =
+            ClusterMembership::bootstrap("n1".to_string(), ["n2".to_string(), "n3".to_string()]);
         let sql = b"opaque-sql-snapshot\0\xff";
         let encoded = encode_snapshot_payload(&membership, sql).unwrap();
         let (decoded_membership, decoded_sql) = decode_snapshot_payload(&encoded)
