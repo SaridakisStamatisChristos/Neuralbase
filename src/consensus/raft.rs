@@ -736,10 +736,23 @@ impl<T: Transport> RaftNode<T> {
                         }
                     }
                     Some(reply_tx) = transfer_rx.recv() => {
-                        let result = self.choose_transfer_target().and_then(|target| {
-                            self.initiate_leader_transfer(target.clone())?;
-                            Ok(target)
-                        });
+                        let result = match self.choose_transfer_target() {
+                            Ok(target) => match self.initiate_leader_transfer(target.clone()) {
+                                Ok(()) => {
+                                    self.transport
+                                        .send(
+                                            &target,
+                                            RaftMessage::TimeoutNow {
+                                                term: self.ps.current_term,
+                                            },
+                                        )
+                                        .await;
+                                    Ok(target)
+                                }
+                                Err(error) => Err(error),
+                            },
+                            Err(error) => Err(error),
+                        };
                         let _ = reply_tx.send(result);
                     }
                 }
