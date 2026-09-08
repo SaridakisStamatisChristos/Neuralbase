@@ -116,7 +116,9 @@ pub fn load_legacy_identity_candidate(
                     .decode(&server_key)
                     .map_err(|_| LegacyIdentityMigrationError::InvalidBase64(username.clone()))?;
                 if stored_key_bytes.len() != 32 || server_key_bytes.len() != 32 {
-                    return Err(LegacyIdentityMigrationError::InvalidScramKeyLength(username));
+                    return Err(LegacyIdentityMigrationError::InvalidScramKeyLength(
+                        username,
+                    ));
                 }
                 let mut stored_key_array = [0u8; 32];
                 stored_key_array.copy_from_slice(&stored_key_bytes);
@@ -141,7 +143,9 @@ pub fn load_legacy_identity_candidate(
             }
             LegacyUserRecord::Md5 { username, md5_hash } => {
                 let _ = md5_hash;
-                return Err(LegacyIdentityMigrationError::ReusableMd5Credential(username));
+                return Err(LegacyIdentityMigrationError::ReusableMd5Credential(
+                    username,
+                ));
             }
         };
         records.push(record);
