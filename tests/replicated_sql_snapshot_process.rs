@@ -380,15 +380,18 @@ fn empty_disk_fixed_member_recovers_from_snapshot_over_tcp_and_survives_restart_
         &mut nodes,
         "CREATE TABLE snapshot_process_items (id BIGINT, name TEXT)",
     );
-    let mut leader = 0;
-    for id in 1..=12 {
-        leader = mutate_on_leader(
+    for id in 1..=11 {
+        mutate_on_leader(
             &mut nodes,
             &format!(
                 "INSERT INTO snapshot_process_items (id, name) VALUES ({id}, 'v{id}')"
             ),
         );
     }
+    let leader = mutate_on_leader(
+        &mut nodes,
+        "INSERT INTO snapshot_process_items (id, name) VALUES (12, 'v12')",
+    );
     let mut expected: BTreeSet<(String, String)> = (1..=12)
         .map(|id| (id.to_string(), format!("v{id}")))
         .collect();
