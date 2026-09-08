@@ -16,8 +16,9 @@ use crate::auth::UserRecord;
 use crate::replicated_gateway::{ReplicatedGatewayError, ReplicatedSqlGateway};
 use crate::replicated_identity_migration::{
     authorize_legacy_identity_candidate, load_legacy_identity_candidate,
-    LegacyIdentityMigrationError, IDENTITY_MIGRATION_SHA256_ENV,
+    LegacyIdentityMigrationError,
 };
+pub use crate::replicated_identity_migration::IDENTITY_MIGRATION_SHA256_ENV;
 use crate::replicated_identity_store::{IdentityStateError, ReplicatedIdentityState};
 use crate::storage::StorageEngine;
 
@@ -77,7 +78,8 @@ pub async fn migrate_legacy_identity_if_configured(
         return Ok(false);
     }
 
-    let candidate = authorize_legacy_identity_candidate(load_legacy_identity_candidate(users_file)?)?;
+    let candidate =
+        authorize_legacy_identity_candidate(load_legacy_identity_candidate(users_file)?)?;
     gateway.initialize_identity(&candidate.records).await?;
     Ok(true)
 }
