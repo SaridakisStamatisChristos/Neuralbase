@@ -94,7 +94,9 @@ pub enum ReplicatedIdentityMutation {
     /// Establish the replicated identity authority from an explicitly selected,
     /// canonical legacy source. This is intentionally separate from CREATE USER
     /// so migration cannot happen implicitly as a side effect of ordinary DDL.
-    Initialize { users: Vec<ReplicatedIdentityUser> },
+    Initialize {
+        users: Vec<ReplicatedIdentityUser>,
+    },
     CreateUser {
         username: String,
         credential: ReplicatedScramCredential,
@@ -162,8 +164,7 @@ impl ReplicatedIdentityMutation {
                 }
                 put_u32(
                     &mut out,
-                    u32::try_from(canonical.len())
-                        .map_err(|_| IdentityCodecError::TooManyUsers)?,
+                    u32::try_from(canonical.len()).map_err(|_| IdentityCodecError::TooManyUsers)?,
                 );
                 for user in &canonical {
                     put_username(&mut out, &user.username)?;
@@ -446,7 +447,10 @@ mod tests {
         for command in commands {
             let encoded = command.encode().unwrap();
             assert!(is_replicated_identity_mutation(&encoded));
-            assert_eq!(ReplicatedIdentityMutation::decode(&encoded).unwrap(), command);
+            assert_eq!(
+                ReplicatedIdentityMutation::decode(&encoded).unwrap(),
+                command
+            );
         }
     }
 
