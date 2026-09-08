@@ -100,9 +100,7 @@ impl ClusterMembership {
         if !self.voters.is_disjoint(&self.learners) {
             return Err("a node cannot be both voter and learner".to_string());
         }
-        if !self.voters.is_disjoint(&self.removed)
-            || !self.learners.is_disjoint(&self.removed)
-        {
+        if !self.voters.is_disjoint(&self.removed) || !self.learners.is_disjoint(&self.removed) {
             return Err("removed node cannot remain active in membership".to_string());
         }
         if let Some(joint) = &self.joint {
@@ -167,11 +165,7 @@ impl ClusterMembership {
 
     pub fn election_targets(&self) -> BTreeSet<NodeId> {
         match &self.joint {
-            Some(joint) => joint
-                .old_voters
-                .union(&joint.new_voters)
-                .cloned()
-                .collect(),
+            Some(joint) => joint.old_voters.union(&joint.new_voters).cloned().collect(),
             None => self.voters.clone(),
         }
     }
@@ -188,8 +182,7 @@ impl ClusterMembership {
         match &self.joint {
             Some(joint) => {
                 Self::votes_in(&joint.old_voters, votes) >= Self::majority(&joint.old_voters)
-                    && Self::votes_in(&joint.new_voters, votes)
-                        >= Self::majority(&joint.new_voters)
+                    && Self::votes_in(&joint.new_voters, votes) >= Self::majority(&joint.new_voters)
             }
             None => Self::votes_in(&self.voters, votes) >= Self::majority(&self.voters),
         }
@@ -319,10 +312,7 @@ mod tests {
     use super::*;
 
     fn three() -> ClusterMembership {
-        ClusterMembership::bootstrap(
-            "n1".to_string(),
-            ["n2".to_string(), "n3".to_string()],
-        )
+        ClusterMembership::bootstrap("n1".to_string(), ["n2".to_string(), "n3".to_string()])
     }
 
     #[test]
@@ -361,11 +351,7 @@ mod tests {
         assert!(joint.is_joint());
         let only_old = BTreeSet::from(["n1".to_string(), "n2".to_string()]);
         assert!(!joint.has_vote_quorum(&only_old));
-        let both = BTreeSet::from([
-            "n1".to_string(),
-            "n2".to_string(),
-            "n4".to_string(),
-        ]);
+        let both = BTreeSet::from(["n1".to_string(), "n2".to_string(), "n4".to_string()]);
         assert!(joint.has_vote_quorum(&both));
         let final_cfg = joint.finalize_joint(9).unwrap();
         assert_eq!(final_cfg.voters.len(), 4);
@@ -378,9 +364,7 @@ mod tests {
         let final_cfg = joint.finalize_joint(11).unwrap();
         assert!(!final_cfg.is_voter(&"n3".to_string()));
         assert!(final_cfg.is_removed(&"n3".to_string()));
-        let err = final_cfg
-            .add_learner("n3".to_string(), 12)
-            .unwrap_err();
+        let err = final_cfg.add_learner("n3".to_string(), 12).unwrap_err();
         assert!(err.contains("cannot be reused"));
     }
 
