@@ -91,6 +91,19 @@ impl InMemoryCatalog {
             .collect()
     }
 
+    /// Atomically replace the complete in-memory catalog snapshot.
+    ///
+    /// SQL-aware snapshot restore uses this only after the corresponding durable
+    /// RocksDB replacement succeeds, so readers never observe a partially rebuilt
+    /// in-memory catalog.
+    pub fn replace_all(&self, schemas: Vec<TableSchema>) {
+        let mut replacement = HashMap::with_capacity(schemas.len());
+        for schema in schemas {
+            replacement.insert(schema.name.to_lowercase(), schema);
+        }
+        *self.tables.write().expect("catalog RwLock poisoned") = replacement;
+    }
+
     /// Remove a table schema by name.  A no-op if the table does not exist.
     pub fn drop_table(&self, name: &str) {
         self.tables

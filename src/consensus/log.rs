@@ -16,13 +16,31 @@
 //       REVIEW_REQUIRED.md §Session13 before lifting confidence cap.
 // [HUMAN REVIEW REQUIRED] — see REVIEW_REQUIRED.md §Session13
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
 use crate::consensus::rpc::{LogEntry, NodeId};
 
 // ── RaftPersistenceStore ───────────────────────────────────────────────────
+
+/// Why snapshot bytes were staged before active Raft publication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StagedSnapshotKind {
+    /// Leader-side candidate created before local prefix compaction.
+    Creation,
+    /// Follower-side InstallSnapshot staged before state-machine restore.
+    Installation,
+}
+
+/// Crash-recovery record for snapshot lifecycle transitions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedSnapshot {
+    pub kind: StagedSnapshotKind,
+    pub last_included_index: u64,
+    pub last_included_term: u64,
+    pub data: Arc<Vec<u8>>,
+}
 
 /// Stable-storage interface for Raft persistent state.
 ///
@@ -32,9 +50,33 @@ use crate::consensus::rpc::{LogEntry, NodeId};
 /// Invariant: `save` is called BEFORE the node replies to any RPC that
 /// depends on the saved state (term, vote, log entry).
 pub trait RaftPersistenceStore: Send + Sync {
-    /// Persist the full state + snapshot data atomically.
+    /// Persist the full state + active snapshot data atomically.
+    ///
+    /// Implementations that support snapshot staging must atomically clear the
+    /// staged artifact when this publish succeeds. A crash may therefore leave
+    /// a resumable staged transition, but can never leave a compacted active
+    /// Raft state without its corresponding active snapshot bytes.
     fn save(&self, state: &PersistentState, snapshot_data: &[u8]) -> Result<(), String>;
-    /// Load previously saved state.  Returns `None` on a fresh node.
+
+    /// Durably stage a snapshot transition before any irreversible next step.
+    ///
+    /// SQL-aware compaction/install requires this operation. The default fails
+    /// closed so a persistence implementation cannot accidentally claim support.
+    fn stage_snapshot(&self, _snapshot: &StagedSnapshot) -> Result<(), String> {
+        Err("snapshot staging is not supported by this persistence store".to_string())
+    }
+
+    /// Load a staged snapshot transition left by a crash, if any.
+    fn load_staged_snapshot(&self) -> Result<Option<StagedSnapshot>, String> {
+        Ok(None)
+    }
+
+    /// Discard a staged transition that is known not to require recovery.
+    fn clear_staged_snapshot(&self) -> Result<(), String> {
+        Err("snapshot staging is not supported by this persistence store".to_string())
+    }
+
+    /// Load previously saved active state. Returns `None` on a fresh node.
     fn load(&self) -> Result<Option<(PersistentState, Vec<u8>)>, String>;
 }
 
@@ -45,7 +87,13 @@ pub trait RaftPersistenceStore: Send + Sync {
 ///
 /// Used by integration tests to verify restart-recovery behaviour.
 pub struct MemPersistenceStore {
-    inner: Mutex<Option<MemPersistedData>>,
+    inner: Mutex<MemPersistenceData>,
+}
+
+#[derive(Default)]
+struct MemPersistenceData {
+    active: Option<MemPersistedData>,
+    staged_snapshot: Option<StagedSnapshot>,
 }
 
 struct MemPersistedData {
@@ -56,7 +104,7 @@ struct MemPersistedData {
 impl MemPersistenceStore {
     pub fn new() -> Self {
         Self {
-            inner: Mutex::new(None),
+            inner: Mutex::new(MemPersistenceData::default()),
         }
     }
 }
@@ -70,16 +118,43 @@ impl Default for MemPersistenceStore {
 impl RaftPersistenceStore for MemPersistenceStore {
     fn save(&self, state: &PersistentState, snapshot_data: &[u8]) -> Result<(), String> {
         let mut guard = self.inner.lock().map_err(|e| e.to_string())?;
-        *guard = Some(MemPersistedData {
+        guard.active = Some(MemPersistedData {
             state: state.clone(),
             snapshot_data: snapshot_data.to_vec(),
         });
+        guard.staged_snapshot = None;
+        Ok(())
+    }
+
+    fn stage_snapshot(&self, snapshot: &StagedSnapshot) -> Result<(), String> {
+        self.inner
+            .lock()
+            .map_err(|e| e.to_string())?
+            .staged_snapshot = Some(snapshot.clone());
+        Ok(())
+    }
+
+    fn load_staged_snapshot(&self) -> Result<Option<StagedSnapshot>, String> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|e| e.to_string())?
+            .staged_snapshot
+            .clone())
+    }
+
+    fn clear_staged_snapshot(&self) -> Result<(), String> {
+        self.inner
+            .lock()
+            .map_err(|e| e.to_string())?
+            .staged_snapshot = None;
         Ok(())
     }
 
     fn load(&self) -> Result<Option<(PersistentState, Vec<u8>)>, String> {
         let guard = self.inner.lock().map_err(|e| e.to_string())?;
         Ok(guard
+            .active
             .as_ref()
             .map(|d| (d.state.clone(), d.snapshot_data.clone())))
     }
@@ -176,8 +251,6 @@ impl PersistentState {
         let physical_keep = if prev_log_index >= self.snapshot_index {
             (prev_log_index - self.snapshot_index) as usize + 1
         } else {
-            // prev_log_index is before the snapshot boundary — keep only the
-            // sentinel so the log remains in a valid state.
             1
         };
         self.log.truncate(physical_keep);
@@ -187,15 +260,12 @@ impl PersistentState {
     }
 
     /// Return a slice of entries from Raft index `from` (inclusive) to end.
-    ///
     /// Never returns the sentinel (physical[0]).
     pub fn entries_from(&self, from: u64) -> &[LogEntry] {
-        // Physical position of `from`.  If `from` <= snapshot_index, start
-        // from the first real entry (physical 1) — the sentinel is not sent.
         let physical = if from > self.snapshot_index {
             (from - self.snapshot_index) as usize
         } else {
-            1 // skip sentinel
+            1
         };
         if physical >= self.log.len() {
             &[]
@@ -207,27 +277,29 @@ impl PersistentState {
     /// Discard all log entries ≤ `last_included_index` and replace the
     /// sentinel with the new snapshot boundary.
     ///
-    /// If the log contains the entry at `last_included_index`, its entries
-    /// after that point are retained.  Otherwise the log is reset to just
-    /// the new sentinel.
-    ///
-    /// CONFIDENCE: raw=0.82  [HUMAN REVIEW REQUIRED] §Session13 Invariant 1.
+    /// A local suffix is retained only when this log contains an entry at
+    /// `last_included_index` whose term equals `last_included_term`. If either
+    /// the boundary entry is absent or its term differs, the local suffix may
+    /// conflict with the snapshot and is discarded as required by Raft §7.
     pub fn install_snapshot(&mut self, last_included_index: u64, last_included_term: u64) {
-        // Build a new sentinel for the snapshot boundary.
         let new_sentinel = LogEntry {
             term: last_included_term,
             index: last_included_index,
             command: vec![],
         };
 
-        // Retain any log entries that follow the snapshot.
-        let retained: Vec<LogEntry> = if last_included_index >= self.last_log_index() {
-            // Entire existing log is covered by the snapshot.
-            vec![]
-        } else {
-            let physical_first_kept = (last_included_index - self.snapshot_index) as usize + 1;
-            self.log[physical_first_kept..].to_vec()
-        };
+        let last_log_index = self.last_log_index();
+        let boundary_matches_local = last_included_index >= self.snapshot_index
+            && last_included_index <= last_log_index
+            && self.term_at(last_included_index) == last_included_term;
+
+        let retained: Vec<LogEntry> =
+            if boundary_matches_local && last_included_index < last_log_index {
+                let physical_first_kept = (last_included_index - self.snapshot_index) as usize + 1;
+                self.log[physical_first_kept..].to_vec()
+            } else {
+                vec![]
+            };
 
         self.log = std::iter::once(new_sentinel).chain(retained).collect();
         self.snapshot_index = last_included_index;
@@ -258,10 +330,9 @@ mod tests {
     #[test]
     fn truncate_and_append_removes_conflict() {
         let mut s = PersistentState::new();
-        s.append(1, b"a".to_vec()); // idx=1
-        s.append(1, b"b".to_vec()); // idx=2
-        s.append(2, b"c".to_vec()); // idx=3 — conflicting
-                                    // Leader sends entries starting at index 2 with term 3.
+        s.append(1, b"a".to_vec());
+        s.append(1, b"b".to_vec());
+        s.append(2, b"c".to_vec());
         s.truncate_and_append(
             1,
             vec![LogEntry {
@@ -280,34 +351,38 @@ mod tests {
         assert_eq!(s.entries_from(99).len(), 0);
     }
 
-    // ── Snapshot arithmetic tests ──────────────────────────────────────────
-
     #[test]
     fn install_snapshot_resets_log_and_sentinel() {
         let mut s = PersistentState::new();
         for i in 1u64..=10 {
             s.append(1, format!("cmd{i}").into_bytes());
         }
-        assert_eq!(s.last_log_index(), 10);
-
         s.install_snapshot(5, 1);
-        // Sentinel is at physical[0] = Raft index 5.
         assert_eq!(s.snapshot_index, 5);
         assert_eq!(s.snapshot_term, 1);
-        // Entries 6..=10 were retained.
         assert_eq!(s.last_log_index(), 10);
-        // term_at the snapshot boundary.
         assert_eq!(s.term_at(5), 1);
-        // Entries before snapshot are inaccessible.
         assert_eq!(s.term_at(3), 0);
+    }
+
+    #[test]
+    fn install_snapshot_term_mismatch_discards_local_suffix() {
+        let mut s = PersistentState::new();
+        for i in 1u64..=5 {
+            s.append(1, format!("old-{i}").into_bytes());
+        }
+        s.install_snapshot(3, 2);
+        assert_eq!(s.snapshot_index, 3);
+        assert_eq!(s.snapshot_term, 2);
+        assert_eq!(s.last_log_index(), 3);
+        assert!(s.entries_from(4).is_empty());
     }
 
     #[test]
     fn install_snapshot_beyond_log_resets_to_sentinel_only() {
         let mut s = PersistentState::new();
-        s.append(1, b"a".to_vec()); // idx=1
+        s.append(1, b"a".to_vec());
         s.install_snapshot(1, 1);
-        // Log is just the sentinel.
         assert_eq!(s.last_log_index(), 1);
         assert_eq!(s.entries_from(2).len(), 0);
     }
@@ -319,7 +394,6 @@ mod tests {
             s.append(1, format!("c{i}").into_bytes());
         }
         s.install_snapshot(3, 1);
-        // Entries 4 and 5 are still accessible.
         let e = s.entries_from(4);
         assert_eq!(e.len(), 2);
         assert_eq!(e[0].index, 4);
@@ -333,7 +407,6 @@ mod tests {
             s.append(1, format!("c{i}").into_bytes());
         }
         s.install_snapshot(5, 1);
-        // Append after snapshot — next Raft index must be 6.
         let idx = s.append(2, b"new".to_vec());
         assert_eq!(idx, 6);
         assert_eq!(s.last_log_index(), 6);
@@ -350,5 +423,20 @@ mod tests {
         assert_eq!(loaded_ps.current_term, 7);
         assert_eq!(loaded_ps.last_log_index(), 1);
         assert_eq!(loaded_snap, b"snap");
+    }
+
+    #[test]
+    fn mem_persistence_publish_clears_staged_snapshot() {
+        let store = MemPersistenceStore::new();
+        let staged = StagedSnapshot {
+            kind: StagedSnapshotKind::Creation,
+            last_included_index: 4,
+            last_included_term: 2,
+            data: Arc::new(b"candidate".to_vec()),
+        };
+        store.stage_snapshot(&staged).unwrap();
+        assert_eq!(store.load_staged_snapshot().unwrap(), Some(staged));
+        store.save(&PersistentState::new(), b"active").unwrap();
+        assert!(store.load_staged_snapshot().unwrap().is_none());
     }
 }

@@ -11,6 +11,7 @@ use neuralbase::hlc::HlcClock;
 use neuralbase::mvcc::TransactionManager;
 use neuralbase::raft_persistence::RocksDbRaftPersistenceStore;
 use neuralbase::replicated_gateway::ReplicatedSqlGateway;
+use neuralbase::replicated_snapshot_hooks::ReplicatedSqlSnapshotHooks;
 use neuralbase::replicated_state_machine::ReplicatedSqlStateMachine;
 use neuralbase::rocksdb_catalog;
 use neuralbase::server;
@@ -20,6 +21,7 @@ use neuralbase::telemetry;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex};
@@ -121,6 +123,7 @@ fn raft_tls_enabled() -> bool {
 struct RaftRuntime {
     client_tx: mpsc::Sender<ClientCommand>,
     shared: Arc<Mutex<RaftShared>>,
+    serving_ready: Arc<AtomicBool>,
     handle: Option<RaftTaskHandle>,
     apply_task: tokio::task::JoinHandle<()>,
 }
@@ -131,11 +134,12 @@ impl RaftRuntime {
         engine: Arc<StorageEngine>,
         clock: Arc<HlcClock>,
     ) -> Arc<ReplicatedSqlGateway> {
-        Arc::new(ReplicatedSqlGateway::new(
+        Arc::new(ReplicatedSqlGateway::new_with_readiness(
             self.client_tx.clone(),
             Arc::clone(&self.shared),
             engine,
             clock,
+            Arc::clone(&self.serving_ready),
         ))
     }
 
@@ -165,13 +169,23 @@ fn spawn_raft<T: Transport>(
     clock: Arc<HlcClock>,
 ) -> io::Result<RaftRuntime> {
     let state_machine = Arc::new(
-        ReplicatedSqlStateMachine::new(engine.clone(), catalog, clock).map_err(|error| {
+        ReplicatedSqlStateMachine::new(
+            Arc::clone(&engine),
+            Arc::clone(&catalog),
+            Arc::clone(&clock),
+        )
+        .map_err(|error| {
             io::Error::other(format!("initialize replicated SQL state machine: {error}"))
         })?,
     );
+    let snapshot_store = Arc::new(ReplicatedSqlSnapshotHooks::new(
+        Arc::clone(&engine),
+        Arc::clone(&catalog),
+        Arc::clone(&clock),
+    ));
 
     let raw_store: Arc<dyn RaftPersistenceStore> =
-        Arc::new(RocksDbRaftPersistenceStore::new(engine));
+        Arc::new(RocksDbRaftPersistenceStore::new(Arc::clone(&engine)));
     let strict_store: Arc<dyn RaftPersistenceStore> =
         Arc::new(FailClosedPersistenceStore::new(raw_store));
 
@@ -192,14 +206,17 @@ fn spawn_raft<T: Transport>(
     });
 
     let mut node = RaftNode::new(node_id, peers, transport)
+        .with_snapshot_store(snapshot_store)
         .with_persistence(strict_store)
         .with_confirmed_apply_tx(apply_tx);
     node.set_election_timeout_ms(election_timeout_ms);
+    let serving_ready = node.serving_readiness();
     let (client_tx, shared, handle) = node.spawn();
 
     Ok(RaftRuntime {
         client_tx,
         shared,
+        serving_ready,
         handle: Some(handle),
         apply_task,
     })
@@ -400,8 +417,20 @@ async fn main() -> io::Result<()> {
     };
     server::configure_replicated_sql_gateway(replicated_sql_gateway);
 
+    let serving_ready = raft_runtime
+        .as_ref()
+        .map(|runtime| Arc::clone(&runtime.serving_ready));
+    let serve = async move {
+        if let Some(serving_ready) = serving_ready {
+            while !serving_ready.load(Ordering::Acquire) {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        }
+        server::run(listener, catalog, dml_exec, tls_acceptor, storage_engine).await
+    };
+
     tokio::select! {
-        result = server::run(listener, catalog, dml_exec, tls_acceptor, storage_engine) => {
+        result = serve => {
             result
         }
         _ = shutdown_signal() => {

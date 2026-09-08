@@ -63,35 +63,35 @@ For persistent table `CREATE`, `DROP`, `INSERT`, `UPDATE`, and `DELETE`:
 5. SQL success waits for Raft quorum commit and confirmed durable local state-machine apply;
 6. committed effects are applied deterministically and replay-idempotently on members.
 
-Follower write rejection uses SQLSTATE `25006`. Other replicated-write failures use an internal/system error response. A failure after submission to a leader is outcome-uncertain; clients must not blindly replay non-idempotent SQL solely because they did not observe success.
+A failure after submission to a leader is outcome-uncertain; clients must not blindly replay non-idempotent SQL solely because they did not observe success.
 
 ### Read consistency
 
-`SELECT` continues to read local node state. This phase does not implement a Raft read-index/lease protocol, so arbitrary follower reads are **not claimed linearizable** and may lag a newly committed write until the follower applies it.
+`SELECT` continues to read local node state. NeuralBase does not implement a Raft ReadIndex/lease protocol, so arbitrary follower reads are **not claimed linearizable** and may lag a newly committed write.
 
-## Snapshot/recovery boundary
+A truly fresh fixed member does not serve SQL while reconstructing its local state. This bootstrap readiness gate prevents empty/partial serving but does not strengthen ordinary follower-read consistency.
 
-Replicated table mutations survive the tested process kill/re-election/full-cluster restart path using persisted Raft and RocksDB state.
+## SQL-aware snapshot/recovery boundary
 
-That is distinct from SQL-aware Raft snapshot/bootstrap support. Legacy opaque Raft compaction/snapshot state is rejected in replicated-SQL mode because it cannot reconstruct the SQL catalog/data state safely. Snapshot-based replacement-node bootstrap remains future work.
+Replicated table state now has a versioned logical SQL snapshot path used by the Raft lifecycle. The snapshot contains durable catalog/table state, exact encoded logical rows, the Raft boundary, the durable replicated SQL apply index and the replicated HLC floor. It is canonical, bounded and checksummed.
+
+Snapshot creation is durably staged before Raft prefix compaction. InstallSnapshot validates and restores durable SQL state before a success acknowledgement. Interrupted follower installation is recoverable from the staged artifact after restart.
+
+The tested bootstrap scope is recovery of an **already-configured fixed logical member** from empty local storage: it receives the SQL snapshot, applies the remaining Raft suffix, and becomes serving-ready only after catch-up. This is not dynamic membership, arbitrary new-node addition, automatic replacement orchestration, backup restore or disaster recovery.
+
+Legacy opaque Raft snapshot bytes remain unsafe for replicated SQL when no SQL-aware snapshot store is attached and are still rejected in that mode.
 
 ## Execution limits
 
 The general executor has explicit intermediate-row budgets. These prevent accidental unbounded materialization when a query plan degenerates into a large cross join or similar expansion.
 
-A query rejected by a safety budget should not be interpreted as unsupported SQL syntax; it can be a deliberate execution-resource refusal.
-
 ## NULL and type behavior
 
-NeuralBase implements its own scalar value/evaluation layer. Treat its behavior as engine-specific unless a test explicitly proves PostgreSQL-equivalent behavior for a construct.
-
-Do not assume complete PostgreSQL implicit casting, collation, numeric precision, timezone, interval, or three-valued-logic compatibility beyond covered cases.
+NeuralBase implements its own scalar value/evaluation layer. Treat behavior as engine-specific unless a test explicitly proves PostgreSQL-equivalent behavior. Do not assume complete PostgreSQL implicit casting, collation, numeric precision, timezone, interval, or three-valued-logic compatibility beyond covered cases.
 
 ## TPC-H evidence
 
-`tests/tpch_correctness.rs` executes the checked-in Q1-Q22 SQL constants against a deterministic small NeuralBase dataset and compares results against PostgreSQL 16 reference execution.
-
-This is strong regression evidence for the exact tested dataset/query forms. It is **not** equivalent to complete SQL compatibility, official TPC-H certification, production-scale TPC-H performance, or correctness for arbitrary scale factors/data distributions.
+`tests/tpch_correctness.rs` executes the checked-in Q1-Q22 SQL constants against a deterministic small NeuralBase dataset and compares results against PostgreSQL 16 reference execution. This is regression evidence for the exact tested dataset/query forms, not official TPC-H certification or complete PostgreSQL compatibility.
 
 ## Adding SQL support
 
@@ -101,6 +101,7 @@ A new SQL feature should include, where relevant:
 2. execution tests for normal and NULL/error cases;
 3. persistence tests for DDL/DML;
 4. replicated-state-machine semantics when the mutation must be cluster-wide;
-5. PostgreSQL reference comparison when semantic parity is intended;
-6. adversarial/budget tests for potentially explosive operations;
-7. an update to this matrix.
+5. snapshot/restore semantics when the state must survive member reconstruction;
+6. PostgreSQL reference comparison when semantic parity is intended;
+7. adversarial/budget tests for potentially explosive operations;
+8. an update to this matrix.

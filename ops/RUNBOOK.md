@@ -34,9 +34,11 @@ Persistent table `CREATE`, `DROP`, `INSERT`, `UPDATE`, and `DELETE` are replicat
 
 ## Finding the write path
 
-A client may probe nodes for a persistent table write. Followers return SQLSTATE `25006` and include the known leader ID when available.
+Followers return a write rejection and include the known leader ID when available. An explicit follower rejection is safe to redirect/retry because no proposal occurred.
 
-An explicit follower rejection is safe to redirect/retry because no proposal occurred. Do **not** blindly retry a non-idempotent mutation after a timeout/error that occurred after submission to a leader; that outcome can be uncertain.
+Do **not** blindly retry a non-idempotent mutation after a timeout/error that occurred after submission to a leader; that outcome can be uncertain.
+
+A member still reconstructing from empty local storage does not enter SQL serving and direct replicated-gateway use reports catching-up rather than mutating partial state.
 
 ## Health and diagnostics
 
@@ -63,8 +65,6 @@ The PostgreSQL reference suite requires Docker.
 
 ## Clean shutdown
 
-Stop the Compose topology with:
-
 ```bash
 docker compose down
 ```
@@ -75,9 +75,9 @@ Raft confirmed-apply delivery is bounded and shutdown-interruptible. Graceful sh
 
 Clustered startup requires `NEURALBASE_DB_PATH`/`DB_PATH`. Each node must use writable persistent storage for its own RocksDB directory. `NEURALBASE_USERS_FILE` must also be writable for runtime user DDL.
 
-In Kubernetes/Helm, a Secret may seed users but the live registry belongs on writable persistent storage.
+Authentication/user state remains per-node and is not reconstructed by the table SQL snapshot guarantee.
 
-## Tested recovery path
+## Tested ordinary recovery path
 
 The process integration suite exercises:
 
@@ -88,12 +88,45 @@ The process integration suite exercises:
 - full-cluster restart from persisted RocksDB/Raft state;
 - a write raced against leader kill, with the guarantee that client-observed success remains recoverable.
 
-## Recovery boundary
+## Tested SQL snapshot and fixed-member recovery path
 
-Do not confuse ordinary persisted restart/catch-up with replacement-node bootstrap.
+NeuralBase now has a SQL-aware logical snapshot integrated with Raft. Snapshot creation is validated and durably staged before prefix truncation. Follower installation validates/stages/restores SQL state before publishing the Raft boundary and acknowledging success. An interrupted follower installation is resumed idempotently from staged metadata on restart.
 
-Replicated-SQL mode intentionally rejects legacy opaque Raft snapshots/compaction because NeuralBase does not yet have a SQL-aware snapshot capable of reconstructing catalog/data state on a fresh replacement node. If a node permanently loses its RocksDB state, there is no documented operator-safe snapshot/bootstrap/node-replacement procedure yet.
+The automated fixed-member replacement test exercises this sequence:
 
-Authentication/user mutations also remain per-node, membership is fixed, and backup/restore/disaster-recovery procedures are still open work.
+1. start a three-member fixed cluster with independent RocksDB stores;
+2. create replicated table/data;
+3. create a SQL-aware leader snapshot and compact the covered Raft prefix;
+4. stop one follower and destroy its entire local database directory;
+5. commit another write while that member is absent, creating a post-snapshot suffix;
+6. restart the **same configured logical member ID** with a truly empty directory;
+7. require it to remain non-serving while it receives/restores the snapshot and applies the suffix;
+8. verify exact catalog/data convergence;
+9. transfer leadership to the reconstructed member and acknowledge another SQL write there;
+10. kill that leader and require the acknowledged write to survive on the remaining quorum;
+11. restart the reconstructed member from its recovered disk and verify exact convergence/no duplicate MVCC effects.
+
+Repeated snapshot/compaction cycles with retained suffix, restart and continued writes are also tested.
+
+## What operators may infer
+
+The tested path establishes that a known fixed member can reconstruct SQL table state after complete local storage loss **when the logical membership configuration itself is unchanged** and a healthy quorum/leader can supply the SQL snapshot and remaining log.
+
+It does not yet provide a turnkey production operator command or controller for replacing volumes/pods. Deployment automation must preserve the exact logical member ID/address assumptions and fixed voter set.
+
+## Recovery boundaries still open
+
+Do not reinterpret fixed-member snapshot catch-up as any of the following:
+
+- dynamic membership or adding a new logical node ID;
+- automatic node replacement/orchestration;
+- changing StatefulSet replica count/HPA safely;
+- cluster-wide user/auth restoration;
+- backup/restore from operator-retained archives;
+- point-in-time recovery;
+- disaster recovery after loss of the healthy quorum;
+- linearizable follower reads.
+
+If a failure requires changing the membership set, restoring from an external backup, reconstructing authentication state, or recovering without a healthy quorum, the current runbook does not claim a safe automated procedure.
 
 See `docs/DEPLOYMENT.md`, `docs/DISTRIBUTED.md`, `CONFIDENCE.md`, and `ROADMAP.md` before making stronger HA claims.

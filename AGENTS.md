@@ -4,9 +4,9 @@ Repository-specific guidance for coding agents and automated contributors.
 
 ## Project identity
 
-NeuralBase is an experimental Rust SQL engine. It has a real Raft subsystem, but SQL mutations are **not yet** committed through a replicated Raft state machine.
+NeuralBase is an experimental Rust SQL engine. Configured fixed-membership clusters replicate persistent table `CREATE TABLE`, `DROP TABLE`, `INSERT`, `UPDATE`, and `DELETE` through a deterministic Raft-backed SQL state machine. The Phase 2 lifecycle also has a SQL-aware logical snapshot path for safe compaction and recovery of an already-configured fixed logical member from empty local storage plus the remaining Raft suffix.
 
-Never convert the presence of Raft into a claim of replicated SQL HA without implementing and testing that semantic link.
+Do not turn those scoped guarantees into a claim of general or production SQL HA. User/auth mutations remain per-node, reads are local and may lag, dynamic membership is not coordinated, automatic node replacement is not implemented, and backup/disaster-recovery workflows remain open.
 
 ## Toolchain and gates
 
@@ -26,9 +26,10 @@ Run the narrowest relevant tests during iteration and the complete affected gate
 3. Keep queues, waits, joins, and materialized intermediates intentionally bounded.
 4. Do not hide deterministic hangs behind timeouts; timeouts are diagnostics/safety guards.
 5. Keep local durability distinct from replicated durability in code comments and docs.
-6. Do not enable HPA for the fixed-membership Raft deployment until coordinated membership changes exist.
-7. Update relevant docs with behavioral/configuration changes.
-8. Do not commit build logs, Clippy output, temporary databases, secrets, or private keys.
+6. Snapshot creation must be durable before Raft prefix truncation; snapshot installation must restore durable SQL state before success acknowledgement.
+7. Do not enable HPA for the fixed-membership Raft deployment until coordinated membership changes exist.
+8. Update relevant docs with behavioral/configuration changes.
+9. Do not commit build logs, Clippy output, temporary databases, secrets, or private keys.
 
 ## Documentation map
 
@@ -42,4 +43,4 @@ Run the narrowest relevant tests during iteration and the complete affected gate
 
 ## Definition of done
 
-A substantive change is not done until its semantics, failure cases, tests, and documentation agree with each other.
+A substantive change is not done until its semantics, failure cases, tests, and documentation agree with each other. Distributed lifecycle work additionally requires exact-head CI and post-merge `main` CI before its milestone is considered complete.

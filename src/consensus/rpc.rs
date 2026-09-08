@@ -102,6 +102,13 @@ pub struct InstallSnapshotArgs {
 pub struct InstallSnapshotReply {
     /// Current term of the receiver (so the caller can update itself).
     pub term: u64,
+    /// Whether the follower fully validated/restored and durably accepted this
+    /// snapshot boundary. Failed installs must not advance leader progress.
+    pub success: bool,
+    /// Exact snapshot boundary this reply refers to. Echoing the installed index
+    /// prevents a delayed reply for snapshot N from being mistaken for a newer
+    /// snapshot M that the leader created while the RPC was in flight.
+    pub last_included_index: u64,
 }
 
 /// Single-step membership change command.

@@ -9,6 +9,7 @@
 //! or row materialization immediately after failover.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use thiserror::Error;
@@ -35,6 +36,8 @@ pub struct ReplicatedMutationAck {
 
 #[derive(Debug, Error)]
 pub enum ReplicatedGatewayError {
+    #[error("cluster node is catching up replicated SQL state")]
+    CatchingUp,
     #[error("not Raft leader; current leader is {leader:?}")]
     NotLeader { leader: Option<String> },
     #[error("Raft command channel closed")]
@@ -57,6 +60,7 @@ pub struct ReplicatedSqlGateway {
     shared: Arc<Mutex<RaftShared>>,
     engine: Arc<StorageEngine>,
     clock: Arc<HlcClock>,
+    serving_ready: Arc<AtomicBool>,
     mutation_serial: Arc<Mutex<()>>,
 }
 
@@ -67,13 +71,34 @@ impl ReplicatedSqlGateway {
         engine: Arc<StorageEngine>,
         clock: Arc<HlcClock>,
     ) -> Self {
+        Self::new_with_readiness(
+            client_tx,
+            shared,
+            engine,
+            clock,
+            Arc::new(AtomicBool::new(true)),
+        )
+    }
+
+    pub fn new_with_readiness(
+        client_tx: mpsc::Sender<ClientCommand>,
+        shared: Arc<Mutex<RaftShared>>,
+        engine: Arc<StorageEngine>,
+        clock: Arc<HlcClock>,
+        serving_ready: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             client_tx,
             shared,
             engine,
             clock,
+            serving_ready,
             mutation_serial: Arc::new(Mutex::new(())),
         }
+    }
+
+    pub fn serving_ready(&self) -> bool {
+        self.serving_ready.load(Ordering::Acquire)
     }
 
     pub async fn current_leader(&self) -> Option<String> {
@@ -242,6 +267,9 @@ impl ReplicatedSqlGateway {
     }
 
     async fn ensure_leader(&self) -> Result<(), ReplicatedGatewayError> {
+        if !self.serving_ready() {
+            return Err(ReplicatedGatewayError::CatchingUp);
+        }
         let shared = self.shared.lock().await;
         if shared.role != RaftRole::Leader {
             return Err(ReplicatedGatewayError::NotLeader {
@@ -374,6 +402,34 @@ mod tests {
 
         let error = gateway.create_table(schema()).await.unwrap_err();
         assert!(matches!(error, ReplicatedGatewayError::NotLeader { .. }));
+        assert!(engine.read_catalog_entry("items").unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn closed_serving_gate_rejects_before_leader_check() {
+        let dir = TempDir::new().unwrap();
+        let engine = Arc::new(StorageEngine::open(dir.path()).unwrap());
+        let clock = Arc::new(HlcClock::new(500));
+        let bus = ChannelTransport::new_bus();
+        let transport =
+            Arc::new(ChannelTransport::register("catching-up".to_string(), Arc::clone(&bus)).await);
+        let node = RaftNode::new(
+            "catching-up".to_string(),
+            vec!["missing".to_string()],
+            transport,
+        );
+        let (client_tx, shared, _handle) = node.spawn();
+        let serving_ready = Arc::new(AtomicBool::new(false));
+        let gateway = ReplicatedSqlGateway::new_with_readiness(
+            client_tx,
+            shared,
+            Arc::clone(&engine),
+            clock,
+            serving_ready,
+        );
+
+        let error = gateway.prepare_mutation().await.unwrap_err();
+        assert!(matches!(error, ReplicatedGatewayError::CatchingUp));
         assert!(engine.read_catalog_entry("items").unwrap().is_none());
     }
 
