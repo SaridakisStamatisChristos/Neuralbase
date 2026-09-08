@@ -24,10 +24,7 @@ fn ids_set(ids: &[&str]) -> BTreeSet<String> {
     ids.iter().map(|id| (*id).to_string()).collect()
 }
 
-async fn submit(
-    tx: &mpsc::Sender<ClientCommand>,
-    payload: Vec<u8>,
-) -> Result<u64, String> {
+async fn submit(tx: &mpsc::Sender<ClientCommand>, payload: Vec<u8>) -> Result<u64, String> {
     let (reply_tx, reply_rx) = oneshot::channel();
     tx.send(ClientCommand {
         payload,
@@ -160,9 +157,7 @@ async fn add_and_promote_learner(
         let leader = leader_index(shareds).await;
         match submit(
             &client_txs[leader],
-            encode_membership_change(&MembershipChange::PromoteLearner(
-                learner_id.to_string(),
-            )),
+            encode_membership_change(&MembershipChange::PromoteLearner(learner_id.to_string())),
         )
         .await
         {
@@ -207,12 +202,7 @@ async fn phase3_three_to_four_to_three_lifecycle_preserves_writes() {
 
     add_and_promote_learner(learner, &client_txs, &shareds).await;
 
-    let four = ids_set(&[
-        "p3_life_a",
-        "p3_life_b",
-        "p3_life_c",
-        "p3_life_d",
-    ]);
+    let four = ids_set(&["p3_life_a", "p3_life_b", "p3_life_c", "p3_life_d"]);
     for shared in &shareds {
         wait_membership(shared, |state| {
             !state.membership.is_joint() && state.membership.voters == four
@@ -315,9 +305,8 @@ async fn phase3_restart_uses_finalized_membership_not_stale_bootstrap_peers() {
     let mut restarted_shareds = Vec::new();
     let mut _restarted_handles = Vec::new();
     for (index, id) in all_ids.iter().enumerate() {
-        let transport = Arc::new(
-            ChannelTransport::register((*id).to_string(), Arc::clone(&restart_bus)).await,
-        );
+        let transport =
+            Arc::new(ChannelTransport::register((*id).to_string(), Arc::clone(&restart_bus)).await);
         let store: Arc<dyn RaftPersistenceStore> = Arc::clone(&stores[index]) as _;
         let mut node = RaftNode::new((*id).to_string(), vec![], transport).with_persistence(store);
         node.set_election_timeout_ms(60);
@@ -418,9 +407,8 @@ async fn phase3_removed_node_from_stale_disk_cannot_disrupt_current_quorum() {
     // Re-register the removed identity using its old disk image. It still
     // believes the pre-removal configuration, but current voters carry the
     // tombstone and must reject its candidacy before adopting its higher term.
-    let stale_transport = Arc::new(
-        ChannelTransport::register(target_id.to_string(), Arc::clone(&bus)).await,
-    );
+    let stale_transport =
+        Arc::new(ChannelTransport::register(target_id.to_string(), Arc::clone(&bus)).await);
     let stale_peers = ids
         .iter()
         .copied()

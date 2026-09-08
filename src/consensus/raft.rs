@@ -366,8 +366,9 @@ impl<T: Transport> RaftNode<T> {
         if !payload.starts_with(MEMBERSHIP_CHANGE_TAG) {
             return Ok(None);
         }
-        let change = serde_json::from_slice::<MembershipChange>(&payload[MEMBERSHIP_CHANGE_TAG.len()..])
-            .map_err(|error| format!("decode membership command: {error}"))?;
+        let change =
+            serde_json::from_slice::<MembershipChange>(&payload[MEMBERSHIP_CHANGE_TAG.len()..])
+                .map_err(|error| format!("decode membership command: {error}"))?;
         Ok(Some(change))
     }
 
@@ -570,7 +571,9 @@ impl<T: Transport> RaftNode<T> {
                         }
                         (None, staged.data.as_slice())
                     }
-                    Err(error) => panic!("fatal staged snapshot envelope validation failure: {error}"),
+                    Err(error) => {
+                        panic!("fatal staged snapshot envelope validation failure: {error}")
+                    }
                 };
 
                 if let Err(error) = snapshot_store.validate_snapshot(
@@ -596,9 +599,10 @@ impl<T: Transport> RaftNode<T> {
                 self.snapshot_data = Arc::clone(&staged.data);
                 self.commit_index = self.commit_index.max(staged.last_included_index);
                 self.last_applied = self.last_applied.max(staged.last_included_index);
-                self.recompute_effective_membership().unwrap_or_else(|error| {
-                    panic!("fatal effective membership after snapshot recovery: {error}")
-                });
+                self.recompute_effective_membership()
+                    .unwrap_or_else(|error| {
+                        panic!("fatal effective membership after snapshot recovery: {error}")
+                    });
                 if let Err(error) = persistence.save(&self.ps, &self.snapshot_data) {
                     panic!("fatal Raft snapshot recovery publish failure: {error}");
                 }
@@ -1033,7 +1037,8 @@ impl<T: Transport> RaftNode<T> {
             }
             RaftMessage::LeaderTransferReply { .. } => {}
             RaftMessage::TimeoutNow { term } => {
-                self.on_timeout_now(&from, term, &mut election_deadline).await;
+                self.on_timeout_now(&from, term, &mut election_deadline)
+                    .await;
             }
         }
         election_deadline
@@ -1219,9 +1224,10 @@ impl<T: Transport> RaftNode<T> {
         if !args.entries.is_empty() {
             self.ps
                 .truncate_and_append(args.prev_log_index, args.entries);
-            self.recompute_effective_membership().unwrap_or_else(|error| {
-                panic!("fatal replicated membership log validation failure: {error}")
-            });
+            self.recompute_effective_membership()
+                .unwrap_or_else(|error| {
+                    panic!("fatal replicated membership log validation failure: {error}")
+                });
             self.persist();
         }
 
@@ -1290,7 +1296,9 @@ impl<T: Transport> RaftNode<T> {
     }
 
     fn become_follower(&mut self, term: u64) {
-        self.fail_uncommitted_clients("leadership lost before command reached required quorum commit");
+        self.fail_uncommitted_clients(
+            "leadership lost before command reached required quorum commit",
+        );
         self.ps.current_term = term;
         self.ps.voted_for = None;
         self.role = RaftRole::Follower;
@@ -1338,11 +1346,10 @@ impl<T: Transport> RaftNode<T> {
         }
         let next_index = self.ps.last_log_index().saturating_add(1);
         match change {
-            MembershipChange::AddNode(id) | MembershipChange::AddLearner(id) => {
-                self.effective_membership
-                    .add_learner(id.clone(), next_index)
-                    .map(|_| ())
-            }
+            MembershipChange::AddNode(id) | MembershipChange::AddLearner(id) => self
+                .effective_membership
+                .add_learner(id.clone(), next_index)
+                .map(|_| ()),
             MembershipChange::PromoteLearner(id) => {
                 if !self.effective_membership.is_learner(id) {
                     return Err(format!("node id {id} is not a learner"));
@@ -1559,7 +1566,9 @@ impl<T: Transport> RaftNode<T> {
                     return Ok(entry.index);
                 }
             }
-            return Err("effective membership is stable but FinalizeJoint entry is missing".to_string());
+            return Err(
+                "effective membership is stable but FinalizeJoint entry is missing".to_string(),
+            );
         }
 
         let idx = self.ps.append(
@@ -1652,11 +1661,7 @@ impl<T: Transport> RaftNode<T> {
 
         if let Some(snapshot_store) = &self.snapshot_store {
             if snapshot_store
-                .validate_snapshot(
-                    args.last_included_index,
-                    args.last_included_term,
-                    sql_bytes,
-                )
+                .validate_snapshot(args.last_included_index, args.last_included_term, sql_bytes)
                 .is_err()
             {
                 return InstallSnapshotReply {
@@ -1684,11 +1689,7 @@ impl<T: Transport> RaftNode<T> {
             }
 
             if snapshot_store
-                .restore_snapshot(
-                    args.last_included_index,
-                    args.last_included_term,
-                    sql_bytes,
-                )
+                .restore_snapshot(args.last_included_index, args.last_included_term, sql_bytes)
                 .is_err()
             {
                 if let Err(error) = persistence.clear_staged_snapshot() {
@@ -1714,9 +1715,10 @@ impl<T: Transport> RaftNode<T> {
         self.snapshot_data = args.data;
         self.commit_index = self.commit_index.max(args.last_included_index);
         self.last_applied = self.last_applied.max(args.last_included_index);
-        self.recompute_effective_membership().unwrap_or_else(|error| {
-            panic!("fatal effective membership after InstallSnapshot: {error}")
-        });
+        self.recompute_effective_membership()
+            .unwrap_or_else(|error| {
+                panic!("fatal effective membership after InstallSnapshot: {error}")
+            });
         self.persist();
 
         InstallSnapshotReply {
@@ -1759,7 +1761,9 @@ impl<T: Transport> RaftNode<T> {
             return Err("not leader".to_string());
         }
         if self.membership_transition_active() {
-            return Err("membership transition in progress; cannot transfer leadership".to_string());
+            return Err(
+                "membership transition in progress; cannot transfer leadership".to_string(),
+            );
         }
         let last = self.ps.last_log_index();
         let leader = self
@@ -1771,7 +1775,9 @@ impl<T: Transport> RaftNode<T> {
             .into_iter()
             .filter(|id| id != &self.id)
             .find(|id| leader.match_index.get(id).copied().unwrap_or(0) >= last)
-            .ok_or_else(|| "no eligible up-to-date voter available for leadership transfer".to_string())
+            .ok_or_else(|| {
+                "no eligible up-to-date voter available for leadership transfer".to_string()
+            })
     }
 
     fn initiate_leader_transfer(&mut self, target: NodeId) -> Result<(), String> {
@@ -1779,7 +1785,9 @@ impl<T: Transport> RaftNode<T> {
             return Err("not leader".to_string());
         }
         if self.membership_transition_active() {
-            return Err("membership transition in progress; cannot transfer leadership".to_string());
+            return Err(
+                "membership transition in progress; cannot transfer leadership".to_string(),
+            );
         }
         if !self.effective_membership.is_stable_voter(&target) || target == self.id {
             return Err(format!("target {target} is not an eligible stable voter"));
@@ -1842,12 +1850,7 @@ impl<T: Transport> RaftNode<T> {
         }
     }
 
-    async fn on_timeout_now(
-        &mut self,
-        from: &NodeId,
-        term: u64,
-        election_deadline: &mut Instant,
-    ) {
+    async fn on_timeout_now(&mut self, from: &NodeId, term: u64, election_deadline: &mut Instant) {
         if self.role == RaftRole::Leader
             || term < self.ps.current_term
             || !self.effective_membership.is_voter(&self.id)

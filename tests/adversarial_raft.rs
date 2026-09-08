@@ -124,10 +124,7 @@ fn all_single_byte_keys_valid() {
     let router = default_router(&reg);
     for b in 0u8..=255 {
         let shard = router.key_to_shard(&[b]);
-        assert!(
-            shard < reg.shard_count(),
-            "byte {b} → shard out of range"
-        );
+        assert!(shard < reg.shard_count(), "byte {b} → shard out of range");
     }
 }
 
