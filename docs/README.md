@@ -4,40 +4,22 @@ This directory contains the technical documentation for NeuralBase. The root `RE
 
 ## Core documents
 
-| Document | Audience | Scope |
-|---|---|---|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Developers / reviewers | Major components, replicated mutation flow, snapshot lifecycle, state boundaries, invariants |
-| [SQL_SUPPORT.md](SQL_SUPPORT.md) | Users / developers | SQL feature matrix, single-node versus clustered mutation semantics, execution limits |
-| [DISTRIBUTED.md](DISTRIBUTED.md) | Distributed-systems reviewers | Raft transport, deterministic table replication, snapshot/bootstrap lifecycle, acknowledgement/apply semantics, remaining HA boundaries |
-| [DEPLOYMENT.md](DEPLOYMENT.md) | Operators / evaluators | Single-node, fixed-membership cluster, Kubernetes/Helm, TLS/auth and routing constraints |
-| [TESTING.md](TESTING.md) | Contributors / reviewers | CI gates, process-level failover/restart/replacement evidence, TPC-H reference methodology and evidence limits |
-| [THREAT_MODEL.md](THREAT_MODEL.md) | Security reviewers | Threats, trust boundaries, mitigations |
-| [TSAN.md](TSAN.md) | Contributors | ThreadSanitizer workflow and caveats |
+| Document | Scope |
+|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Major components, replicated tables/identity, snapshot lifecycle and membership boundaries |
+| [SQL_SUPPORT.md](SQL_SUPPORT.md) | SQL feature matrix and standalone versus clustered mutation semantics |
+| [DISTRIBUTED.md](DISTRIBUTED.md) | Raft acknowledgement/apply, snapshots, membership changes and identity consistency |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | Single-node, Kubernetes/Helm, migration, TLS and scaling constraints |
+| [TESTING.md](TESTING.md) | CI gates and executable evidence limits |
+| [THREAT_MODEL.md](THREAT_MODEL.md) | Threats, trust boundaries and residual risks |
+| [TSAN.md](TSAN.md) | ThreadSanitizer workflow and caveats |
 
-Repository-level material:
-
-- [`../ROADMAP.md`](../ROADMAP.md) — completed Phase 1 and Phase 2 scope plus prioritized remaining engineering work.
-- [`../CONFIDENCE.md`](../CONFIDENCE.md) / [`../CONFIDENCE.yaml`](../CONFIDENCE.yaml) — evidence-scoped confidence model and machine-readable replication boundary.
-- [`../CONTRIBUTING.md`](../CONTRIBUTING.md) — contributor setup and quality gates.
-- [`../SECURITY.md`](../SECURITY.md) — vulnerability reporting policy.
-- [`../CHANGELOG.md`](../CHANGELOG.md) — development changelog.
-- [`../ops/RUNBOOK.md`](../ops/RUNBOOK.md) — development operations and diagnostics.
-- [`../observability/README.md`](../observability/README.md) — metrics and tracing boundary.
-- [`../tests/perf/README.md`](../tests/perf/README.md) — benchmark interpretation and reproducibility rules.
+Repository-level material includes [`../ROADMAP.md`](../ROADMAP.md), [`../CONFIDENCE.md`](../CONFIDENCE.md), [`../CONFIDENCE.yaml`](../CONFIDENCE.yaml), [`../CHANGELOG.md`](../CHANGELOG.md), [`../CONTRIBUTING.md`](../CONTRIBUTING.md), and [`../SECURITY.md`](../SECURITY.md).
 
 ## Current distributed claim in one sentence
 
-Configured fixed-membership clusters replicate persistent table CREATE/DROP/INSERT/UPDATE/DELETE through Raft with quorum commit + confirmed durable local apply before success, and the tested Phase 2 lifecycle supports SQL-aware snapshot/compaction plus empty-storage reconstruction of an already-configured fixed logical member from snapshot + retained Raft suffix; this is **not** a production-HA claim and still excludes linearizable follower reads, replicated auth/users, coordinated dynamic membership, automatic replacement orchestration, and backup/restore/PITR/disaster recovery.
+Configured clusters replicate persistent table mutations and SCRAM identity through Raft with quorum commit + confirmed durable local apply before success; SQL-aware snapshots preserve both table and identity state; learner/joint-consensus membership transitions are implemented and tested; this still excludes linearizable arbitrary-follower reads, automatic deployment membership reconciliation/HPA, backup/PITR/disaster recovery, and production-HA claims.
 
 ## Documentation rule
 
-A change that alters public behavior, configuration, SQL semantics, persistence guarantees, Raft semantics, deployment topology, or test evidence should update the relevant document in the same pull request.
-
-Documentation must distinguish:
-
-1. code that exists;
-2. behavior verified by executable tests;
-3. deployment behavior exercised in CI;
-4. future design intent.
-
-Those categories are intentionally not interchangeable.
+Changes to public behavior, configuration, persistence, consensus, identity, deployment topology or executable evidence should update the relevant document in the same pull request. Documentation must distinguish code that exists, behavior verified by tests, deployment behavior exercised in CI, and future design intent.

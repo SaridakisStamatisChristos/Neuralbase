@@ -1,73 +1,57 @@
 # NeuralBase roadmap
 
-NeuralBase is a pre-1.0 experimental SQL engine. Fixed-membership replicated persistent table mutations and the SQL-aware snapshot/recovery lifecycle for an existing fixed member are implemented and tested. The next distributed correctness boundary is coordinated membership, followed by identity, operational recovery and stronger read consistency.
+NeuralBase is a pre-1.0 experimental SQL engine. The distributed correctness baseline now includes replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated Raft membership changes, and strongly consistent replicated SCRAM identity. The next major boundaries are operator-facing recovery and stronger read consistency.
 
 This is an engineering roadmap, not a release-date commitment.
 
-## Completed Phase 1 — fixed-membership replicated table mutations
+## Completed Phase 1 — replicated persistent table mutations
 
-- [x] Versioned deterministic mutation representation for persistent table `CREATE`, `DROP`, `INSERT`, `UPDATE`, and `DELETE`.
-- [x] Canonical DML ordering and deterministic concrete row/key effects.
-- [x] Leader-only persistent table mutation routing; followers reject rather than mutate local RocksDB.
-- [x] Current-term readiness barrier before mutation binding/materialization after election.
-- [x] Leader-side `UPDATE`/`DELETE` predicate evaluation with concrete effects replicated to followers.
-- [x] SQL success withheld until Raft quorum commit plus confirmed local state-machine apply.
-- [x] Atomic SQL effect + durable apply marker and replay idempotence.
-- [x] RocksDB-backed Raft stable storage and fail-stop required persistence handling.
-- [x] Separate-process three-node convergence, leader loss/re-election, catch-up, full-cluster restart and acknowledged crash-race durability evidence.
+- [x] Versioned deterministic commands for persistent table `CREATE`, `DROP`, `INSERT`, `UPDATE`, and `DELETE`.
+- [x] Canonical DML ordering and leader-side concrete `UPDATE`/`DELETE` materialization.
+- [x] Followers reject persistent table mutations rather than mutating local RocksDB.
+- [x] Current-term readiness barrier before leader materialization.
+- [x] SQL success waits for Raft quorum commit plus confirmed durable local apply.
+- [x] Atomic SQL effect + durable apply marker and replay-idempotent recovery.
+- [x] RocksDB-backed Raft stable storage with fail-stop required-persistence handling.
+- [x] Separate-process convergence, leader loss, catch-up, restart and acknowledged-write durability evidence.
 
-## Completed Phase 2 — SQL-aware snapshot, bootstrap and fixed-member replacement
+## Completed Phase 2 — SQL-aware snapshot, compaction and recovery
 
-- [x] Versioned deterministic logical SQL snapshot with explicit magic/version, Raft boundary, SQL apply index, replicated HLC floor, catalog, table IDs, primary keys, exact row bytes, bounds and checksum.
-- [x] Canonical table/row ordering and fail-closed corruption/version/duplicate/metadata validation.
-- [x] Consistent export from one RocksDB snapshot.
-- [x] Atomic durable restore of SQL data/catalog/apply marker with catalog/HLC publication only after success.
-- [x] Restore anti-regression for durable SQL apply index and replicated commit timestamp.
-- [x] Durable typed snapshot staging before irreversible lifecycle steps.
-- [x] Safe Raft compaction only after SQL snapshot creation/validation/staging.
-- [x] InstallSnapshot validation/staging and durable SQL restore before successful acknowledgement.
-- [x] Crash recovery for interrupted follower snapshot installation.
-- [x] Raft suffix retention only when snapshot-boundary index/term matches.
-- [x] Repeated snapshot/compaction cycles, retained suffix, restart and continued writes.
-- [x] Fresh fixed member starts non-serving while catching up.
-- [x] Empty-storage bootstrap of the same already-configured logical member ID using snapshot + remaining Raft suffix.
-- [x] Reconstructed member can become leader and acknowledge further writes.
-- [x] Acknowledged post-recovery write survives reconstructed-leader failure and restart.
-- [x] Legacy opaque snapshot state remains rejected where no SQL-aware snapshot store exists.
+- [x] Versioned deterministic logical SQL snapshot with explicit Raft boundary, apply index, HLC floor, catalog/table state, exact row bytes, bounds and checksum.
+- [x] Consistent export from one RocksDB snapshot and fail-closed validation.
+- [x] Atomic durable restore before volatile catalog/HLC publication.
+- [x] Snapshot creation durably staged before Raft prefix truncation.
+- [x] InstallSnapshot restores SQL state before successful acknowledgement.
+- [x] Interrupted installation recovery and safe suffix-retention rules.
+- [x] Empty-storage reconstruction of an already-configured member from snapshot + remaining Raft suffix.
+- [x] Reconstructed-member leadership, acknowledged-write failover/restart, and repeated compaction-cycle evidence.
 
-Phase 2 does **not** add dynamic membership, automatic replacement orchestration, backup/restore, replicated users, linearizable follower reads or production HA.
+## Completed Phase 3 — coordinated Raft membership changes
 
-## P0 — coordinated membership changes
+- [x] Explicit learner/non-voting startup and admission.
+- [x] Learner catch-up through the existing snapshot/log path before promotion.
+- [x] Promotion through joint old/new voter configuration and finalization.
+- [x] Safe non-leader voter removal through joint consensus.
+- [x] Leadership-transfer constraint before removing the current leader.
+- [x] Durable finalized membership that overrides stale process-local bootstrap peers after restart.
+- [x] Removed-node tombstoning/stale-disk rejoin protection.
+- [x] 3 → 4 → 3 lifecycle tests with writes before, during and after membership changes.
 
-Fixed peer configuration remains intentional. Replica-count changes are not membership changes.
+Phase 3 is a consensus capability, not an automatic Kubernetes scaling controller. The checked-in StatefulSet/Helm topology still requires deliberate membership operations; HPA-driven replica changes remain rejected.
 
-Acceptance criteria:
+## Completed Phase 4 — replicated strongly consistent identity
 
-- add a learner/non-voting member;
-- bootstrap/catch it up using the tested snapshot path;
-- promote it safely;
-- implement joint old/new configuration or an equivalently correct Raft configuration-change protocol;
-- safely remove followers;
-- transfer leadership before removing the current leader;
-- persist membership configuration durably;
-- handle crash/restart during joint configuration;
-- reject duplicate node IDs/stale unsafe rejoin;
-- test 3 → 4 → 3, failed bootstrap, minority partition and concurrent writes;
-- only then reconsider HPA/operator scaling restrictions.
+- [x] Versioned deterministic `NBRI` identity commands for initialize/create/alter/drop.
+- [x] Leader-side password derivation before proposal; plaintext passwords are not representable in identity log commands.
+- [x] Replicated identity accepts SCRAM verifier material only. PostgreSQL MD5 verifier material is rejected because it is reusable authentication material.
+- [x] Identity mutation + durable replicated apply cursor are atomic in one RocksDB `WriteBatch`.
+- [x] `CREATE USER`, `ALTER USER`, and `DROP USER` route through the Raft leader and wait for confirmed apply.
+- [x] Cluster authentication reads the replicated RocksDB identity registry on every node.
+- [x] Identity is included in the SQL-aware snapshot and restored atomically with the rest of replicated state.
+- [x] Explicit legacy migration requires `NEURALBASE_IDENTITY_MIGRATION_SHA256` matching the exact selected strict-SCRAM `users.json`; malformed, duplicate, MD5, or digest-mismatched inputs fail closed.
+- [x] Restart/replay, three-node convergence, leader-loss rotation/drop, snapshot bootstrap, learner promotion/removal, and real-process PostgreSQL authentication evidence.
 
-## P0 — replicated identity or explicit strongly consistent identity design
-
-`CREATE USER`, `ALTER USER`, and `DROP USER` remain per-node.
-
-Acceptance criteria for replication:
-
-- deterministic versioned user/auth mutation commands;
-- secret-handling semantics that avoid plaintext credentials in consensus logs;
-- durable/replay-safe apply;
-- cross-node authentication convergence tests;
-- documented migration from existing per-node registries.
-
-An external/independent identity design is acceptable only if its consistency and failure semantics are equally explicit.
+Single-node mode deliberately keeps the historical local `users.json` behavior for backward compatibility. The replicated identity guarantee applies to configured clustered mode.
 
 ## P0 — operational recovery
 
@@ -75,13 +59,13 @@ Build operator-facing recovery on top of the verified logical snapshot machinery
 
 - offline and online consistent backup;
 - checksums and backup verification;
-- restore into a single node and cluster bootstrap;
+- restore into a single node and controlled cluster bootstrap;
 - explicit version-compatibility rules;
 - interrupted/corrupt backup and restore tests;
 - disaster-recovery runbook;
 - point-in-time recovery and archived replicated-log/WAL-equivalent stream later.
 
-Snapshot-based fixed-member catch-up is **not** a backup workflow by itself.
+Internal Raft snapshot catch-up is **not** a backup product by itself.
 
 ## P1 — read consistency modes
 
@@ -94,6 +78,10 @@ Candidate acceptance criteria:
 - Raft ReadIndex/quorum-barrier or otherwise justified linearizable mode;
 - wait for local `last_applied >= read_index` before query execution;
 - tests across immediate post-write reads, lag, leader loss, partitions and stale former leaders.
+
+## P1 — operator membership orchestration
+
+The consensus membership protocol exists, but deployment reconciliation remains manual. A future operator/controller should safely connect StatefulSet changes to learner admission, catch-up, promotion, leadership transfer/removal, rollback and address reconciliation before automatic scaling is enabled.
 
 ## P1 — SQL semantic depth
 
@@ -110,11 +98,11 @@ Only after lifecycle safety remains intact:
 - cost model calibration, spills and memory accounting;
 - reproducible write/read/failover/snapshot throughput/latency measurement.
 
-Performance work must not weaken acknowledgement, snapshot or recovery semantics.
+Performance work must not weaken acknowledgement, snapshot, membership, identity or recovery semantics.
 
 ## P2 — production hardening
 
-- authentication/authorization policy beyond the current registry;
+- authorization policy beyond the current user registry;
 - certificate lifecycle/rotation;
 - backup encryption and secret management;
 - broader network/storage chaos testing;
@@ -124,22 +112,16 @@ Performance work must not weaken acknowledgement, snapshot or recovery semantics
 
 ## Explicit non-goals for the current stage
 
-The project should not optimize for:
-
-- claims of production SQL HA;
-- automatic HPA-driven scaling;
-- feature-count expansion at the expense of recovery semantics;
-- official benchmark certification;
-- broad PostgreSQL compatibility claims unsupported by executable evidence.
+The project should not optimize for claims of production SQL HA, automatic HPA-driven scaling, official benchmark certification, or broad PostgreSQL compatibility unsupported by executable evidence.
 
 ## Definition of a stronger pre-1.0 distributed milestone
 
 A future milestone suitable for stronger HA/database claims should demonstrate at minimum:
 
-1. the current deterministic/quorum-applied fixed-membership table-mutation guarantees;
-2. the current SQL-aware snapshot/bootstrap and fixed-member recovery guarantees;
-3. coordinated membership changes;
-4. a defined identity/auth consistency model;
-5. documented read-consistency modes;
+1. the current deterministic/quorum-applied replicated table-mutation guarantees;
+2. the current SQL-aware snapshot/recovery guarantees;
+3. the current coordinated membership protocol;
+4. the current replicated SCRAM identity model;
+5. documented stronger read-consistency modes;
 6. tested backup/restore and disaster-recovery procedures;
-7. deployment/security assumptions matching the tested topology.
+7. deployment/security assumptions matching an operator-tested topology.

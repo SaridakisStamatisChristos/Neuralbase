@@ -12,17 +12,13 @@ fn confidence_yaml_is_valid_yaml() {
     assert!(parsed.get("artifacts").is_some());
 }
 
-/// Internal confidence score for the scoped engine + replicated-table path.
-/// This score is deliberately not a production-readiness declaration.
 #[test]
 fn scoped_system_confidence_meets_regression_floor() {
     const MIN_CONFIDENCE: f64 = 0.75;
     let parsed = load_confidence();
-
     let effective = parsed["system"]["effective_confidence"]
         .as_f64()
         .expect("system.effective_confidence must be a float");
-
     assert!(
         effective >= MIN_CONFIDENCE,
         "scoped system effective_confidence {effective:.3} is below regression floor {MIN_CONFIDENCE}"
@@ -60,32 +56,34 @@ fn critical_local_execution_artifacts_stay_above_floor() {
 }
 
 #[test]
-fn replicated_sql_claim_is_narrow_and_production_readiness_stays_false() {
+fn distributed_claim_tracks_membership_and_identity_without_overclaiming_production() {
     let parsed = load_confidence();
     let system = &parsed["system"];
 
-    assert_eq!(
-        system["production_ready"].as_bool(),
-        Some(false),
-        "replicated SQL lifecycle work does not make NeuralBase production-ready"
-    );
-    assert_eq!(
-        system["distributed_sql_replication"].as_bool(),
-        Some(true),
-        "fixed-membership persistent table mutations are exercised through Raft"
-    );
+    assert_eq!(system["production_ready"].as_bool(), Some(false));
+    assert_eq!(system["distributed_sql_replication"].as_bool(), Some(true));
 
     let scope = &system["replication_scope"];
-    assert_eq!(scope["fixed_membership"].as_bool(), Some(true));
     assert_eq!(scope["follower_writes"].as_str(), Some("reject"));
     assert_eq!(scope["follower_reads_linearizable"].as_bool(), Some(false));
-    assert_eq!(scope["auth_replication"].as_bool(), Some(false));
-    assert_eq!(scope["dynamic_membership"].as_bool(), Some(false));
     assert_eq!(scope["sql_snapshots"].as_bool(), Some(true));
     assert_eq!(
         scope["fixed_member_empty_storage_bootstrap"].as_bool(),
         Some(true)
     );
+    assert_eq!(scope["dynamic_membership"].as_bool(), Some(true));
+    assert_eq!(scope["learner_promotion"].as_bool(), Some(true));
+    assert_eq!(scope["joint_consensus"].as_bool(), Some(true));
+    assert_eq!(scope["auth_replication"].as_bool(), Some(true));
+    assert_eq!(
+        scope["replicated_auth_method"].as_str(),
+        Some("scram-sha-256")
+    );
+    assert_eq!(
+        scope["automatic_membership_reconciliation"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(scope["hpa_safe"].as_bool(), Some(false));
     assert_eq!(scope["production_ha"].as_bool(), Some(false));
 
     let ddl = scope["table_ddl"]
@@ -106,12 +104,22 @@ fn replicated_sql_claim_is_narrow_and_production_readiness_stays_false() {
     let artifacts = parsed["artifacts"]
         .as_sequence()
         .expect("artifacts must be a list");
-    let replication = artifacts
+
+    let membership = artifacts
         .iter()
-        .find(|item| item["artifact"].as_str() == Some("sql_replication"))
-        .expect("sql_replication boundary must be explicit");
+        .find(|item| item["artifact"].as_str() == Some("membership_changes"))
+        .expect("membership_changes boundary must be explicit");
     assert_eq!(
-        replication["status"].as_str(),
-        Some("fixed_membership_table_mutations_and_snapshot_recovery_tested")
+        membership["status"].as_str(),
+        Some("learner_joint_consensus_lifecycle_tested")
+    );
+
+    let identity = artifacts
+        .iter()
+        .find(|item| item["artifact"].as_str() == Some("replicated_identity"))
+        .expect("replicated_identity boundary must be explicit");
+    assert_eq!(
+        identity["status"].as_str(),
+        Some("scram_verifier_replication_and_migration_tested")
     );
 }

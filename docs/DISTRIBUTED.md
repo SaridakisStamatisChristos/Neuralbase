@@ -1,175 +1,79 @@
 # Distributed semantics
 
-NeuralBase has a tested fixed-membership replicated state-machine path for persistent table mutations and a SQL-aware snapshot/recovery path for safe Raft compaction plus reconstruction of an already-configured fixed member from empty local storage. This document defines those guarantees and the boundaries that remain outside them.
+NeuralBase has tested Raft paths for persistent table replication, SQL-aware snapshot/recovery, coordinated membership changes and strongly consistent clustered identity. This document defines those guarantees and the remaining boundaries.
 
-## Node identity and durable clustered startup
+## Clustered startup
 
-A Raft node has a **logical ID** and a **connectable address**. They are separate concepts.
+A node has a logical Raft ID and a connectable address. Clustered mode requires `NEURALBASE_NODE_ID` and durable RocksDB storage. Required persistence, snapshot and replicated-state failures fail closed rather than silently degrading durability.
 
-Preferred configuration:
+## Replicated mutation acknowledgement
 
-```bash
-NEURALBASE_NODE_ID=node1
-NEURALBASE_DB_PATH=/var/lib/neuralbase
-NEURALBASE_RAFT_ADDR=0.0.0.0:7001
-NEURALBASE_PEERS='node2=node2.internal:7001,node3=node3.internal:7001'
-```
+For persistent table mutations and clustered user DDL, local append is not success. A leader reply is withheld until quorum commit and confirmed durable local state-machine apply.
 
-Clustered startup is fail-closed for persistent SQL prerequisites:
+Followers reject these mutations before proposal. Errors/timeouts after submission to a leader remain outcome-uncertain.
 
-- `NEURALBASE_NODE_ID` requires `NEURALBASE_DB_PATH`/`DB_PATH`;
-- persisted SQL catalog hydration errors abort clustered startup;
-- required Raft stable-storage load/save/staged-snapshot failures fail-stop the Raft node.
+## Persistent table state
 
-Without `NEURALBASE_NODE_ID`, NeuralBase retains its single-node local DDL/DML behavior.
+Replicated table classes are `CREATE TABLE`, `DROP TABLE`, `INSERT`, `UPDATE`, and `DELETE`. DML carries leader-selected deterministic concrete effects. A current-term readiness barrier precedes state-dependent materialization after election.
 
-## Replicated mutation flow
+## Replicated identity
 
-For ordinary replicated SQL commands, append-only local logging is not success. The client reply is withheld until the command reaches quorum commit and the acknowledging node's state machine confirms durable apply.
+Clustered user DDL (`CREATE USER`, `ALTER USER`, `DROP USER`) uses versioned `NBRI` commands. Plaintext passwords are converted to SCRAM verifier material before proposal and are not representable in the replicated command codec. PostgreSQL MD5 verifier material is excluded because it is reusable authentication material.
 
-Current replicated mutation classes:
+The authoritative cluster registry is RocksDB-backed `ReplicatedIdentityState`. Identity changes and the replicated apply cursor are committed in one RocksDB batch. Authentication on leaders and followers reads that replicated state.
 
-- `CREATE TABLE`
-- `DROP TABLE`
-- `INSERT`
-- `UPDATE`
-- `DELETE`
+Standalone mode intentionally keeps the legacy local registry behavior.
 
-DML carries a leader-selected commit timestamp and concrete primary-key/value effects. `UPDATE` and `DELETE` predicates are evaluated only by the leader against confirmed-applied state. Followers never reinterpret those predicates.
+### Legacy migration
 
-A newly elected leader commits a current-term readiness barrier before persistent mutation binding/materialization, ensuring its local SQL state machine has caught the committed prefix. Mutation materialization/proposal is serialized on the leader.
+A legacy `users.json` can initialize clustered identity only when the registry is uninitialized and the operator supplies `NEURALBASE_IDENTITY_MIGRATION_SHA256` matching the exact chosen file. The migration parser is strict and accepts SCRAM records only. Malformed files, duplicate users, MD5 records and digest mismatch fail closed.
 
-## Follower behavior and retries
+If no legacy file exists, an auth-disabled fresh cluster may initialize empty identity as part of the first `CREATE USER`. A fresh auth-required cluster must already have replicated identity or use explicit migration.
 
-Followers reject persistent table mutations before proposal. The PostgreSQL error identifies the known leader when available. This pre-submit rejection is safe to redirect/retry.
+## SQL-aware snapshots
 
-A timeout, disconnect, leadership-loss error, or other error after submission to a leader is outcome-uncertain. A non-idempotent mutation must not be blindly replayed solely because success was not observed.
+The logical snapshot contains Raft boundary metadata, durable replicated apply/HLC state, catalog/table rows and the identity extension. Encoding is canonical, bounded and checksummed.
 
-Fresh fixed members reconstructed from empty storage have a separate serving-readiness gate. They can participate in Raft catch-up while SQL serving remains closed. Snapshot installation alone does not open the gate: the member must also complete a successful leader AppendEntries consistency exchange and apply through the advertised commit point.
+Creation is validated and durably staged before Raft prefix truncation. Installation validates/stages/restores durable state before publishing the Raft boundary and acknowledging success. Interrupted follower installation resumes from durable typed staging after restart.
 
-## Deterministic apply and replay
+Because identity is part of the snapshot, compaction and new learner/fixed-member catch-up do not create a second credential authority.
 
-Committed SQL commands are applied in Raft log order. The replicated SQL state machine:
+## Empty-storage member recovery
 
-- validates command version/shape and table identity;
-- writes exact DML bytes at the leader-selected HLC timestamp;
-- applies catalog/table changes deterministically;
-- writes the SQL effect and durable SQL apply marker atomically in RocksDB;
-- treats already-applied SQL Raft indices as replay/idempotence hits;
-- restores the replicated HLC high-water mark after restart.
+An existing configured member may restart from an empty RocksDB directory. It remains SQL-non-serving while receiving snapshot + remaining suffix and opens serving only after leader-confirmed catch-up. Tests cover later leadership, acknowledged writes, failure, restart and exact convergence.
 
-A state-machine apply error cannot result in SQL success.
+## Coordinated membership changes
 
-## SQL-aware snapshot format
+Phase 3 adds explicit consensus membership operations:
 
-`src/replicated_snapshot.rs` defines a separate logical SQL snapshot format rather than reusing legacy opaque Raft bytes or raw RocksDB SST assumptions.
+- start/admit a learner that does not vote;
+- catch the learner up through log replication and, when needed, the snapshot path;
+- reject promotion until catch-up is sufficient;
+- promote through joint old/new voter configuration and finalize;
+- remove a non-leader voter through joint consensus;
+- require leadership transfer before removing the current leader;
+- persist finalized membership across restart;
+- tombstone removed identities so stale pre-removal state cannot disrupt the current quorum.
 
-The versioned format contains:
+The primary regression path exercises 3 → 4 → 3 while preserving writes. Phase 4 additionally proves replicated identity survives learner snapshot bootstrap, promotion, credential rotation and removal.
 
-- explicit magic and format version;
-- Raft last-included index and term;
-- latest durable replicated SQL apply index;
-- latest replicated commit timestamp/HLC floor;
-- durable table catalog/schema state;
-- table IDs;
-- canonical logical primary keys and exact encoded row values;
-- bounded optional metadata extension;
-- SHA-256 corruption digest.
+## Deployment boundary
 
-Encoding uses canonical table and primary-key ordering, explicit lengths and explicit limits. Decoding rejects corruption, unsupported versions, duplicates/noncanonical ordering, table-ID mismatches, impossible apply metadata, truncation, oversized fields and trailing/ambiguous state.
+The checked-in Compose/Kubernetes/Helm assets still describe a static process topology. The consensus layer can change membership, but no controller automatically sequences StatefulSet replica changes with learner admission/catch-up/promotion/removal. HPA therefore remains intentionally disabled/rejected.
 
-The snapshot is logical and portable across RocksDB physical layouts. Secondary-index state is intentionally rejected until it has an explicit snapshot representation.
+## Read consistency
 
-## Snapshot creation and safe compaction
+Reads are local. There is no Raft ReadIndex/lease protocol for arbitrary follower queries, so follower reads may lag committed state. Serving-readiness gates prevent a fresh empty member from serving partial reconstruction; they do not make normal follower reads linearizable.
 
-SQL-aware compaction is limited to a Raft index that is both committed and locally applied.
+## What green distributed evidence supports
 
-The ordering is:
-
-1. select the safe Raft `(index, term)` boundary;
-2. obtain one consistent RocksDB snapshot;
-3. export canonical catalog/table state plus durable SQL apply/HLC metadata;
-4. validate the complete SQL snapshot artifact;
-5. durably stage it as a **Creation** snapshot transition;
-6. only then truncate/install the Raft snapshot boundary;
-7. atomically publish active Raft state + active snapshot bytes and clear the staged candidate.
-
-Raft prefix truncation therefore cannot become durable before a recoverable SQL snapshot artifact exists. If a crash leaves only a staged Creation candidate, startup discards it because the pre-compaction durable Raft log remains authoritative.
-
-Repeated compaction cycles, retained post-snapshot suffixes, restart and continued mutation are covered by `tests/replicated_sql_snapshot_cycles.rs`.
-
-## InstallSnapshot and restore semantics
-
-A follower receiving a SQL-aware InstallSnapshot:
-
-1. validates the snapshot checksum/format and embedded Raft boundary;
-2. durably stages it as an **Installation** transition;
-3. restores SQL catalog/data/apply-marker/HLC state;
-4. only after SQL restore succeeds installs/persists the Raft snapshot boundary;
-5. only after durable publication sends a successful InstallSnapshot reply.
-
-The SQL restore replaces durable catalog/data/apply-marker state in one RocksDB `WriteBatch`; in-memory catalog/HLC publication happens only after that durable batch succeeds. Restore refuses apply-index or commit-timestamp regression and fails closed on malformed or unsupported state.
-
-A crash after SQL restore but before active Raft publication leaves a durable Installation stage. Startup revalidates and idempotently restores that artifact, promotes the exact Raft boundary, publishes active state/snapshot, and clears staging. Restore failure leaves the node unavailable rather than serving partial state.
-
-Raft snapshot installation also retains an existing local log suffix only when the local entry at `last_included_index` has the same term as the incoming snapshot boundary. Otherwise the potentially conflicting suffix is discarded.
-
-## Fixed-member empty-storage bootstrap
-
-The tested Phase 2 replacement scope is **recovery of a logical member that is already part of the configured fixed membership**.
-
-A known member may restart with an empty RocksDB directory. It starts non-serving, receives the leader's SQL-aware snapshot, restores it, receives/applies the remaining Raft suffix, completes the leader consistency exchange, and only then becomes SQL-serving according to its Raft role.
-
-`tests/replicated_sql_snapshot_bootstrap.rs` destroys one member's entire storage, writes a post-snapshot suffix while it is absent, restarts the same logical ID with a truly empty directory, requires snapshot + suffix convergence, transfers leadership to the reconstructed member, acknowledges another SQL write there, kills that leader, verifies the acknowledged write survives on the quorum, restarts the reconstructed member from its recovered disk, and verifies exact convergence/no duplicate MVCC effects.
-
-This is not dynamic membership. It does not add an arbitrary new logical ID, promote a learner, change the voter set, or provide automatic operator-driven replacement.
-
-## Stable Raft persistence
-
-Raft term, vote, log, active snapshot-boundary metadata/bytes, and staged snapshot transitions are stored through RocksDB-backed persistence. Required persistence failures fail-stop in `RaftNode` itself; `FailClosedPersistenceStore` remains defense in depth.
-
-## Read consistency boundary
-
-Reads are not routed through a Raft ReadIndex/lease protocol. A follower serves local applied state and can lag the leader/commit frontier.
-
-Therefore arbitrary follower reads are not claimed linearizable. Phase 2 serving readiness prevents a truly empty replacement from serving during reconstruction, but it does not convert normal follower reads into linearizable reads.
-
-## Authentication boundary
-
-`CREATE USER`, `ALTER USER`, and `DROP USER` remain per-node credential-registry mutations. They are not included in the replicated table state machine or SQL snapshot consistency claim.
-
-## Fixed membership and deployment
-
-Checked-in Compose/Kubernetes/Helm topologies remain fixed membership. HPA enablement is rejected because changing StatefulSet replica count is not a Raft membership transition.
-
-Phase 2 does not relax this restriction. Coordinated membership changes are the next major distributed-safety phase.
-
-## What is implemented versus still open
-
-Implemented/tested for configured fixed-membership clusters:
-
-- deterministic persistent table mutation commands;
-- explicit follower write rejection;
-- leader readiness barrier and concrete UPDATE/DELETE materialization;
-- quorum commit + confirmed apply before SQL success;
-- deterministic/idempotent RocksDB apply;
+- deterministic replicated table commands and concrete apply;
+- follower rejection and quorum+confirmed-apply acknowledgement;
 - durable/fail-closed Raft persistence;
-- versioned deterministic logical SQL snapshots with corruption/bounds validation;
-- stage-before-compaction and restore-before-InstallSnapshot-ACK ordering;
-- crash recovery for interrupted snapshot installation;
-- safe Raft suffix retention rules;
-- repeated snapshot/compaction cycles and restart;
-- same-ID fixed-member empty-storage snapshot + suffix reconstruction;
-- reconstructed-member leadership, acknowledged-write failover and restart convergence;
-- separate-process mutation convergence/failover/restart evidence from Phase 1.
+- logical SQL+identity snapshots with safe compaction/install ordering;
+- empty-storage snapshot+suffix reconstruction;
+- learner admission/catch-up, joint-consensus promotion/removal and durable finalized membership;
+- stale removed-node protection;
+- replicated SCRAM identity, strict migration, failover rotation/drop and process-level authentication convergence.
 
-Still open before stronger HA/production claims:
-
-- coordinated dynamic membership and new-ID add/remove workflows;
-- automatic node replacement/operator lifecycle;
-- replicated auth/user state;
-- stronger/linearizable read modes;
-- backup/restore, point-in-time recovery and disaster recovery;
-- broader partition/storage-fault/upgrade evidence and production performance characterization.
-
-NeuralBase should therefore be described as an experimental SQL engine with tested **fixed-membership replicated table mutations and SQL-aware fixed-member snapshot recovery**, not as a production-ready HA database.
+Still open before stronger production claims: automatic operator membership reconciliation, linearizable/defined stronger reads, backup/PITR/disaster recovery, broader authorization/security, upgrade/storage-chaos evidence and production performance characterization.
