@@ -23,9 +23,7 @@ pub struct JointConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClusterMembership {
     pub format_version: u8,
-    /// Monotonically increasing committed configuration generation.
     pub generation: u64,
-    /// Raft index of the membership command that produced this state.
     pub config_index: u64,
     /// Stable voters when `joint` is None. During joint consensus this is the
     /// pre-transition stable set; quorum is instead evaluated against both
@@ -57,9 +55,11 @@ impl ClusterMembership {
         }
     }
 
-    /// Safe seed view for a brand-new joining process. The local node is a
-    /// learner and therefore cannot campaign or vote before it receives the
-    /// authoritative committed membership through log/snapshot replication.
+    /// Safe non-authoritative seed view for a brand-new joining process. The
+    /// local ID is intentionally absent from both voters and learners until the
+    /// actual committed AddLearner entry or snapshot arrives. That prevents a
+    /// fresh process from campaigning while also avoiding a fake local config
+    /// that would collide when the real AddLearner entry is replayed.
     pub fn bootstrap_learner(
         local_id: NodeId,
         voters: impl IntoIterator<Item = NodeId>,
@@ -71,14 +71,12 @@ impl ClusterMembership {
         if voters.contains(&local_id) {
             return Err("joining learner id cannot also be a seed voter".to_string());
         }
-        let mut learners = BTreeSet::new();
-        learners.insert(local_id);
         let config = Self {
             format_version: MEMBERSHIP_FORMAT_VERSION,
             generation: 1,
             config_index: 0,
             voters,
-            learners,
+            learners: BTreeSet::new(),
             joint: None,
             removed: BTreeSet::new(),
         };
@@ -338,13 +336,13 @@ mod tests {
     }
 
     #[test]
-    fn joining_learner_cannot_vote() {
+    fn joining_seed_view_cannot_vote_or_claim_membership() {
         let cfg = ClusterMembership::bootstrap_learner(
             "n4".to_string(),
             ["n1".to_string(), "n2".to_string(), "n3".to_string()],
         )
         .unwrap();
-        assert!(cfg.is_learner(&"n4".to_string()));
+        assert!(!cfg.is_learner(&"n4".to_string()));
         assert!(!cfg.is_voter(&"n4".to_string()));
     }
 
@@ -361,7 +359,6 @@ mod tests {
         let cfg = three().add_learner("n4".to_string(), 7).unwrap();
         let joint = cfg.begin_promotion(&"n4".to_string(), 8).unwrap();
         assert!(joint.is_joint());
-        // n1+n2 is an old majority but not a majority of the four-node new set.
         let only_old = BTreeSet::from(["n1".to_string(), "n2".to_string()]);
         assert!(!joint.has_vote_quorum(&only_old));
         let both = BTreeSet::from([
