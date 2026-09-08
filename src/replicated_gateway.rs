@@ -564,6 +564,7 @@ mod tests {
         Arc<HlcClock>,
         Arc<tokio::sync::Mutex<RaftShared>>,
         TempDir,
+        crate::consensus::RaftTaskHandle,
     ) {
         let dir = TempDir::new().unwrap();
         let engine = Arc::new(StorageEngine::open(dir.path()).unwrap());
@@ -586,7 +587,7 @@ mod tests {
         let mut node =
             RaftNode::new("solo".to_string(), vec![], transport).with_confirmed_apply_tx(apply_tx);
         node.set_election_timeout_ms(20);
-        let (client_tx, shared, _handle) = node.spawn();
+        let (client_tx, shared, handle) = node.spawn();
         let sm = Arc::clone(&state_machine);
         tokio::spawn(async move {
             while let Some(committed) = apply_rx.recv().await {
@@ -615,12 +616,12 @@ mod tests {
             Arc::clone(&engine),
             Arc::clone(&clock),
         );
-        (gateway, engine, clock, shared, dir)
+        (gateway, engine, clock, shared, dir, handle)
     }
 
     #[tokio::test]
     async fn single_node_insert_waits_for_barrier_and_state_machine_apply() {
-        let (gateway, engine, _clock, _shared, _dir) = single_node_gateway().await;
+        let (gateway, engine, _clock, _shared, _dir, _handle) = single_node_gateway().await;
         let plan = InsertPlan {
             table: schema(),
             columns: vec!["id".to_string(), "name".to_string()],
@@ -643,7 +644,7 @@ mod tests {
 
     #[tokio::test]
     async fn identity_ddl_waits_for_confirmed_apply_and_converges_to_durable_state() {
-        let (gateway, engine, _clock, _shared, _dir) = single_node_gateway().await;
+        let (gateway, engine, _clock, _shared, _dir, _handle) = single_node_gateway().await;
         let create = gateway
             .create_user("alice", "secret-one", true)
             .await
