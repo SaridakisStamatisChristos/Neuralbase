@@ -2,106 +2,55 @@
 
 This document describes the SQL surface implemented by the current NeuralBase development branch. It is a capability map, not a claim of full PostgreSQL compatibility.
 
-## Protocol versus SQL compatibility
-
-NeuralBase speaks the PostgreSQL wire protocol sufficiently for ordinary client interaction, but it is its own SQL engine. PostgreSQL protocol compatibility does not imply PostgreSQL semantic, catalog, type-system, extension, or planner compatibility.
-
 ## Query support
 
-| Area | Status | Notes |
+NeuralBase implements `SELECT`, filtering/projection, inner/left joins, multi-table `FROM`, grouping/aggregates, `HAVING`, ordering, limits/offsets, scalar and `IN`/`EXISTS` subqueries, derived tables, non-recursive CTEs, selected set/window operations, `CASE`, selected scalar/date functions, `LIKE`, and arithmetic. Exact PostgreSQL semantic parity is claimed only where executable comparison tests exist.
+
+## Persistent mutations
+
+| Statement family | Standalone mode | Configured cluster |
 |---|---|---|
-| `SELECT` | Implemented | General and vectorized paths |
-| `WHERE` | Implemented | Boolean/scalar expressions supported by evaluator |
-| Projection / aliases | Implemented | General projection path |
-| `INNER JOIN` | Implemented | General executor |
-| `LEFT OUTER JOIN` | Implemented | General executor |
-| Multi-table `FROM` | Implemented | Cross-join growth is bounded |
-| `GROUP BY` | Implemented | Expression grouping supported by current AST path |
-| `SUM`, `COUNT`, `AVG`, `MIN`, `MAX` | Implemented | General aggregate path |
-| `HAVING` | Implemented | Post-aggregate filtering |
-| `ORDER BY` | Implemented | Multi-column ordering |
-| `LIMIT` / `OFFSET` | Implemented | General executor |
-| Scalar subqueries | Implemented | Subject to executor semantics |
-| `IN` / `NOT IN` subqueries | Implemented | General evaluator |
-| `EXISTS` / `NOT EXISTS` | Implemented | General evaluator |
-| Derived tables | Implemented | `FROM (SELECT ...) AS alias` |
-| CTEs / `WITH` | Implemented | Non-recursive resolution in current executor |
-| Set operations | Implemented in current executor | Coverage depends on AST form/quantifier |
-| Window functions | Selected support | Not a claim of full PostgreSQL window semantics |
-| `CASE` | Implemented | Scalar evaluator |
-| `COALESCE`, `NULLIF` | Implemented | Scalar evaluator |
-| `UPPER`, `LOWER`, substring forms | Implemented | Selected scalar functions |
-| `EXTRACT` | Implemented | Selected date/time extraction |
-| `LIKE` / `NOT LIKE` | Implemented | Pattern evaluator |
-| Arithmetic expressions | Implemented | `+`, `-`, `*`, `/`; division-by-zero is an error |
-
-## Persistent table definition and mutation
-
-Persistent DDL/DML requires a configured storage path.
-
-| Statement family | Single-node mode | Configured fixed-membership cluster |
-|---|---|---|
-| `CREATE TABLE` | Local durable RocksDB/catalog mutation | Replicated through Raft |
-| `DROP TABLE` | Local durable RocksDB/catalog mutation | Replicated through Raft |
+| `CREATE TABLE` / `DROP TABLE` | Local durable mutation | Replicated through Raft |
 | `INSERT` | Local MVCC/RocksDB mutation | Replicated through Raft |
-| `UPDATE` | Local predicate evaluation + MVCC mutation | Leader materializes concrete row effects, then replicates them |
-| `DELETE` | Local predicate evaluation + MVCC mutation | Leader materializes concrete keys, then replicates them |
-| `CREATE USER` | Per-node user registry | **Still per-node; not replicated** |
-| `ALTER USER` | Per-node user registry | **Still per-node; not replicated** |
-| `DROP USER` | Per-node user registry | **Still per-node; not replicated** |
+| `UPDATE` | Local predicate evaluation | Leader materializes concrete row effects, then replicates |
+| `DELETE` | Local predicate evaluation | Leader materializes concrete keys, then replicates |
+| `CREATE USER` | Local `users.json` registry | **Replicated SCRAM identity through Raft** |
+| `ALTER USER` | Local `users.json` registry | **Replicated SCRAM identity through Raft** |
+| `DROP USER` | Local `users.json` registry | **Replicated identity through Raft** |
 
-Clustered mode means `NEURALBASE_NODE_ID` is configured. It also requires durable RocksDB storage; startup fails if the node ID is configured without `NEURALBASE_DB_PATH`/`DB_PATH`.
+Clustered mode means `NEURALBASE_NODE_ID` is configured and durable RocksDB is available.
 
-### Clustered table-mutation semantics
+## Cluster mutation semantics
 
-For persistent table `CREATE`, `DROP`, `INSERT`, `UPDATE`, and `DELETE`:
+For replicated table/user mutations:
 
-1. followers reject the write before proposal rather than mutating local state;
-2. the leader establishes a current-term apply-readiness barrier before binding/materializing the mutation;
-3. `UPDATE`/`DELETE` predicates are evaluated only on the leader against confirmed-applied state;
-4. the replicated payload contains deterministic concrete row/key effects;
-5. SQL success waits for Raft quorum commit and confirmed durable local state-machine apply;
-6. committed effects are applied deterministically and replay-idempotently on members.
+1. followers reject before proposal;
+2. the leader establishes current-term apply readiness before state-dependent materialization;
+3. table `UPDATE`/`DELETE` replicate concrete effects;
+4. user passwords are converted to SCRAM verifier material before identity proposal;
+5. SQL success waits for Raft quorum commit and confirmed durable local apply;
+6. replay at an already-applied Raft index is idempotent.
 
-A failure after submission to a leader is outcome-uncertain; clients must not blindly replay non-idempotent SQL solely because they did not observe success.
+A failure after submission to a leader is outcome-uncertain.
 
-### Read consistency
+## Identity semantics
 
-`SELECT` continues to read local node state. NeuralBase does not implement a Raft ReadIndex/lease protocol, so arbitrary follower reads are **not claimed linearizable** and may lag a newly committed write.
+Cluster authentication reads authoritative replicated RocksDB identity. Plaintext passwords are not representable in the replicated identity command format. PostgreSQL MD5 verifier material is not accepted into replicated identity or migration.
 
-A truly fresh fixed member does not serve SQL while reconstructing its local state. This bootstrap readiness gate prevents empty/partial serving but does not strengthen ordinary follower-read consistency.
+Legacy `users.json` is only a clustered migration source, selected by exact `NEURALBASE_IDENTITY_MIGRATION_SHA256`; it is not the post-migration live authority.
 
-## SQL-aware snapshot/recovery boundary
+## Snapshot/recovery boundary
 
-Replicated table state now has a versioned logical SQL snapshot path used by the Raft lifecycle. The snapshot contains durable catalog/table state, exact encoded logical rows, the Raft boundary, the durable replicated SQL apply index and the replicated HLC floor. It is canonical, bounded and checksummed.
+The SQL-aware logical snapshot includes catalog/table rows, durable replicated apply/HLC metadata and replicated identity. Snapshot creation is staged before compaction; installation restores durable state before success ACK. Fixed-member reconstruction and learner catch-up can therefore recover both table and authentication state from snapshot + suffix.
 
-Snapshot creation is durably staged before Raft prefix compaction. InstallSnapshot validates and restores durable SQL state before a success acknowledgement. Interrupted follower installation is recoverable from the staged artifact after restart.
+## Membership boundary
 
-The tested bootstrap scope is recovery of an **already-configured fixed logical member** from empty local storage: it receives the SQL snapshot, applies the remaining Raft suffix, and becomes serving-ready only after catch-up. This is not dynamic membership, arbitrary new-node addition, automatic replacement orchestration, backup restore or disaster recovery.
+The engine supports learner admission/catch-up, joint-consensus promotion/removal and durable finalized membership. This is not a SQL statement surface and is not automatically driven by the checked-in Kubernetes manifests.
 
-Legacy opaque Raft snapshot bytes remain unsafe for replicated SQL when no SQL-aware snapshot store is attached and are still rejected in that mode.
+## Read consistency
 
-## Execution limits
-
-The general executor has explicit intermediate-row budgets. These prevent accidental unbounded materialization when a query plan degenerates into a large cross join or similar expansion.
-
-## NULL and type behavior
-
-NeuralBase implements its own scalar value/evaluation layer. Treat behavior as engine-specific unless a test explicitly proves PostgreSQL-equivalent behavior. Do not assume complete PostgreSQL implicit casting, collation, numeric precision, timezone, interval, or three-valued-logic compatibility beyond covered cases.
+`SELECT` reads local node state. Arbitrary follower reads are not claimed linearizable and may lag committed state.
 
 ## TPC-H evidence
 
-`tests/tpch_correctness.rs` executes the checked-in Q1-Q22 SQL constants against a deterministic small NeuralBase dataset and compares results against PostgreSQL 16 reference execution. This is regression evidence for the exact tested dataset/query forms, not official TPC-H certification or complete PostgreSQL compatibility.
-
-## Adding SQL support
-
-A new SQL feature should include, where relevant:
-
-1. parser/binder coverage;
-2. execution tests for normal and NULL/error cases;
-3. persistence tests for DDL/DML;
-4. replicated-state-machine semantics when the mutation must be cluster-wide;
-5. snapshot/restore semantics when the state must survive member reconstruction;
-6. PostgreSQL reference comparison when semantic parity is intended;
-7. adversarial/budget tests for potentially explosive operations;
-8. an update to this matrix.
+`tests/tpch_correctness.rs` executes checked-in Q1-Q22 against a deterministic small NeuralBase dataset and compares results with PostgreSQL 16. This is regression evidence for the exact tested forms, not official TPC-H certification or complete PostgreSQL compatibility.

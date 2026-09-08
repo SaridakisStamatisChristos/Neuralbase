@@ -1,22 +1,12 @@
 {
-  "_comment": "Copy this file to users.json and set NEURALBASE_USERS_FILE=users.json",
-  "_comment2": "Enable auth enforcement: NEURALBASE_AUTH_REQUIRED=1",
-  "_comment3": "Per-IP limit (optional): NEURALBASE_MAX_CONNECTIONS_PER_IP=50",
   "users": [
     {
-      "_comment": "SCRAM-SHA-256 user (preferred) — generate with: nb-adduser",
-      "username": "postgres",
       "method": "scram-sha-256",
-      "salt": "<base64-encoded 16-byte random salt>",
+      "username": "postgres",
+      "salt": "<base64-encoded-random-salt>",
       "iterations": 4096,
-      "stored_key": "<base64-encoded 32-byte StoredKey>",
-      "server_key": "<base64-encoded 32-byte ServerKey>"
-    },
-    {
-      "_comment": "MD5 user (legacy fallback for older clients)",
-      "username": "readonly",
-      "method": "md5",
-      "md5_hash": "<32 hex chars: hex(md5(password || username))>"
+      "stored_key": "<base64-encoded-32-byte-StoredKey>",
+      "server_key": "<base64-encoded-32-byte-ServerKey>"
     }
   ]
 }

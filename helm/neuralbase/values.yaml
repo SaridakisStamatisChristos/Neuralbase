@@ -1,5 +1,4 @@
-# NeuralBase Helm values — configurable deployment parameters.
-# Override with: helm install neuralbase ./helm/neuralbase -f custom-values.yaml
+# NeuralBase Helm values — configurable development/research deployment parameters.
 
 replicaCount: 3
 
@@ -8,7 +7,6 @@ image:
   tag: "0.1.0"
   pullPolicy: IfNotPresent
 
-# Resource requests and limits per pod.
 resources:
   requests:
     cpu: "500m"
@@ -17,12 +15,10 @@ resources:
     cpu: "2"
     memory: "2Gi"
 
-# Persistent storage for RocksDB data directory.
 storage:
   size: 10Gi
   storageClassName: ""
 
-# NeuralBase configuration (injected as env vars via ConfigMap).
 config:
   listenAddr: "0.0.0.0:5432"
   raftAddr: "0.0.0.0:7001"
@@ -30,55 +26,47 @@ config:
   maxConnections: "500"
   maxConnectionsPerIp: "100"
   maxConnectionsPerUser: "50"
-  # Disabled by default so a stock chart is reachable. To enable authentication,
-  # set this to "true" and provide auth.existingSecret containing users.json.
   authRequired: "false"
   dbPath: "/data/neuralbase"
 
-# TLS configuration.
 tls:
   enabled: false
-  # Name of existing Secret containing server.crt and server.key.
   existingSecret: ""
   certPath: "/tls/server.crt"
   keyPath: "/tls/server.key"
 
-# User authentication.
+# Cluster identity is authoritative in replicated RocksDB state. These settings
+# are ONLY for an explicit one-time migration from a legacy strict-SCRAM users.json.
 auth:
-  # Name of existing Secret containing users.json. The Secret is used only as
-  # an initial seed; the live registry is copied to the writable data PVC so
-  # CREATE/ALTER/DROP USER can persist across restarts.
+  # Existing Secret containing key users.json. It is mounted read-only and is
+  # never copied into the data PVC as a live per-node registry.
   existingSecret: ""
+  # Exact SHA-256 (64 hex characters) of the users.json bytes in existingSecret.
+  # existingSecret and migrationSha256 must be supplied together.
+  migrationSha256: ""
 
-# Service configuration.
 service:
   type: LoadBalancer
   port: 5432
 
-# Prometheus metrics.
 metrics:
   enabled: true
   serviceMonitor:
     enabled: false
 
-# Pod disruption budget. The template derives minAvailable as a strict Raft
-# majority: floor(replicaCount / 2) + 1.
 podDisruptionBudget:
   enabled: true
 
-# Horizontal scaling is intentionally unavailable for the fixed-membership
-# topology. Change replicaCount only together with a deliberate peer-membership
-# rollout; do not attach an HPA to this StatefulSet.
+# The Raft engine supports explicit membership changes, but this chart does not
+# automatically reconcile StatefulSet replica changes through that protocol.
 autoscaling:
   enabled: false
   minReplicas: 3
   maxReplicas: 3
   targetCPUUtilizationPercentage: 70
 
-# Graceful shutdown.
 terminationGracePeriodSeconds: 45
 
-# Probes.
 startupProbe:
   initialDelaySeconds: 5
   periodSeconds: 5

@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Leader-side materialization and Raft submission for persistent SQL mutations.
+//! Leader-side materialization and Raft submission for persistent SQL and identity mutations.
 //!
-//! The gateway serializes mutating SQL statements on the leader. Before a
-//! mutation is bound/materialized, a current-term non-SQL barrier is committed
-//! and confirmed applied. Because Raft applies log entries in order, successful
-//! barrier acknowledgement proves this leader has applied every preceding
-//! committed entry in its local SQL state machine. This prevents stale catalog
-//! or row materialization immediately after failover.
+//! The gateway serializes mutations on the leader. Before materialization, a
+//! current-term barrier is committed and confirmed applied. Identity passwords
+//! are converted to SCRAM verifier material on the leader before proposal; the
+//! plaintext password is never part of a replicated command.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,11 +13,14 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
+use crate::auth::{create_scram_user, UserRecord};
 use crate::binder::{DeletePlan, InsertPlan, UpdatePlan};
 use crate::catalog::TableSchema;
 use crate::codec;
 use crate::consensus::{ClientCommand, RaftRole, RaftShared};
 use crate::hlc::{HlcClock, HlcTimestamp};
+use crate::replicated_identity::{ReplicatedIdentityMutation, ReplicatedScramCredential};
+use crate::replicated_identity_store::ReplicatedIdentityState;
 use crate::replicated_sql::{ReplicatedMutation, ReplicatedRowWrite};
 use crate::storage::StorageEngine;
 use crate::storage_executor::{decode_row, encode_row, table_id_for};
@@ -44,7 +45,7 @@ pub enum ReplicatedGatewayError {
     CommandChannelClosed,
     #[error("Raft command acknowledgement channel closed")]
     ReplyChannelClosed,
-    #[error("Raft rejected replicated SQL mutation: {0}")]
+    #[error("Raft rejected replicated mutation: {0}")]
     Raft(String),
     #[error("storage failure while materializing replicated SQL: {0}")]
     Storage(String),
@@ -52,6 +53,16 @@ pub enum ReplicatedGatewayError {
     CorruptStoredRow,
     #[error("replicated mutation encoding failed: {0}")]
     Encoding(String),
+    #[error("replicated identity state is not initialized; explicit migration is required")]
+    IdentityNotInitialized,
+    #[error("replicated identity initialization conflicts with authoritative state")]
+    IdentityInitializationConflict,
+    #[error("identity user already exists: {0}")]
+    UserAlreadyExists(String),
+    #[error("identity user does not exist: {0}")]
+    UserNotFound(String),
+    #[error("replicated identity failure: {0}")]
+    Identity(String),
 }
 
 #[derive(Clone)]
@@ -105,11 +116,6 @@ impl ReplicatedSqlGateway {
         self.shared.lock().await.leader_id.clone()
     }
 
-    /// Establish a leader/apply barrier before the SQL binder reads catalog
-    /// state for a persistent table mutation. This method intentionally does
-    /// not take `mutation_serial`; the concrete mutation method takes that lock
-    /// and commits another barrier before materialization, closing the race
-    /// between pre-bind readiness and actual proposal.
     pub async fn prepare_mutation(&self) -> Result<(), ReplicatedGatewayError> {
         self.commit_readiness_barrier().await.map(|_| ())
     }
@@ -120,7 +126,7 @@ impl ReplicatedSqlGateway {
     ) -> Result<ReplicatedMutationAck, ReplicatedGatewayError> {
         let _guard = self.mutation_serial.lock().await;
         self.commit_readiness_barrier().await?;
-        self.submit(ReplicatedMutation::CreateTable { schema })
+        self.submit_sql(ReplicatedMutation::CreateTable { schema })
             .await
     }
 
@@ -130,7 +136,7 @@ impl ReplicatedSqlGateway {
     ) -> Result<ReplicatedMutationAck, ReplicatedGatewayError> {
         let _guard = self.mutation_serial.lock().await;
         self.commit_readiness_barrier().await?;
-        self.submit(ReplicatedMutation::DropTable {
+        self.submit_sql(ReplicatedMutation::DropTable {
             table: table.to_string(),
             table_id: table_id_for(table),
         })
@@ -168,7 +174,7 @@ impl ReplicatedSqlGateway {
             })
             .collect();
 
-        self.submit(ReplicatedMutation::InsertRows {
+        self.submit_sql(ReplicatedMutation::InsertRows {
             table: plan.table.name.clone(),
             table_id: table_id_for(&plan.table.name),
             commit_ts,
@@ -217,7 +223,7 @@ impl ReplicatedSqlGateway {
         }
 
         let commit_ts = self.clock.tick().to_u64();
-        self.submit(ReplicatedMutation::UpdateRows {
+        self.submit_sql(ReplicatedMutation::UpdateRows {
             table: plan.table.name.clone(),
             table_id,
             commit_ts,
@@ -257,11 +263,114 @@ impl ReplicatedSqlGateway {
         }
 
         let commit_ts = self.clock.tick().to_u64();
-        self.submit(ReplicatedMutation::DeleteRows {
+        self.submit_sql(ReplicatedMutation::DeleteRows {
             table: plan.table.name.clone(),
             table_id,
             commit_ts,
             primary_keys,
+        })
+        .await
+    }
+
+    pub async fn initialize_identity(
+        &self,
+        records: &[UserRecord],
+    ) -> Result<ReplicatedMutationAck, ReplicatedGatewayError> {
+        let _guard = self.mutation_serial.lock().await;
+        self.commit_readiness_barrier().await?;
+        let requested = ReplicatedIdentityState::from_user_records(records)
+            .map_err(|error| ReplicatedGatewayError::Identity(error.to_string()))?;
+        if let Some(existing) = ReplicatedIdentityState::load(&self.engine)
+            .map_err(|error| ReplicatedGatewayError::Identity(error.to_string()))?
+        {
+            if existing != requested {
+                return Err(ReplicatedGatewayError::IdentityInitializationConflict);
+            }
+        }
+        self.submit_identity(ReplicatedIdentityMutation::Initialize {
+            users: requested.users().to_vec(),
+        })
+        .await
+    }
+
+    pub async fn create_user(
+        &self,
+        username: &str,
+        password: &str,
+        initialize_if_empty: bool,
+    ) -> Result<ReplicatedMutationAck, ReplicatedGatewayError> {
+        let _guard = self.mutation_serial.lock().await;
+        self.commit_readiness_barrier().await?;
+
+        let mut state = ReplicatedIdentityState::load(&self.engine)
+            .map_err(|error| ReplicatedGatewayError::Identity(error.to_string()))?;
+        if state.is_none() {
+            if !initialize_if_empty {
+                return Err(ReplicatedGatewayError::IdentityNotInitialized);
+            }
+            self.submit_identity(ReplicatedIdentityMutation::Initialize { users: vec![] })
+                .await?;
+            state = Some(ReplicatedIdentityState::default());
+        }
+        if state
+            .as_ref()
+            .is_some_and(|identity| identity.contains_user(username))
+        {
+            return Err(ReplicatedGatewayError::UserAlreadyExists(
+                username.to_string(),
+            ));
+        }
+
+        let record = create_scram_user(username, password);
+        let credential = ReplicatedScramCredential::from_user_record(&record)
+            .map_err(|error| ReplicatedGatewayError::Identity(error.to_string()))?;
+        self.submit_identity(ReplicatedIdentityMutation::CreateUser {
+            username: username.to_string(),
+            credential,
+        })
+        .await
+    }
+
+    pub async fn alter_user(
+        &self,
+        username: &str,
+        new_password: &str,
+    ) -> Result<ReplicatedMutationAck, ReplicatedGatewayError> {
+        let _guard = self.mutation_serial.lock().await;
+        self.commit_readiness_barrier().await?;
+        let state = ReplicatedIdentityState::load(&self.engine)
+            .map_err(|error| ReplicatedGatewayError::Identity(error.to_string()))?
+            .ok_or(ReplicatedGatewayError::IdentityNotInitialized)?;
+        if !state.contains_user(username) {
+            return Err(ReplicatedGatewayError::UserNotFound(username.to_string()));
+        }
+
+        let record = create_scram_user(username, new_password);
+        let credential = ReplicatedScramCredential::from_user_record(&record)
+            .map_err(|error| ReplicatedGatewayError::Identity(error.to_string()))?;
+        self.submit_identity(ReplicatedIdentityMutation::AlterUser {
+            username: username.to_string(),
+            credential,
+        })
+        .await
+    }
+
+    pub async fn drop_user(
+        &self,
+        username: &str,
+        if_exists: bool,
+    ) -> Result<ReplicatedMutationAck, ReplicatedGatewayError> {
+        let _guard = self.mutation_serial.lock().await;
+        self.commit_readiness_barrier().await?;
+        let state = ReplicatedIdentityState::load(&self.engine)
+            .map_err(|error| ReplicatedGatewayError::Identity(error.to_string()))?
+            .ok_or(ReplicatedGatewayError::IdentityNotInitialized)?;
+        if !if_exists && !state.contains_user(username) {
+            return Err(ReplicatedGatewayError::UserNotFound(username.to_string()));
+        }
+        self.submit_identity(ReplicatedIdentityMutation::DropUser {
+            username: username.to_string(),
+            if_exists,
         })
         .await
     }
@@ -296,7 +405,7 @@ impl ReplicatedSqlGateway {
             .map_err(ReplicatedGatewayError::Raft)
     }
 
-    async fn submit(
+    async fn submit_sql(
         &self,
         mutation: ReplicatedMutation,
     ) -> Result<ReplicatedMutationAck, ReplicatedGatewayError> {
@@ -310,6 +419,22 @@ impl ReplicatedSqlGateway {
             raft_index,
             command_tag,
             affected_rows,
+        })
+    }
+
+    async fn submit_identity(
+        &self,
+        mutation: ReplicatedIdentityMutation,
+    ) -> Result<ReplicatedMutationAck, ReplicatedGatewayError> {
+        let command_tag = mutation.command_tag();
+        let payload = mutation
+            .encode()
+            .map_err(|error| ReplicatedGatewayError::Encoding(error.to_string()))?;
+        let raft_index = self.submit_payload(payload).await?;
+        Ok(ReplicatedMutationAck {
+            raft_index,
+            command_tag,
+            affected_rows: None,
         })
     }
 }
@@ -433,8 +558,14 @@ mod tests {
         assert!(engine.read_catalog_entry("items").unwrap().is_none());
     }
 
-    #[tokio::test]
-    async fn single_node_insert_waits_for_barrier_and_state_machine_apply() {
+    async fn single_node_gateway() -> (
+        ReplicatedSqlGateway,
+        Arc<StorageEngine>,
+        Arc<HlcClock>,
+        Arc<tokio::sync::Mutex<RaftShared>>,
+        TempDir,
+        crate::consensus::RaftTaskHandle,
+    ) {
         let dir = TempDir::new().unwrap();
         let engine = Arc::new(StorageEngine::open(dir.path()).unwrap());
         let catalog = Arc::new(InMemoryCatalog::default());
@@ -456,7 +587,7 @@ mod tests {
         let mut node =
             RaftNode::new("solo".to_string(), vec![], transport).with_confirmed_apply_tx(apply_tx);
         node.set_election_timeout_ms(20);
-        let (client_tx, shared, _handle) = node.spawn();
+        let (client_tx, shared, handle) = node.spawn();
         let sm = Arc::clone(&state_machine);
         tokio::spawn(async move {
             while let Some(committed) = apply_rx.recv().await {
@@ -479,9 +610,18 @@ mod tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
+        let gateway = ReplicatedSqlGateway::new(
+            client_tx,
+            Arc::clone(&shared),
+            Arc::clone(&engine),
+            Arc::clone(&clock),
+        );
+        (gateway, engine, clock, shared, dir, handle)
+    }
 
-        let gateway =
-            ReplicatedSqlGateway::new(client_tx, shared, Arc::clone(&engine), Arc::clone(&clock));
+    #[tokio::test]
+    async fn single_node_insert_waits_for_barrier_and_state_machine_apply() {
+        let (gateway, engine, _clock, _shared, _dir, _handle) = single_node_gateway().await;
         let plan = InsertPlan {
             table: schema(),
             columns: vec!["id".to_string(), "name".to_string()],
@@ -500,5 +640,41 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn identity_ddl_waits_for_confirmed_apply_and_converges_to_durable_state() {
+        let (gateway, engine, _clock, _shared, _dir, _handle) = single_node_gateway().await;
+        let create = gateway
+            .create_user("alice", "secret-one", true)
+            .await
+            .unwrap();
+        assert_eq!(create.command_tag, "CREATE USER");
+        assert!(create.raft_index >= 3);
+        let created = ReplicatedIdentityState::load(&engine).unwrap().unwrap();
+        assert!(created.contains_user("alice"));
+
+        let before = created.user_record("alice").unwrap().unwrap().credential;
+        gateway.alter_user("alice", "secret-two").await.unwrap();
+        let after = ReplicatedIdentityState::load(&engine)
+            .unwrap()
+            .unwrap()
+            .user_record("alice")
+            .unwrap()
+            .unwrap()
+            .credential;
+        match (before, after) {
+            (
+                crate::auth::StoredCredential::ScramSha256(before),
+                crate::auth::StoredCredential::ScramSha256(after),
+            ) => assert_ne!(before.stored_key, after.stored_key),
+            _ => panic!("replicated identity must use SCRAM credentials"),
+        }
+
+        gateway.drop_user("alice", false).await.unwrap();
+        assert!(!ReplicatedIdentityState::load(&engine)
+            .unwrap()
+            .unwrap()
+            .contains_user("alice"));
     }
 }

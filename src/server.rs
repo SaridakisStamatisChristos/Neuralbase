@@ -25,6 +25,11 @@ use crate::protocol::{
 };
 use crate::query_executor::{query_result_to_batch, QueryCatalog};
 use crate::replicated_gateway::{ReplicatedGatewayError, ReplicatedSqlGateway};
+use crate::replicated_identity_runtime::{
+    allow_empty_identity_bootstrap, migrate_legacy_identity_if_configured,
+    replicated_identity_initialized, replicated_user_record, ReplicatedIdentityRuntimeError,
+    IDENTITY_MIGRATION_SHA256_ENV,
+};
 use crate::rocksdb_catalog::RocksDbCatalog;
 use crate::scheduler::MorselScheduler;
 use crate::sql::{parse_nb_statement, parse_statement};
@@ -48,13 +53,13 @@ const CONNECTION_ACQUIRE_TIMEOUT_MS: u64 = 500;
 const PLAN_CACHE_MAX_SIZE: usize = 500;
 const STMT_CACHE_MAX_SIZE: usize = 100;
 
-/// Optional replicated-SQL write gateway for clustered runtime.
+/// Optional replicated mutation gateway for clustered runtime.
 ///
 /// `server::run` keeps its existing public signature for compatibility with
 /// local/single-node callers and integration tests. `main` installs a gateway
-/// only when a durable Raft node is configured. Mutating SQL checks this slot:
-/// `None` means the historical local path; `Some` means every persistent table
-/// mutation must go through the Raft leader and wait for confirmed apply.
+/// only when a durable Raft node is configured. In that mode persistent table
+/// and identity mutations go through the Raft leader and authentication reads
+/// the durable replicated identity state on every new connection.
 static REPLICATED_SQL_GATEWAY: OnceLock<Mutex<Option<Arc<ReplicatedSqlGateway>>>> = OnceLock::new();
 
 pub fn configure_replicated_sql_gateway(gateway: Option<Arc<ReplicatedSqlGateway>>) {
@@ -68,10 +73,10 @@ fn replicated_sql_gateway() -> Option<Arc<ReplicatedSqlGateway>> {
         .and_then(|slot| slot.lock().ok().and_then(|gateway| gateway.clone()))
 }
 
-/// Classify the persistent table-mutation subset before binding. The binder
+/// Classify table mutations that need a pre-bind readiness barrier. The binder
 /// depends on local catalog state, so after failover a current-term Raft barrier
-/// must be applied before it resolves table names. User/auth statements are
-/// intentionally excluded because they remain per-node in this phase.
+/// must be applied before it resolves table names. Identity DDL does not depend
+/// on the table catalog and takes its own barrier inside the replicated gateway.
 fn is_persistent_table_mutation_sql(sql: &str) -> bool {
     let mut words = sql.split_whitespace();
     let Some(first) = words.next() else {
@@ -265,10 +270,12 @@ pub async fn run(
     let ip_tracker = IpConnectionTracker::new(read_max_per_ip());
 
     let require_auth = registry.read().await.require_auth;
+    let replicated_identity = replicated_sql_gateway().is_some();
     tracing::info!(
         max_connections,
         per_ip = ip_tracker.max_per_ip,
         require_auth,
+        replicated_identity,
         env_var = "NEURALBASE_MAX_CONNECTIONS",
         "connection admission control enabled"
     );
@@ -437,7 +444,14 @@ async fn handle_client_stream<S>(mut socket: S, ctx: ClientSessionContext) -> st
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let username = match startup_and_auth(&mut socket, &ctx.registry).await {
+    let username = match startup_and_auth(
+        &mut socket,
+        &ctx.registry,
+        ctx.storage_engine.as_ref(),
+        &ctx.users_file,
+    )
+    .await
+    {
         Ok(u) => u,
         Err(_) => return Ok(()),
     };
@@ -699,21 +713,129 @@ where
 async fn startup_and_auth<S>(
     socket: &mut S,
     registry: &RwLock<UserRegistry>,
+    storage_engine: Option<&Arc<StorageEngine>>,
+    users_file: &str,
 ) -> Result<String, ProtocolError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let (username, payload) = read_startup_message(socket).await?;
-    let cred = {
-        let reg = registry.read().await;
-        if !reg.require_auth {
-            drop(reg);
-            socket
-                .write_all(&build_auth_ok())
-                .await
-                .map_err(|_| ProtocolError::InvalidLength(0))?;
-            return Ok(username);
+    let cluster_gateway = replicated_sql_gateway();
+
+    if let Some(gateway) = cluster_gateway.as_ref() {
+        if !gateway.serving_ready() {
+            let _ = socket
+                .write_all(&build_error_response(
+                    "cluster node is catching up replicated state",
+                    "57P03",
+                ))
+                .await;
+            return Err(ProtocolError::InvalidLength(0));
         }
+        let Some(engine) = storage_engine else {
+            tracing::error!("replicated identity configured without durable storage engine");
+            let _ = socket
+                .write_all(&build_error_response(
+                    "replicated identity storage is unavailable",
+                    "55000",
+                ))
+                .await;
+            return Err(ProtocolError::InvalidLength(0));
+        };
+
+        match migrate_legacy_identity_if_configured(gateway, engine, users_file).await {
+            Ok(migrated) => {
+                if migrated {
+                    tracing::info!(users_file, "legacy identity registry migrated through Raft");
+                }
+            }
+            Err(ReplicatedIdentityRuntimeError::Gateway(ReplicatedGatewayError::NotLeader {
+                leader,
+            })) => {
+                let message = match leader {
+                    Some(leader) => format!(
+                        "replicated identity migration is pending; connect once to leader {leader}"
+                    ),
+                    None => "replicated identity migration is pending; Raft leader is unknown"
+                        .to_string(),
+                };
+                let _ = socket
+                    .write_all(&build_error_response(&message, "57P03"))
+                    .await;
+                return Err(ProtocolError::InvalidLength(0));
+            }
+            Err(error) => {
+                tracing::error!(%error, users_file, "replicated identity migration failed closed");
+                let _ = socket
+                    .write_all(&build_error_response(
+                        &format!("replicated identity migration failed: {error}"),
+                        "58030",
+                    ))
+                    .await;
+                return Err(ProtocolError::InvalidLength(0));
+            }
+        }
+    }
+
+    let require_auth = registry.read().await.require_auth;
+    if !require_auth {
+        socket
+            .write_all(&build_auth_ok())
+            .await
+            .map_err(|_| ProtocolError::InvalidLength(0))?;
+        return Ok(username);
+    }
+
+    let cred = if cluster_gateway.is_some() {
+        let Some(engine) = storage_engine else {
+            return Err(ProtocolError::InvalidLength(0));
+        };
+        match replicated_identity_initialized(engine) {
+            Ok(true) => {}
+            Ok(false) => {
+                let message = format!(
+                    "cluster identity is not initialized; configure {IDENTITY_MIGRATION_SHA256_ENV} with the selected legacy users.json digest"
+                );
+                let _ = socket
+                    .write_all(&build_error_response(&message, "28000"))
+                    .await;
+                return Err(ProtocolError::InvalidLength(0));
+            }
+            Err(error) => {
+                tracing::error!(%error, "cannot read authoritative replicated identity state");
+                let _ = socket
+                    .write_all(&build_error_response(
+                        "replicated identity state is unavailable",
+                        "58030",
+                    ))
+                    .await;
+                return Err(ProtocolError::InvalidLength(0));
+            }
+        }
+
+        match replicated_user_record(engine, &username) {
+            Ok(Some(user)) => user.credential,
+            Ok(None) => {
+                let err = build_error_response(
+                    &format!("password authentication failed for user \"{username}\""),
+                    "28P01",
+                );
+                let _ = socket.write_all(&err).await;
+                return Err(ProtocolError::InvalidLength(0));
+            }
+            Err(error) => {
+                tracing::error!(%error, %username, "cannot read replicated identity user");
+                let _ = socket
+                    .write_all(&build_error_response(
+                        "replicated identity state is unavailable",
+                        "58030",
+                    ))
+                    .await;
+                return Err(ProtocolError::InvalidLength(0));
+            }
+        }
+    } else {
+        let reg = registry.read().await;
         match reg.get_user(&username) {
             Some(user) => user.credential.clone(),
             None => {
@@ -733,6 +855,8 @@ where
             perform_scram_auth(socket, username, keys, &payload).await
         }
         StoredCredential::Md5 { password_hash } => {
+            // MD5 remains available only to historical non-Raft deployments.
+            // The replicated identity representation cannot encode this form.
             perform_md5_auth(socket, username, password_hash).await
         }
     }
@@ -930,7 +1054,7 @@ where
 
     // A newly elected leader may have the committed schema/data in its Raft
     // log before its local state machine has applied it. Commit a current-term
-    // barrier before the binder reads catalog state for persistent mutations.
+    // barrier before the binder reads catalog state for table mutations.
     if is_persistent_table_mutation_sql(sql) {
         if let Some(gateway) = replicated_sql_gateway() {
             if let Err(error) = gateway.prepare_mutation().await {
@@ -1172,33 +1296,34 @@ where
             }
         }
         BoundPlan::CreateUser { username, password } => {
-            // User/auth replication is intentionally a later mutation class.
-            let new_record = create_scram_user(&username, &password);
-            {
-                let mut reg = registry.write().await;
-                reg.add_user(new_record);
-                if let Err(e) = reg.save_to_file(users_file) {
-                    write_error_and_ready(
-                        socket,
-                        &format!("failed to persist user registry: {e}"),
-                        "58030",
-                    )
-                    .await?;
+            if let Some(gateway) = replicated_sql_gateway() {
+                if !prepare_replicated_identity_mutation(
+                    socket,
+                    &gateway,
+                    storage_engine,
+                    users_file,
+                )
+                .await?
+                {
                     return Ok(());
                 }
-            }
-            socket
-                .write_all(&build_command_complete("CREATE USER"))
-                .await?;
-        }
-        BoundPlan::AlterUser {
-            username,
-            new_password,
-        } => {
-            let updated = create_scram_user(&username, &new_password);
-            let updated_ok = {
-                let mut reg = registry.write().await;
-                if reg.update_user(updated) {
+                let initialize_if_empty = allow_empty_identity_bootstrap(users_file);
+                match gateway
+                    .create_user(&username, &password, initialize_if_empty)
+                    .await
+                {
+                    Ok(_) => {
+                        socket
+                            .write_all(&build_command_complete("CREATE USER"))
+                            .await?
+                    }
+                    Err(error) => write_replicated_error(socket, &error).await?,
+                }
+            } else {
+                let new_record = create_scram_user(&username, &password);
+                {
+                    let mut reg = registry.write().await;
+                    reg.add_user(new_record);
                     if let Err(e) = reg.save_to_file(users_file) {
                         write_error_and_ready(
                             socket,
@@ -1208,47 +1333,112 @@ where
                         .await?;
                         return Ok(());
                     }
-                    true
-                } else {
-                    false
                 }
-            };
-            if updated_ok {
                 socket
-                    .write_all(&build_command_complete("ALTER USER"))
+                    .write_all(&build_command_complete("CREATE USER"))
                     .await?;
+            }
+        }
+        BoundPlan::AlterUser {
+            username,
+            new_password,
+        } => {
+            if let Some(gateway) = replicated_sql_gateway() {
+                if !prepare_replicated_identity_mutation(
+                    socket,
+                    &gateway,
+                    storage_engine,
+                    users_file,
+                )
+                .await?
+                {
+                    return Ok(());
+                }
+                match gateway.alter_user(&username, &new_password).await {
+                    Ok(_) => {
+                        socket
+                            .write_all(&build_command_complete("ALTER USER"))
+                            .await?
+                    }
+                    Err(error) => write_replicated_error(socket, &error).await?,
+                }
             } else {
-                write_error_and_ready(socket, &format!("user not found: {username}"), "42704")
-                    .await?;
+                let updated = create_scram_user(&username, &new_password);
+                let updated_ok = {
+                    let mut reg = registry.write().await;
+                    if reg.update_user(updated) {
+                        if let Err(e) = reg.save_to_file(users_file) {
+                            write_error_and_ready(
+                                socket,
+                                &format!("failed to persist user registry: {e}"),
+                                "58030",
+                            )
+                            .await?;
+                            return Ok(());
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if updated_ok {
+                    socket
+                        .write_all(&build_command_complete("ALTER USER"))
+                        .await?;
+                } else {
+                    write_error_and_ready(socket, &format!("user not found: {username}"), "42704")
+                        .await?;
+                }
             }
         }
         BoundPlan::DropUser {
             username,
             if_exists,
         } => {
-            let removed = {
-                let mut reg = registry.write().await;
-                let removed = reg.remove_user(&username);
-                if removed || if_exists {
-                    if let Err(e) = reg.save_to_file(users_file) {
-                        write_error_and_ready(
-                            socket,
-                            &format!("failed to persist user registry: {e}"),
-                            "58030",
-                        )
-                        .await?;
-                        return Ok(());
-                    }
+            if let Some(gateway) = replicated_sql_gateway() {
+                if !prepare_replicated_identity_mutation(
+                    socket,
+                    &gateway,
+                    storage_engine,
+                    users_file,
+                )
+                .await?
+                {
+                    return Ok(());
                 }
-                removed
-            };
-            if !removed && !if_exists {
-                write_error_and_ready(socket, &format!("user not found: {username}"), "42704")
-                    .await?;
+                match gateway.drop_user(&username, if_exists).await {
+                    Ok(_) => {
+                        socket
+                            .write_all(&build_command_complete("DROP USER"))
+                            .await?
+                    }
+                    Err(error) => write_replicated_error(socket, &error).await?,
+                }
             } else {
-                socket
-                    .write_all(&build_command_complete("DROP USER"))
-                    .await?;
+                let removed = {
+                    let mut reg = registry.write().await;
+                    let removed = reg.remove_user(&username);
+                    if removed || if_exists {
+                        if let Err(e) = reg.save_to_file(users_file) {
+                            write_error_and_ready(
+                                socket,
+                                &format!("failed to persist user registry: {e}"),
+                                "58030",
+                            )
+                            .await?;
+                            return Ok(());
+                        }
+                    }
+                    removed
+                };
+                if !removed && !if_exists {
+                    write_error_and_ready(socket, &format!("user not found: {username}"), "42704")
+                        .await?;
+                } else {
+                    socket
+                        .write_all(&build_command_complete("DROP USER"))
+                        .await?;
+                }
             }
         }
         BoundPlan::Explain { query, analyze } => {
@@ -1280,6 +1470,43 @@ where
     Ok(())
 }
 
+async fn prepare_replicated_identity_mutation<S>(
+    socket: &mut S,
+    gateway: &ReplicatedSqlGateway,
+    storage_engine: Option<&Arc<StorageEngine>>,
+    users_file: &str,
+) -> std::io::Result<bool>
+where
+    S: AsyncWrite + Unpin,
+{
+    let Some(engine) = storage_engine else {
+        write_error_and_ready(
+            socket,
+            "replicated identity storage is unavailable",
+            "55000",
+        )
+        .await?;
+        return Ok(false);
+    };
+
+    match migrate_legacy_identity_if_configured(gateway, engine, users_file).await {
+        Ok(_) => Ok(true),
+        Err(ReplicatedIdentityRuntimeError::Gateway(error)) => {
+            write_replicated_error(socket, &error).await?;
+            Ok(false)
+        }
+        Err(error) => {
+            write_error_and_ready(
+                socket,
+                &format!("replicated identity migration failed: {error}"),
+                "58030",
+            )
+            .await?;
+            Ok(false)
+        }
+    }
+}
+
 async fn write_replicated_error<S>(
     socket: &mut S,
     error: &ReplicatedGatewayError,
@@ -1295,10 +1522,23 @@ where
             };
             write_error_and_ready(socket, &message, "25006").await
         }
+        ReplicatedGatewayError::CatchingUp => {
+            write_error_and_ready(socket, &error.to_string(), "57P03").await
+        }
+        ReplicatedGatewayError::UserAlreadyExists(_) => {
+            write_error_and_ready(socket, &error.to_string(), "42710").await
+        }
+        ReplicatedGatewayError::UserNotFound(_) => {
+            write_error_and_ready(socket, &error.to_string(), "42704").await
+        }
+        ReplicatedGatewayError::IdentityNotInitialized
+        | ReplicatedGatewayError::IdentityInitializationConflict => {
+            write_error_and_ready(socket, &error.to_string(), "55000").await
+        }
         _ => {
             write_error_and_ready(
                 socket,
-                &format!("replicated SQL mutation failed: {error}"),
+                &format!("replicated mutation failed: {error}"),
                 "58030",
             )
             .await

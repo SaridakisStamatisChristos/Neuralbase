@@ -1,5 +1,8 @@
-{{- if and (eq (toString .Values.config.authRequired) "true") (not .Values.auth.existingSecret) -}}
-{{- fail "config.authRequired=true requires auth.existingSecret containing users.json" -}}
+{{- if ne (not (empty .Values.auth.existingSecret)) (not (empty .Values.auth.migrationSha256)) -}}
+{{- fail "auth.existingSecret and auth.migrationSha256 must be supplied together for legacy identity migration" -}}
+{{- end -}}
+{{- if and .Values.auth.migrationSha256 (not (regexMatch "^[0-9A-Fa-f]{64}$" (toString .Values.auth.migrationSha256))) -}}
+{{- fail "auth.migrationSha256 must be exactly 64 hexadecimal characters" -}}
 {{- end -}}
 {{- if and .Values.tls.enabled (not .Values.tls.existingSecret) -}}
 {{- fail "tls.enabled=true requires tls.existingSecret containing server.crt and server.key" -}}
@@ -29,26 +32,6 @@ spec:
       {{- end }}
     spec:
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
-      {{- if .Values.auth.existingSecret }}
-      initContainers:
-        - name: seed-users
-          image: busybox:1.36.1
-          command:
-            - /bin/sh
-            - -c
-            - |
-              set -eu
-              if [ ! -f /data/users.json ] && [ -f /users-seed/users.json ]; then
-                cp /users-seed/users.json /data/users.json
-                chmod 600 /data/users.json
-              fi
-          volumeMounts:
-            - name: data
-              mountPath: /data
-            - name: users-seed
-              mountPath: /users-seed
-              readOnly: true
-      {{- end }}
       containers:
         - name: neuralbase
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -75,7 +58,11 @@ spec:
             - name: NEURALBASE_PEERS
               value: {{ include "neuralbase.raftPeers" . | quote }}
             - name: NEURALBASE_USERS_FILE
-              value: {{ printf "%s/users.json" .Values.config.dbPath | quote }}
+              value: "/identity-migration/users.json"
+            {{- if .Values.auth.migrationSha256 }}
+            - name: NEURALBASE_IDENTITY_MIGRATION_SHA256
+              value: {{ .Values.auth.migrationSha256 | quote }}
+            {{- end }}
             {{- if .Values.tls.enabled }}
             - name: TLS_ENABLED
               value: "1"
@@ -87,6 +74,11 @@ spec:
           volumeMounts:
             - name: data
               mountPath: {{ .Values.config.dbPath }}
+            {{- if .Values.auth.existingSecret }}
+            - name: identity-migration
+              mountPath: /identity-migration
+              readOnly: true
+            {{- end }}
             {{- if .Values.tls.enabled }}
             - name: tls-certs
               mountPath: /tls
@@ -126,9 +118,12 @@ spec:
             secretName: {{ .Values.tls.existingSecret }}
         {{- end }}
         {{- if .Values.auth.existingSecret }}
-        - name: users-seed
+        - name: identity-migration
           secret:
             secretName: {{ .Values.auth.existingSecret }}
+            items:
+              - key: users.json
+                path: users.json
         {{- end }}
       {{- end }}
   volumeClaimTemplates:

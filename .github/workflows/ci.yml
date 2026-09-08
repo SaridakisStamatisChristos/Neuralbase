@@ -123,12 +123,25 @@ jobs:
       - name: Render default Helm chart
         run: helm template neuralbase helm/neuralbase > /tmp/neuralbase-rendered.yaml
 
-      - name: Render authenticated Helm chart
+      - name: Render auth-required existing-identity chart
+        run: >-
+          helm template neuralbase helm/neuralbase
+          --set config.authRequired=true
+          > /tmp/neuralbase-auth-rendered.yaml
+
+      - name: Render legacy identity migration chart
         run: >-
           helm template neuralbase helm/neuralbase
           --set config.authRequired=true
           --set auth.existingSecret=neuralbase-users
-          > /tmp/neuralbase-auth-rendered.yaml
+          --set-string auth.migrationSha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          > /tmp/neuralbase-identity-migration-rendered.yaml
+
+      - name: Reject incomplete legacy identity migration config
+        run: >-
+          ! helm template neuralbase helm/neuralbase
+          --set auth.existingSecret=neuralbase-users
+          > /tmp/neuralbase-invalid-identity-rendered.yaml 2>&1
 
       - name: Render TLS Helm chart
         run: >-
@@ -137,5 +150,5 @@ jobs:
           --set tls.existingSecret=neuralbase-tls
           > /tmp/neuralbase-tls-rendered.yaml
 
-      - name: Reject unsafe fixed-membership HPA manifest
+      - name: Reject unsafe HPA manifest
         run: test ! -e k8s/hpa.yaml

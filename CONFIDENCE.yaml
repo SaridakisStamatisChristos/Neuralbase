@@ -1,13 +1,12 @@
-version: 2
-updated: 2026-09-07
+version: 3
+updated: 2026-09-08
 
 system:
-  scope: local_sql_engine_plus_fixed_membership_replicated_table_mutations_and_sql_snapshot_recovery
+  scope: local_sql_engine_plus_replicated_tables_snapshots_membership_and_identity
   effective_confidence: 0.78
   production_ready: false
   distributed_sql_replication: true
   replication_scope:
-    fixed_membership: true
     table_ddl:
       - create_table
       - drop_table
@@ -17,19 +16,23 @@ system:
       - delete
     follower_writes: reject
     follower_reads_linearizable: false
-    auth_replication: false
-    dynamic_membership: false
     sql_snapshots: true
     fixed_member_empty_storage_bootstrap: true
+    dynamic_membership: true
+    learner_promotion: true
+    joint_consensus: true
+    auth_replication: true
+    replicated_auth_method: scram-sha-256
+    automatic_membership_reconciliation: false
+    hpa_safe: false
     production_ha: false
   summary: >-
-    Confidence covers the tested local SQL/MVCC engine, fixed-membership replicated
-    persistent-table mutations, and SQL-aware snapshot recovery for a known fixed
-    member reconstructed from empty local storage plus the remaining Raft suffix.
-    Clustered write success still waits for Raft quorum commit and confirmed durable
-    local state-machine apply. This does not imply production HA, linearizable
-    follower reads, replicated authentication state, dynamic membership, automatic
-    node replacement, backup/restore, or disaster recovery.
+    Confidence covers the tested local SQL/MVCC engine, replicated persistent-table
+    mutations, SQL-aware snapshot/recovery, coordinated learner/joint-consensus
+    membership changes, and replicated SCRAM identity. Replicated mutation success
+    waits for Raft quorum commit and confirmed durable local state-machine apply.
+    This does not imply production HA, linearizable follower reads, automatic
+    Kubernetes membership reconciliation, backup/restore, PITR, or disaster recovery.
 
 artifacts:
   - artifact: wire_protocol_v3
@@ -67,9 +70,9 @@ artifacts:
       - tests/tpch_correctness.rs
       - tests/session14_advanced_sql.rs
     note: >-
-      All checked-in TPC-H Q1-Q22 SQL strings have PostgreSQL-16 row-for-row
-      reference comparisons on the deterministic small test dataset. This is
-      correctness evidence, not a production-scale performance result.
+      Checked-in TPC-H Q1-Q22 SQL strings have PostgreSQL-16 row-for-row reference
+      comparisons on the deterministic small test dataset. This is correctness
+      evidence, not production-scale performance evidence.
 
   - artifact: storage_engine
     effective: 0.78
@@ -79,6 +82,7 @@ artifacts:
       - tests/dml_correctness.rs
       - tests/replicated_sql_process.rs
       - tests/replicated_sql_snapshot_bootstrap.rs
+      - tests/phase4_identity_recovery.rs
 
   - artifact: mvcc_txn_manager
     effective: 0.76
@@ -94,31 +98,37 @@ artifacts:
       - tests/mvcc_correctness.rs
 
   - artifact: authentication
-    effective: 0.72
-    status: local_node_persistence
+    effective: 0.76
+    status: clustered_replicated_scram_identity_tested
     evidence:
       - src/auth.rs
       - src/server.rs
+      - src/replicated_identity.rs
+      - src/replicated_identity_store.rs
+      - src/replicated_identity_runtime.rs
       - tests/auth_correctness.rs
+      - tests/phase4_identity.rs
+      - tests/phase4_identity_process.rs
     limitation: >-
-      CREATE/ALTER/DROP USER remains per-node. Authentication state is not part
-      of the replicated table-mutation or SQL-snapshot consistency model.
+      Clustered authority is replicated SCRAM identity. Plaintext passwords are
+      materialized into SCRAM verifier data before Raft proposal. PostgreSQL MD5
+      verifier material is excluded from replication/migration. Standalone mode
+      retains the historical local registry, and authorization remains limited.
 
   - artifact: raft_consensus
-    effective: 0.76
-    status: fixed_membership_replicated_sql_and_snapshot_path_tested
+    effective: 0.78
+    status: snapshot_and_membership_lifecycle_tested
     evidence:
       - tests/raft_correctness.rs
       - tests/adversarial_raft.rs
       - tests/raft_client_ack.rs
       - tests/raft_persistence_fail_closed.rs
-      - tests/replicated_sql_raft.rs
-      - tests/replicated_sql_snapshot_bootstrap.rs
-      - tests/replicated_sql_snapshot_cycles.rs
+      - tests/phase3_membership.rs
+      - tests/phase4_identity_membership.rs
     limitation: >-
-      No TLA+ proof or coordinated operator-safe dynamic membership workflow.
-      SQL-aware snapshot install is tested for fixed-member recovery; legacy opaque
-      snapshots remain rejected when no SQL snapshot store is attached.
+      No TLA+ proof or automatic deployment/operator reconciliation. Membership
+      changes are exercised through explicit learner, joint-consensus and removal
+      operations; arbitrary HPA replica changes remain unsafe.
 
   - artifact: raft_persistence
     effective: 0.76
@@ -128,11 +138,7 @@ artifacts:
       - src/consensus/raft.rs
       - tests/raft_persistence_fail_closed.rs
       - tests/replicated_sql_snapshot_bootstrap.rs
-    note: >-
-      Term, vote, log, active snapshot metadata/bytes, and staged snapshot
-      transitions are persisted through RocksDB. Snapshot creation is durably staged
-      before log truncation; interrupted follower installation is recoverable on
-      restart. Required persistence failures fail-stop the Raft node.
+      - tests/phase3_membership.rs
 
   - artifact: raft_tcp_transport
     effective: 0.74
@@ -141,12 +147,11 @@ artifacts:
       - tests/raft_tcp_transport.rs
       - src/consensus/transport.rs
       - tests/replicated_sql_process.rs
-    note: >-
-      Logical Raft node IDs are mapped separately to connectable peer addresses.
+      - tests/phase4_identity_process.rs
 
   - artifact: sql_replication
     effective: 0.76
-    status: fixed_membership_table_mutations_and_snapshot_recovery_tested
+    status: replicated_table_and_snapshot_path_tested
     criticality: release_boundary
     evidence:
       - src/replicated_sql.rs
@@ -162,12 +167,42 @@ artifacts:
       - tests/replicated_sql_snapshot_bootstrap.rs
       - tests/replicated_sql_snapshot_cycles.rs
     limitation: >-
-      Scope is persistent table CREATE/DROP/INSERT/UPDATE/DELETE plus SQL-aware
-      snapshot/compaction and empty-storage recovery of an already-configured fixed
-      logical member. Followers reject writes; reads remain local and may be stale;
-      auth/users are not replicated; new-ID membership changes, automatic node
-      replacement, backup/restore, disaster recovery, and production HA are not
-      implemented.
+      Persistent table CREATE/DROP/INSERT/UPDATE/DELETE and SQL-aware snapshot
+      recovery are tested. Reads remain local and may be stale; backup/restore,
+      disaster recovery and production HA are not implemented.
+
+  - artifact: membership_changes
+    effective: 0.74
+    status: learner_joint_consensus_lifecycle_tested
+    evidence:
+      - src/consensus/membership.rs
+      - src/consensus/raft.rs
+      - tests/phase3_membership.rs
+      - tests/phase4_identity_membership.rs
+    limitation: >-
+      Consensus membership operations exist and are tested, but checked-in
+      deployment manifests do not automatically orchestrate replica changes.
+
+  - artifact: replicated_identity
+    effective: 0.76
+    status: scram_verifier_replication_and_migration_tested
+    criticality: release_boundary
+    evidence:
+      - src/replicated_identity.rs
+      - src/replicated_identity_store.rs
+      - src/replicated_identity_migration.rs
+      - src/replicated_identity_runtime.rs
+      - src/replicated_state_machine.rs
+      - src/replicated_snapshot_manager.rs
+      - tests/phase4_identity.rs
+      - tests/phase4_identity_recovery.rs
+      - tests/phase4_identity_snapshot_bootstrap.rs
+      - tests/phase4_identity_membership.rs
+      - tests/phase4_identity_process.rs
+    limitation: >-
+      Replicated credentials are SCRAM verifier material only. Legacy migration is
+      explicit and digest-selected; malformed/duplicate/MD5 registries fail closed.
+      This is identity consistency evidence, not a complete authorization system.
 
   - artifact: deployment_manifests
     effective: 0.70
@@ -177,20 +212,20 @@ artifacts:
       - k8s/deployment.yaml
       - helm/neuralbase
     limitation: >-
-      Fixed membership only. Automatic horizontal scaling is intentionally not
-      enabled because membership changes must be coordinated with Raft.
+      The manifests deploy a static topology. Consensus membership changes exist,
+      but automatic StatefulSet/HPA reconciliation is not implemented.
 
 verification_policy:
   - No performance claim without a reproducible benchmark and workload context.
   - distributed_sql_replication means only the machine-readable replication_scope above.
-  - sql_snapshots means only the tested SQL-aware fixed-member snapshot/bootstrap path.
-  - distributed_sql_replication must not be interpreted as production_ready or production HA.
+  - production_ready and production_ha remain false despite membership and identity progress.
   - Keep SQL correctness claims synchronized with executable PostgreSQL reference tests.
-  - Keep deployment examples fixed-membership until safe membership orchestration exists.
+  - Keep deployment examples free of automatic HPA scaling until membership reconciliation is implemented.
+  - Replicated identity claims require verifier-only log material and explicit legacy migration semantics.
   - A release head must pass tests, lint, confidence checks, adversarial tests, TPC-H reference validation, and Helm rendering.
 
 next_high_value_work:
-  - Add coordinated Raft membership changes only after preserving the tested snapshot/bootstrap safety boundary.
-  - Replicate authentication/user mutations or document a separate strongly consistent identity design.
   - Add operator-facing backup/restore and disaster-recovery workflows using verified snapshot machinery where appropriate.
   - Add stronger read-consistency modes and deeper PostgreSQL compatibility without weakening lifecycle safety.
+  - Build automatic deployment membership reconciliation on top of the tested learner/joint-consensus protocol.
+  - Expand authorization/security hardening beyond identity consistency.
