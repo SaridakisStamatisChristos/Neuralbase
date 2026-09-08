@@ -457,10 +457,15 @@ async fn s13_removenode_membership_change_3node() {
         }
     }
 
+    let remove_idx = (0..ids.len())
+        .find(|&i| i != leader_idx)
+        .expect("3-node cluster must have a non-leader voter");
+    let remove_id = ids[remove_idx].to_string();
+
     let (reply_tx, reply_rx) = oneshot::channel::<Result<u64, String>>();
     cmd_txs[leader_idx]
         .send(ClientCommand {
-            payload: encode_membership_change(&MembershipChange::RemoveNode("ms_r2".to_string())),
+            payload: encode_membership_change(&MembershipChange::RemoveNode(remove_id.clone())),
             reply: reply_tx,
         })
         .await
@@ -472,7 +477,7 @@ async fn s13_removenode_membership_change_3node() {
         .expect("reply channel not dropped");
     assert!(
         result.is_ok(),
-        "RemoveNode must be accepted by leader: {result:?}"
+        "RemoveNode for non-leader voter {remove_id} must be accepted by leader: {result:?}"
     );
 }
 
