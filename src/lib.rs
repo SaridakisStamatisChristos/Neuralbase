@@ -19,6 +19,7 @@ pub mod raft_persistence;
 pub mod replicated_gateway;
 pub mod replicated_identity;
 pub mod replicated_identity_migration;
+pub mod replicated_identity_runtime;
 pub mod replicated_identity_snapshot;
 pub mod replicated_identity_store;
 pub mod replicated_snapshot;
