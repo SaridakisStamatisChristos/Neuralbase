@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Deterministic RocksDB-backed state machine for committed replicated SQL.
+//! Deterministic RocksDB-backed state machine for committed replicated SQL and identity.
 //!
 //! A committed Raft entry advances one durable apply cursor even when the entry
-//! is a Raft control command rather than SQL. SQL mutations are decoded into
-//! deterministic concrete effects; non-SQL entries only advance the apply
-//! marker. This matters for Phase-3 membership snapshots: a snapshot boundary
-//! immediately after a membership transition must not be blocked by a stale SQL
-//! apply cursor.
+//! is a Raft control command rather than SQL. SQL and identity mutations are
+//! decoded into deterministic concrete effects; non-state-machine entries only
+//! advance the apply marker. Identity state and the apply cursor are written in
+//! one RocksDB WriteBatch so crash/replay follows the same durable boundary as
+//! replicated SQL.
 
 use std::sync::Arc;
 
@@ -16,6 +16,13 @@ use thiserror::Error;
 use crate::catalog::{InMemoryCatalog, MutableCatalog};
 use crate::consensus::rpc::LogEntry;
 use crate::hlc::{HlcClock, HlcTimestamp};
+use crate::replicated_identity::{
+    is_replicated_identity_mutation, IdentityCodecError, ReplicatedIdentityMutation,
+    ReplicatedIdentityUser,
+};
+use crate::replicated_identity_store::{
+    IdentityStateError, ReplicatedIdentityState, REPLICATED_IDENTITY_STATE_KEY,
+};
 use crate::replicated_sql::{
     is_replicated_mutation, MutationCodecError, ReplicatedMutation, ReplicatedRowWrite,
 };
@@ -79,6 +86,14 @@ pub enum ReplicatedApplyOutcome {
 pub enum ReplicatedSqlApplyError {
     #[error("invalid replicated mutation: {0}")]
     Codec(#[from] MutationCodecError),
+    #[error("invalid replicated identity mutation: {0}")]
+    IdentityCodec(#[from] IdentityCodecError),
+    #[error("invalid replicated identity state: {0}")]
+    IdentityState(#[from] IdentityStateError),
+    #[error("replicated identity mutation requires initialized authoritative identity state")]
+    IdentityNotInitialized,
+    #[error("replicated identity initialization conflicts with existing authoritative identity state")]
+    ConflictingIdentityInitialization,
     #[error("storage failure while applying replicated SQL: {0}")]
     Storage(#[from] StorageError),
     #[error("rocksdb failure while reading replicated apply state: {0}")]
@@ -135,12 +150,16 @@ impl ReplicatedSqlStateMachine {
         if entry.index <= previous.last_applied_index {
             return Ok(ReplicatedApplyOutcome::AlreadyApplied { index: entry.index });
         }
+        if is_replicated_identity_mutation(&entry.command) {
+            let mutation = ReplicatedIdentityMutation::decode(&entry.command)?;
+            return self.apply_identity(entry.index, mutation, previous);
+        }
         if !is_replicated_mutation(&entry.command) {
             self.advance_control_apply(entry.index, previous)?;
             return Ok(ReplicatedApplyOutcome::IgnoredNonSql);
         }
         let mutation = ReplicatedMutation::decode(&entry.command)?;
-        self.apply(entry.index, mutation, previous)
+        self.apply_sql(entry.index, mutation, previous)
     }
 
     pub fn durable_state(&self) -> Result<ReplicatedApplyState, ReplicatedSqlApplyError> {
@@ -171,7 +190,85 @@ impl ReplicatedSqlStateMachine {
         Ok(())
     }
 
-    fn apply(
+    fn apply_identity(
+        &self,
+        raft_index: u64,
+        mutation: ReplicatedIdentityMutation,
+        previous: ReplicatedApplyState,
+    ) -> Result<ReplicatedApplyOutcome, ReplicatedSqlApplyError> {
+        let state = match &mutation {
+            ReplicatedIdentityMutation::Initialize { users } => {
+                let requested = ReplicatedIdentityState::new(users.clone())?;
+                match ReplicatedIdentityState::load(&self.engine)? {
+                    None => requested,
+                    Some(existing) if existing == requested => existing,
+                    Some(_) => {
+                        return Err(ReplicatedSqlApplyError::ConflictingIdentityInitialization)
+                    }
+                }
+            }
+            ReplicatedIdentityMutation::CreateUser {
+                username,
+                credential,
+            } => {
+                let mut state = ReplicatedIdentityState::load(&self.engine)?
+                    .ok_or(ReplicatedSqlApplyError::IdentityNotInitialized)?;
+                state.create_user(ReplicatedIdentityUser {
+                    username: username.clone(),
+                    credential: credential.clone(),
+                })?;
+                state
+            }
+            ReplicatedIdentityMutation::AlterUser {
+                username,
+                credential,
+            } => {
+                let mut state = ReplicatedIdentityState::load(&self.engine)?
+                    .ok_or(ReplicatedSqlApplyError::IdentityNotInitialized)?;
+                state.alter_user(ReplicatedIdentityUser {
+                    username: username.clone(),
+                    credential: credential.clone(),
+                })?;
+                state
+            }
+            ReplicatedIdentityMutation::DropUser {
+                username,
+                if_exists,
+            } => {
+                let mut state = ReplicatedIdentityState::load(&self.engine)?
+                    .ok_or(ReplicatedSqlApplyError::IdentityNotInitialized)?;
+                state.drop_user(username, *if_exists)?;
+                state
+            }
+        };
+
+        let encoded_state = state.encode()?;
+        let meta_cf = self
+            .engine
+            .db
+            .cf_handle(CF_META)
+            .expect("CF_META must exist after StorageEngine::open");
+        let mut batch = WriteBatch::default();
+        batch.put_cf(&meta_cf, REPLICATED_IDENTITY_STATE_KEY, encoded_state);
+        batch.put_cf(
+            &meta_cf,
+            APPLY_STATE_KEY,
+            ReplicatedApplyState {
+                last_applied_index: raft_index,
+                last_commit_ts: previous.last_commit_ts,
+            }
+            .encode(),
+        );
+        self.engine.write_batch(batch)?;
+
+        Ok(ReplicatedApplyOutcome::Applied {
+            index: raft_index,
+            command_tag: mutation.command_tag(),
+            affected_rows: None,
+        })
+    }
+
+    fn apply_sql(
         &self,
         raft_index: u64,
         mutation: ReplicatedMutation,
@@ -341,6 +438,7 @@ fn put_rows(
 mod tests {
     use super::*;
     use crate::catalog::{Catalog, ColumnDef, TableSchema};
+    use crate::replicated_identity::ReplicatedScramCredential;
     use crate::storage_executor::encode_row;
     use tempfile::TempDir;
 
@@ -369,6 +467,23 @@ mod tests {
             term: 1,
             index,
             command: mutation.encode().unwrap(),
+        }
+    }
+
+    fn identity_entry(index: u64, mutation: ReplicatedIdentityMutation) -> LogEntry {
+        LogEntry {
+            term: 1,
+            index,
+            command: mutation.encode().unwrap(),
+        }
+    }
+
+    fn identity_credential(seed: u8) -> ReplicatedScramCredential {
+        ReplicatedScramCredential {
+            salt: vec![seed; 16],
+            iterations: 4_096,
+            stored_key: [seed.wrapping_add(1); 32],
+            server_key: [seed.wrapping_add(2); 32],
         }
     }
 
@@ -401,6 +516,125 @@ mod tests {
             sm.apply_log_entry(&control).unwrap(),
             ReplicatedApplyOutcome::AlreadyApplied { index: 4 }
         );
+    }
+
+    #[test]
+    fn identity_apply_is_atomic_with_durable_cursor_and_replay_safe() {
+        let (sm, engine, _catalog, _clock, _dir) = setup();
+        sm.apply_log_entry(&identity_entry(
+            1,
+            ReplicatedIdentityMutation::Initialize { users: vec![] },
+        ))
+        .unwrap();
+
+        let create = identity_entry(
+            2,
+            ReplicatedIdentityMutation::CreateUser {
+                username: "alice".to_string(),
+                credential: identity_credential(1),
+            },
+        );
+        assert!(matches!(
+            sm.apply_log_entry(&create).unwrap(),
+            ReplicatedApplyOutcome::Applied {
+                index: 2,
+                command_tag: "CREATE USER",
+                ..
+            }
+        ));
+        let state = ReplicatedIdentityState::load(&engine).unwrap().unwrap();
+        assert!(state.contains_user("alice"));
+        assert_eq!(sm.durable_state().unwrap().last_applied_index, 2);
+        assert_eq!(sm.durable_state().unwrap().last_commit_ts, 0);
+
+        assert_eq!(
+            sm.apply_log_entry(&create).unwrap(),
+            ReplicatedApplyOutcome::AlreadyApplied { index: 2 }
+        );
+        assert_eq!(
+            ReplicatedIdentityState::load(&engine)
+                .unwrap()
+                .unwrap()
+                .users()
+                .len(),
+            1
+        );
+
+        sm.apply_log_entry(&identity_entry(
+            3,
+            ReplicatedIdentityMutation::AlterUser {
+                username: "alice".to_string(),
+                credential: identity_credential(9),
+            },
+        ))
+        .unwrap();
+        let altered = ReplicatedIdentityState::load(&engine)
+            .unwrap()
+            .unwrap()
+            .user_record("alice")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            altered.credential,
+            crate::auth::StoredCredential::ScramSha256(keys) if keys.stored_key == [10; 32]
+        ));
+
+        sm.apply_log_entry(&identity_entry(
+            4,
+            ReplicatedIdentityMutation::DropUser {
+                username: "alice".to_string(),
+                if_exists: false,
+            },
+        ))
+        .unwrap();
+        assert!(!ReplicatedIdentityState::load(&engine)
+            .unwrap()
+            .unwrap()
+            .contains_user("alice"));
+        assert_eq!(sm.durable_state().unwrap().last_applied_index, 4);
+    }
+
+    #[test]
+    fn identity_initialize_retry_is_idempotent_but_conflict_fails_closed() {
+        let (sm, engine, _catalog, _clock, _dir) = setup();
+        let users = vec![ReplicatedIdentityUser {
+            username: "alice".to_string(),
+            credential: identity_credential(1),
+        }];
+        sm.apply_log_entry(&identity_entry(
+            1,
+            ReplicatedIdentityMutation::Initialize {
+                users: users.clone(),
+            },
+        ))
+        .unwrap();
+        sm.apply_log_entry(&identity_entry(
+            2,
+            ReplicatedIdentityMutation::Initialize { users },
+        ))
+        .unwrap();
+        assert_eq!(sm.durable_state().unwrap().last_applied_index, 2);
+        assert!(ReplicatedIdentityState::load(&engine)
+            .unwrap()
+            .unwrap()
+            .contains_user("alice"));
+
+        let error = sm
+            .apply_log_entry(&identity_entry(
+                3,
+                ReplicatedIdentityMutation::Initialize {
+                    users: vec![ReplicatedIdentityUser {
+                        username: "bob".to_string(),
+                        credential: identity_credential(2),
+                    }],
+                },
+            ))
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            ReplicatedSqlApplyError::ConflictingIdentityInitialization
+        ));
+        assert_eq!(sm.durable_state().unwrap().last_applied_index, 2);
     }
 
     #[test]
