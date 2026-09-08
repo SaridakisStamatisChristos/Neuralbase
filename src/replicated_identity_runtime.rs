@@ -15,12 +15,11 @@ use thiserror::Error;
 use crate::auth::UserRecord;
 use crate::replicated_gateway::{ReplicatedGatewayError, ReplicatedSqlGateway};
 use crate::replicated_identity_migration::{
-    load_legacy_identity_candidate, verify_legacy_identity_digest, LegacyIdentityMigrationError,
+    authorize_legacy_identity_candidate, load_legacy_identity_candidate,
+    LegacyIdentityMigrationError, IDENTITY_MIGRATION_SHA256_ENV,
 };
 use crate::replicated_identity_store::{IdentityStateError, ReplicatedIdentityState};
 use crate::storage::StorageEngine;
-
-pub const IDENTITY_MIGRATION_SHA256_ENV: &str = "NEURALBASE_IDENTITY_MIGRATE_SHA256";
 
 #[derive(Debug, Error)]
 pub enum ReplicatedIdentityRuntimeError {
@@ -59,8 +58,8 @@ pub fn allow_empty_identity_bootstrap(users_file: &str) -> bool {
     !Path::new(users_file).exists()
 }
 
-/// If the operator configured `NEURALBASE_IDENTITY_MIGRATE_SHA256` and the
-/// replicated registry is still uninitialized, strictly load and verify the
+/// If the operator configured `NEURALBASE_IDENTITY_MIGRATION_SHA256` and the
+/// replicated registry is still uninitialized, strictly load and authorize the
 /// selected legacy registry and submit one idempotent initialization command.
 ///
 /// This is safe to call on every connection while migration is pending. Followers
@@ -74,12 +73,11 @@ pub async fn migrate_legacy_identity_if_configured(
     if replicated_identity_initialized(engine)? {
         return Ok(false);
     }
-    let Ok(expected_digest) = std::env::var(IDENTITY_MIGRATION_SHA256_ENV) else {
+    if std::env::var(IDENTITY_MIGRATION_SHA256_ENV).is_err() {
         return Ok(false);
-    };
+    }
 
-    let candidate = load_legacy_identity_candidate(users_file)?;
-    verify_legacy_identity_digest(&candidate, expected_digest.trim())?;
+    let candidate = authorize_legacy_identity_candidate(load_legacy_identity_candidate(users_file)?)?;
     gateway.initialize_identity(&candidate.records).await?;
     Ok(true)
 }
