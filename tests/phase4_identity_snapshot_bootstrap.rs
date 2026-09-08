@@ -25,7 +25,11 @@ use neuralbase::storage::StorageEngine;
 use tempfile::TempDir;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
-const IDS: [&str; 3] = ["identity-snapshot-a", "identity-snapshot-b", "identity-snapshot-c"];
+const IDS: [&str; 3] = [
+    "identity-snapshot-a",
+    "identity-snapshot-b",
+    "identity-snapshot-c",
+];
 const REPLACEMENT_ELECTION_TIMEOUT_MS: u64 = 250;
 
 struct SnapshotNode {
@@ -153,7 +157,10 @@ async fn wait_for_leader(nodes: &[SnapshotNode]) -> String {
                 return node.id.clone();
             }
         }
-        assert!(tokio::time::Instant::now() < deadline, "cluster did not elect a leader");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "cluster did not elect a leader"
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
@@ -166,7 +173,10 @@ async fn wait_for_specific_leader(nodes: &[SnapshotNode], expected: &str) {
                 return;
             }
         }
-        assert!(tokio::time::Instant::now() < deadline, "expected replacement never became leader");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "expected replacement never became leader"
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
@@ -174,7 +184,10 @@ async fn wait_for_specific_leader(nodes: &[SnapshotNode], expected: &str) {
 async fn wait_until_ready(node: &SnapshotNode) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
     while !node.readiness.load(Ordering::Acquire) {
-        assert!(tokio::time::Instant::now() < deadline, "replacement never became serving-ready");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "replacement never became serving-ready"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
@@ -183,12 +196,18 @@ async fn wait_for_identity(nodes: &[SnapshotNode], expected: &ReplicatedIdentity
     let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
     loop {
         let converged = nodes.iter().all(|node| {
-            ReplicatedIdentityState::load(&node.engine).unwrap().as_ref() == Some(expected)
+            ReplicatedIdentityState::load(&node.engine)
+                .unwrap()
+                .as_ref()
+                == Some(expected)
         });
         if converged {
             return;
         }
-        assert!(tokio::time::Instant::now() < deadline, "identity did not converge");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "identity did not converge"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }

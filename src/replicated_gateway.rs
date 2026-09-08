@@ -654,15 +654,8 @@ mod tests {
         let created = ReplicatedIdentityState::load(&engine).unwrap().unwrap();
         assert!(created.contains_user("alice"));
 
-        let before = created
-            .user_record("alice")
-            .unwrap()
-            .unwrap()
-            .credential;
-        gateway
-            .alter_user("alice", "secret-two")
-            .await
-            .unwrap();
+        let before = created.user_record("alice").unwrap().unwrap().credential;
+        gateway.alter_user("alice", "secret-two").await.unwrap();
         let after = ReplicatedIdentityState::load(&engine)
             .unwrap()
             .unwrap()

@@ -46,17 +46,9 @@ fn restart_preserves_identity_and_replay_before_apply_cursor_is_idempotent() {
         let engine = Arc::new(StorageEngine::open(dir.path()).unwrap());
         let catalog = Arc::new(InMemoryCatalog::default());
         let clock = Arc::new(HlcClock::new(500));
-        let sm = ReplicatedSqlStateMachine::new(
-            Arc::clone(&engine),
-            catalog,
-            clock,
-        )
-        .unwrap();
+        let sm = ReplicatedSqlStateMachine::new(Arc::clone(&engine), catalog, clock).unwrap();
 
-        let init = entry(
-            1,
-            ReplicatedIdentityMutation::Initialize { users: vec![] },
-        );
+        let init = entry(1, ReplicatedIdentityMutation::Initialize { users: vec![] });
         assert!(matches!(
             sm.apply_log_entry(&init).unwrap(),
             ReplicatedApplyOutcome::Applied { index: 1, .. }
@@ -74,12 +66,7 @@ fn restart_preserves_identity_and_replay_before_apply_cursor_is_idempotent() {
     let engine = Arc::new(StorageEngine::open(dir.path()).unwrap());
     let catalog = Arc::new(InMemoryCatalog::default());
     let clock = Arc::new(HlcClock::new(500));
-    let recovered = ReplicatedSqlStateMachine::new(
-        Arc::clone(&engine),
-        catalog,
-        clock,
-    )
-    .unwrap();
+    let recovered = ReplicatedSqlStateMachine::new(Arc::clone(&engine), catalog, clock).unwrap();
 
     let before = ReplicatedIdentityState::load(&engine).unwrap().unwrap();
     assert!(before.contains_user("alice"));
@@ -88,7 +75,10 @@ fn restart_preserves_identity_and_replay_before_apply_cursor_is_idempotent() {
         recovered.apply_log_entry(&create_entry).unwrap(),
         ReplicatedApplyOutcome::AlreadyApplied { index: 2 }
     );
-    assert_eq!(ReplicatedIdentityState::load(&engine).unwrap(), Some(before));
+    assert_eq!(
+        ReplicatedIdentityState::load(&engine).unwrap(),
+        Some(before)
+    );
 }
 
 #[test]
@@ -97,12 +87,7 @@ fn conflicting_reinitialization_fails_without_advancing_or_overwriting_identity(
     let engine = Arc::new(StorageEngine::open(dir.path()).unwrap());
     let catalog = Arc::new(InMemoryCatalog::default());
     let clock = Arc::new(HlcClock::new(500));
-    let sm = ReplicatedSqlStateMachine::new(
-        Arc::clone(&engine),
-        catalog,
-        clock,
-    )
-    .unwrap();
+    let sm = ReplicatedSqlStateMachine::new(Arc::clone(&engine), catalog, clock).unwrap();
 
     let original = ReplicatedIdentityMutation::Initialize {
         users: vec![ReplicatedIdentityUser {
@@ -121,5 +106,8 @@ fn conflicting_reinitialization_fails_without_advancing_or_overwriting_identity(
     };
     assert!(sm.apply_log_entry(&entry(2, conflicting)).is_err());
     assert_eq!(sm.durable_state().unwrap().last_applied_index, 1);
-    assert_eq!(ReplicatedIdentityState::load(&engine).unwrap(), Some(before));
+    assert_eq!(
+        ReplicatedIdentityState::load(&engine).unwrap(),
+        Some(before)
+    );
 }

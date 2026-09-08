@@ -176,7 +176,11 @@ fn wait_no_auth_ready(node: &mut NodeProcess) {
         if connect_no_auth(node.spec.sql_port).is_ok() {
             return;
         }
-        assert!(Instant::now() < deadline, "{} SQL port did not become ready", node.spec.id);
+        assert!(
+            Instant::now() < deadline,
+            "{} SQL port did not become ready",
+            node.spec.id
+        );
         thread::sleep(Duration::from_millis(30));
     }
 }
@@ -184,7 +188,11 @@ fn wait_no_auth_ready(node: &mut NodeProcess) {
 fn wait_auth_ready(node: &mut NodeProcess, user: &str, password: &str) {
     let deadline = Instant::now() + CONVERGENCE_TIMEOUT;
     loop {
-        assert!(node.is_running(), "{} exited before auth convergence", node.spec.id);
+        assert!(
+            node.is_running(),
+            "{} exited before auth convergence",
+            node.spec.id
+        );
         if connect_auth(node.spec.sql_port, user, password).is_ok() {
             return;
         }
@@ -200,7 +208,11 @@ fn wait_auth_ready(node: &mut NodeProcess, user: &str, password: &str) {
 fn wait_auth_rejected(node: &mut NodeProcess, user: &str, password: &str) {
     let deadline = Instant::now() + CONVERGENCE_TIMEOUT;
     loop {
-        assert!(node.is_running(), "{} exited before auth rejection converged", node.spec.id);
+        assert!(
+            node.is_running(),
+            "{} exited before auth rejection converged",
+            node.spec.id
+        );
         if connect_auth(node.spec.sql_port, user, password).is_err() {
             return;
         }
@@ -251,11 +263,7 @@ fn mutation_attempt(port: u16, auth: Option<(&str, &str)>, sql: &str) -> Mutatio
         .unwrap_or(MutationAttempt::TimedOut)
 }
 
-fn mutate_on_leader(
-    nodes: &mut [NodeProcess],
-    auth: Option<(&str, &str)>,
-    sql: &str,
-) -> usize {
+fn mutate_on_leader(nodes: &mut [NodeProcess], auth: Option<(&str, &str)>, sql: &str) -> usize {
     let deadline = Instant::now() + LEADER_TIMEOUT;
     loop {
         for (index, node) in nodes.iter_mut().enumerate() {
@@ -275,7 +283,10 @@ fn mutate_on_leader(
                 ),
             }
         }
-        assert!(Instant::now() < deadline, "no Raft leader accepted mutation: {sql}");
+        assert!(
+            Instant::now() < deadline,
+            "no Raft leader accepted mutation: {sql}"
+        );
         thread::sleep(Duration::from_millis(50));
     }
 }
@@ -345,11 +356,7 @@ fn process_identity_converges_across_auth_restart_rotation_failover_and_rejoin()
         wait_auth_ready(node, "bob", "bob-secret");
     }
 
-    mutate_on_leader(
-        &mut nodes,
-        Some(("bob", "bob-secret")),
-        "DROP USER alice",
-    );
+    mutate_on_leader(&mut nodes, Some(("bob", "bob-secret")), "DROP USER alice");
     for node in &mut nodes {
         wait_auth_rejected(node, "alice", "secret-two");
         wait_auth_ready(node, "bob", "bob-secret");

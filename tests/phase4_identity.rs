@@ -150,7 +150,9 @@ async fn wait_for_identity(
             if excluded == Some(index) || node.handle.is_none() {
                 continue;
             }
-            converged &= ReplicatedIdentityState::load(&node.engine).unwrap().as_ref()
+            converged &= ReplicatedIdentityState::load(&node.engine)
+                .unwrap()
+                .as_ref()
                 == Some(expected);
         }
         if converged {
@@ -171,7 +173,10 @@ async fn identity_converges_survives_leader_loss_and_rotates_on_new_leader() {
     let gateway = nodes[leader].gateway();
 
     gateway.initialize_identity(&[]).await.unwrap();
-    let create = gateway.create_user("alice", "before-failover", false).await.unwrap();
+    let create = gateway
+        .create_user("alice", "before-failover", false)
+        .await
+        .unwrap();
     assert_eq!(create.command_tag, "CREATE USER");
 
     let before = ReplicatedIdentityState::load(&nodes[leader].engine)

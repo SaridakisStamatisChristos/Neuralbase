@@ -201,13 +201,14 @@ impl ReplicatedSqlSnapshotManager {
             });
         }
 
-        let identity_extension = match db_snapshot.get_cf(&meta_cf, REPLICATED_IDENTITY_STATE_KEY)? {
-            Some(bytes) => ReplicatedIdentitySnapshotExtension::Initialized(
-                ReplicatedIdentityState::decode(&bytes)?,
-            ),
-            None => ReplicatedIdentitySnapshotExtension::Uninitialized,
-        }
-        .encode()?;
+        let identity_extension =
+            match db_snapshot.get_cf(&meta_cf, REPLICATED_IDENTITY_STATE_KEY)? {
+                Some(bytes) => ReplicatedIdentitySnapshotExtension::Initialized(
+                    ReplicatedIdentityState::decode(&bytes)?,
+                ),
+                None => ReplicatedIdentitySnapshotExtension::Uninitialized,
+            }
+            .encode()?;
 
         let schemas = read_catalog(&db_snapshot, &catalog_cf)?;
         let mut ids = HashMap::<u32, String>::with_capacity(schemas.len());
@@ -356,11 +357,7 @@ impl ReplicatedSqlSnapshotManager {
                 batch.delete_cf(&meta_cf, REPLICATED_IDENTITY_STATE_KEY);
             }
             ReplicatedIdentitySnapshotExtension::Initialized(identity) => {
-                batch.put_cf(
-                    &meta_cf,
-                    REPLICATED_IDENTITY_STATE_KEY,
-                    identity.encode()?,
-                );
+                batch.put_cf(&meta_cf, REPLICATED_IDENTITY_STATE_KEY, identity.encode()?);
             }
         }
 
@@ -681,7 +678,8 @@ mod tests {
     fn legacy_snapshot_without_identity_extension_clears_stale_identity() {
         let source_dir = TempDir::new().unwrap();
         let (source_engine, source_catalog, source_clock) = seed_source(&source_dir);
-        let manager = ReplicatedSqlSnapshotManager::new(source_engine, source_catalog, source_clock);
+        let manager =
+            ReplicatedSqlSnapshotManager::new(source_engine, source_catalog, source_clock);
         let mut snapshot = ReplicatedSqlSnapshot::decode(&manager.export(5, 2).unwrap()).unwrap();
         snapshot.metadata_extension.clear();
         let legacy_bytes = snapshot.encode().unwrap();
@@ -697,7 +695,8 @@ mod tests {
     fn malformed_identity_extension_fails_before_mutation() {
         let source_dir = TempDir::new().unwrap();
         let (source_engine, source_catalog, source_clock) = seed_source(&source_dir);
-        let manager = ReplicatedSqlSnapshotManager::new(source_engine, source_catalog, source_clock);
+        let manager =
+            ReplicatedSqlSnapshotManager::new(source_engine, source_catalog, source_clock);
         let mut snapshot = ReplicatedSqlSnapshot::decode(&manager.export(5, 2).unwrap()).unwrap();
         snapshot.metadata_extension = b"NBIX\x01\x01\0\0\0\x10bad".to_vec();
         let corrupt = snapshot.encode().unwrap();
@@ -715,7 +714,10 @@ mod tests {
             target_manager.restore(&corrupt),
             Err(SnapshotManagerError::IdentitySnapshot(_))
         ));
-        assert_eq!(ReplicatedIdentityState::load(&target_engine).unwrap(), Some(stale));
+        assert_eq!(
+            ReplicatedIdentityState::load(&target_engine).unwrap(),
+            Some(stale)
+        );
         assert!(catalog.get_table("sentinel").is_some());
         assert_eq!(clock.now(), before_clock);
     }

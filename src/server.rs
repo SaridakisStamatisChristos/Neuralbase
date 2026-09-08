@@ -749,9 +749,9 @@ where
                     tracing::info!(users_file, "legacy identity registry migrated through Raft");
                 }
             }
-            Err(ReplicatedIdentityRuntimeError::Gateway(
-                ReplicatedGatewayError::NotLeader { leader },
-            )) => {
+            Err(ReplicatedIdentityRuntimeError::Gateway(ReplicatedGatewayError::NotLeader {
+                leader,
+            })) => {
                 let message = match leader {
                     Some(leader) => format!(
                         "replicated identity migration is pending; connect once to leader {leader}"
@@ -759,7 +759,9 @@ where
                     None => "replicated identity migration is pending; Raft leader is unknown"
                         .to_string(),
                 };
-                let _ = socket.write_all(&build_error_response(&message, "57P03")).await;
+                let _ = socket
+                    .write_all(&build_error_response(&message, "57P03"))
+                    .await;
                 return Err(ProtocolError::InvalidLength(0));
             }
             Err(error) => {
@@ -794,7 +796,9 @@ where
                 let message = format!(
                     "cluster identity is not initialized; configure {IDENTITY_MIGRATION_SHA256_ENV} with the selected legacy users.json digest"
                 );
-                let _ = socket.write_all(&build_error_response(&message, "28000")).await;
+                let _ = socket
+                    .write_all(&build_error_response(&message, "28000"))
+                    .await;
                 return Err(ProtocolError::InvalidLength(0));
             }
             Err(error) => {
@@ -1382,12 +1386,8 @@ where
                         .write_all(&build_command_complete("ALTER USER"))
                         .await?;
                 } else {
-                    write_error_and_ready(
-                        socket,
-                        &format!("user not found: {username}"),
-                        "42704",
-                    )
-                    .await?;
+                    write_error_and_ready(socket, &format!("user not found: {username}"), "42704")
+                        .await?;
                 }
             }
         }
@@ -1432,12 +1432,8 @@ where
                     removed
                 };
                 if !removed && !if_exists {
-                    write_error_and_ready(
-                        socket,
-                        &format!("user not found: {username}"),
-                        "42704",
-                    )
-                    .await?;
+                    write_error_and_ready(socket, &format!("user not found: {username}"), "42704")
+                        .await?;
                 } else {
                     socket
                         .write_all(&build_command_complete("DROP USER"))

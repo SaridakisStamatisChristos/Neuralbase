@@ -92,7 +92,9 @@ pub enum ReplicatedSqlApplyError {
     IdentityState(#[from] IdentityStateError),
     #[error("replicated identity mutation requires initialized authoritative identity state")]
     IdentityNotInitialized,
-    #[error("replicated identity initialization conflicts with existing authoritative identity state")]
+    #[error(
+        "replicated identity initialization conflicts with existing authoritative identity state"
+    )]
     ConflictingIdentityInitialization,
     #[error("storage failure while applying replicated SQL: {0}")]
     Storage(#[from] StorageError),

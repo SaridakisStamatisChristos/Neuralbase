@@ -29,7 +29,11 @@ use tempfile::TempDir;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 const TIMEOUT: Duration = Duration::from_secs(8);
-const INITIAL: [&str; 3] = ["identity-member-a", "identity-member-b", "identity-member-c"];
+const INITIAL: [&str; 3] = [
+    "identity-member-a",
+    "identity-member-b",
+    "identity-member-c",
+];
 const LEARNER: &str = "identity-member-d";
 
 type Shared = Arc<Mutex<RaftShared>>;
@@ -154,7 +158,10 @@ async fn leader_index(nodes: &[MemberNode], voter_count: usize) -> usize {
                 return index;
             }
         }
-        assert!(tokio::time::Instant::now() < deadline, "cluster did not elect a leader");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "cluster did not elect a leader"
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
@@ -182,10 +189,18 @@ async fn compact_at(node: &MemberNode, index: u64) -> u64 {
 async fn wait_identity(node: &MemberNode, expected: &ReplicatedIdentityState) {
     let deadline = tokio::time::Instant::now() + TIMEOUT;
     loop {
-        if ReplicatedIdentityState::load(&node.engine).unwrap().as_ref() == Some(expected) {
+        if ReplicatedIdentityState::load(&node.engine)
+            .unwrap()
+            .as_ref()
+            == Some(expected)
+        {
             return;
         }
-        assert!(tokio::time::Instant::now() < deadline, "{} did not acquire identity", node.id);
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{} did not acquire identity",
+            node.id
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
@@ -199,7 +214,11 @@ where
         if predicate(&*node.shared.lock().await) {
             return;
         }
-        assert!(tokio::time::Instant::now() < deadline, "membership did not converge on {}", node.id);
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "membership did not converge on {}",
+            node.id
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
@@ -226,7 +245,10 @@ async fn learner_bootstrap_promotion_rotation_and_removal_preserve_identity() {
         wait_identity(node, &before).await;
     }
 
-    assert_eq!(compact_at(&nodes[leader], create.raft_index).await, create.raft_index);
+    assert_eq!(
+        compact_at(&nodes[leader], create.raft_index).await,
+        create.raft_index
+    );
 
     nodes.push(spawn_member(Arc::clone(&bus), LEARNER, true).await);
     let leader = leader_index(&nodes, 3).await;
@@ -237,7 +259,10 @@ async fn learner_bootstrap_promotion_rotation_and_removal_preserve_identity() {
     .await
     .unwrap();
 
-    wait_membership(&nodes[3], |state| state.membership.is_learner(&LEARNER.to_string())).await;
+    wait_membership(&nodes[3], |state| {
+        state.membership.is_learner(&LEARNER.to_string())
+    })
+    .await;
     wait_identity(&nodes[3], &before).await;
 
     let promotion_deadline = tokio::time::Instant::now() + TIMEOUT;
@@ -251,7 +276,10 @@ async fn learner_bootstrap_promotion_rotation_and_removal_preserve_identity() {
         {
             Ok(_) => break,
             Err(error) if error.contains("caught up") => {
-                assert!(tokio::time::Instant::now() < promotion_deadline, "learner never became promotable: {error}");
+                assert!(
+                    tokio::time::Instant::now() < promotion_deadline,
+                    "learner never became promotable: {error}"
+                );
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
             Err(error) => panic!("unexpected promotion failure: {error}"),
@@ -293,7 +321,11 @@ async fn learner_bootstrap_promotion_rotation_and_removal_preserve_identity() {
     .await
     .unwrap();
 
-    let three = ids_set(&["identity-member-a", "identity-member-b", "identity-member-c"]);
+    let three = ids_set(&[
+        "identity-member-a",
+        "identity-member-b",
+        "identity-member-c",
+    ]);
     for node in &nodes[..3] {
         wait_membership(node, |state| {
             !state.membership.is_joint()
