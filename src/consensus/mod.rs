@@ -4,27 +4,22 @@
 // Sub-modules:
 //   fail_closed — strict persistence adapter for consensus-critical storage
 //   log         — persistent log (PersistentState, RaftPersistenceStore)
+//   membership  — durable voter/learner/joint-consensus configuration
 //   raft        — state machine (RaftNode, RaftRole, RaftShared)
 //   rpc         — wire message types
 //   snapshot    — state-machine snapshot create/restore contract
 //   transport   — Transport trait + ChannelTransport + TcpTransport + optional TLS
 //
-// Session 13 additions:
-//   - InstallSnapshot RPC support (rpc.rs + raft.rs)
-//   - RaftPersistenceStore trait + MemPersistenceStore (log.rs)
-//   - Membership changes via tagged ClientCommand (raft.rs)
-//
-// Replicated-SQL additions:
+// Replicated-SQL / phased distributed-correctness additions:
 //   - confirmed state-machine apply acknowledgement
 //   - fail-closed persistence adapter for term/vote/log durability failures
 //   - explicit SQL-aware state-machine snapshot contract
 //   - resumable staged snapshot transitions across crashes
-//
-// CONFIDENCE: raw=0.78 effective=0.70
-// [HUMAN REVIEW REQUIRED] — see REVIEW_REQUIRED.md §Session13
+//   - Phase 3 versioned committed membership and joint-quorum primitives
 
 pub mod fail_closed;
 pub mod log;
+pub mod membership;
 pub mod raft;
 pub mod rpc;
 pub mod snapshot;
@@ -37,6 +32,8 @@ pub use fail_closed::FailClosedPersistenceStore;
 pub use log::{
     MemPersistenceStore, PersistentState, RaftPersistenceStore, StagedSnapshot, StagedSnapshotKind,
 };
+#[allow(unused_imports)]
+pub use membership::{ClusterMembership, JointConfig, MEMBERSHIP_FORMAT_VERSION};
 #[allow(unused_imports)]
 pub use raft::{
     encode_compact_log, encode_leader_transfer, encode_membership_change, ClientCommand,
