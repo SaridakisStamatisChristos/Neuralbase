@@ -14,11 +14,11 @@ use thiserror::Error;
 
 use crate::auth::UserRecord;
 use crate::replicated_gateway::{ReplicatedGatewayError, ReplicatedSqlGateway};
+pub use crate::replicated_identity_migration::IDENTITY_MIGRATION_SHA256_ENV;
 use crate::replicated_identity_migration::{
     authorize_legacy_identity_candidate, load_legacy_identity_candidate,
     LegacyIdentityMigrationError,
 };
-pub use crate::replicated_identity_migration::IDENTITY_MIGRATION_SHA256_ENV;
 use crate::replicated_identity_store::{IdentityStateError, ReplicatedIdentityState};
 use crate::storage::StorageEngine;
 
@@ -135,6 +135,8 @@ mod tests {
                 .username,
             "alice"
         );
-        assert!(replicated_user_record(&engine, "missing").unwrap().is_none());
+        assert!(replicated_user_record(&engine, "missing")
+            .unwrap()
+            .is_none());
     }
 }
