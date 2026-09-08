@@ -19,9 +19,7 @@ use crate::catalog::TableSchema;
 use crate::codec;
 use crate::consensus::{ClientCommand, RaftRole, RaftShared};
 use crate::hlc::{HlcClock, HlcTimestamp};
-use crate::replicated_identity::{
-    ReplicatedIdentityMutation, ReplicatedScramCredential,
-};
+use crate::replicated_identity::{ReplicatedIdentityMutation, ReplicatedScramCredential};
 use crate::replicated_identity_store::ReplicatedIdentityState;
 use crate::replicated_sql::{ReplicatedMutation, ReplicatedRowWrite};
 use crate::storage::StorageEngine;
@@ -671,7 +669,13 @@ mod tests {
             .unwrap()
             .unwrap()
             .credential;
-        assert_ne!(before, after);
+        match (before, after) {
+            (
+                crate::auth::StoredCredential::ScramSha256(before),
+                crate::auth::StoredCredential::ScramSha256(after),
+            ) => assert_ne!(before.stored_key, after.stored_key),
+            _ => panic!("replicated identity must use SCRAM credentials"),
+        }
 
         gateway.drop_user("alice", false).await.unwrap();
         assert!(!ReplicatedIdentityState::load(&engine)
