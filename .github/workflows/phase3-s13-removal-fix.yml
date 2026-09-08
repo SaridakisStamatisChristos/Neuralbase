@@ -17,49 +17,10 @@ jobs:
         with:
           ref: fix/phase3-s13-removal-test
       - name: Stabilize non-leader removal test
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('tests/raft_correctness.rs')
-          s = p.read_text()
-          old = '''    let (reply_tx, reply_rx) = oneshot::channel::<Result<u64, String>>();
-    cmd_txs[leader_idx]
-        .send(ClientCommand {
-            payload: encode_membership_change(&MembershipChange::RemoveNode("ms_r2".to_string())),
-            reply: reply_tx,
-        })
-'''
-          new = '''    let remove_idx = (0..ids.len())
-        .find(|&i| i != leader_idx)
-        .expect("3-node cluster must have a non-leader voter");
-    let remove_id = ids[remove_idx].to_string();
-
-    let (reply_tx, reply_rx) = oneshot::channel::<Result<u64, String>>();
-    cmd_txs[leader_idx]
-        .send(ClientCommand {
-            payload: encode_membership_change(&MembershipChange::RemoveNode(remove_id.clone())),
-            reply: reply_tx,
-        })
-'''
-          if old not in s:
-              raise SystemExit('expected S13 removal snippet not found')
-          s = s.replace(old, new, 1)
-          old_assert = '''    assert!(
-        result.is_ok(),
-        "RemoveNode must be accepted by leader: {result:?}"
-    );
-'''
-          new_assert = '''    assert!(
-        result.is_ok(),
-        "RemoveNode for non-leader voter {remove_id} must be accepted by leader: {result:?}"
-    );
-'''
-          if old_assert not in s:
-              raise SystemExit('expected S13 removal assertion not found')
-          s = s.replace(old_assert, new_assert, 1)
-          p.write_text(s)
-          PY
-          cargo fmt --all
+        run: >-
+          python3 -c 'from pathlib import Path; p=Path("tests/raft_correctness.rs"); s=p.read_text(); fn=s.index("async fn s13_removenode_membership_change_3node()"); reply="    let (reply_tx, reply_rx) = oneshot::channel::<Result<u64, String>>();\n"; pos=s.index(reply, fn); insertion="    let remove_idx = (0..ids.len())\n        .find(|&i| i != leader_idx)\n        .expect(\"3-node cluster must have a non-leader voter\");\n    let remove_id = ids[remove_idx].to_string();\n\n"; s=s[:pos]+insertion+s[pos:]; s=s.replace("MembershipChange::RemoveNode(\"ms_r2\".to_string())", "MembershipChange::RemoveNode(remove_id.clone())", 1); s=s.replace("RemoveNode must be accepted by leader: {result:?}", "RemoveNode for non-leader voter {remove_id} must be accepted by leader: {result:?}", 1); p.write_text(s)'
+      - name: Format
+        run: cargo fmt --all
       - name: Commit focused test fix
         run: |
           git config user.name "github-actions[bot]"
