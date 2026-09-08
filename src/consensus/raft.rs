@@ -1,37 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
-// Raft consensus state machine — Session 13: log compaction + membership changes + leader transfer.
-//
-// Implements the Raft algorithm (Ongaro & Ousterhout, 2014) as a tokio task.
-// Session 13 additions:
-//   - InstallSnapshot RPC (Raft §7): leader sends snapshot to laggard followers.
-//   - Node restart recovery: load persistent state on startup via RaftPersistenceStore.
-//   - Membership changes: single-step AddNode/RemoveNode via tagged ClientCommand.
-//   - WAL simulation: persist() called before RPC replies on every state mutation.
-//   - LeaderTransfer RPC (Raft §3.10): graceful leadership handoff.
-//   - Bounded apply_tx channel: backpressure prevents unbounded memory growth.
-//
-// Replicated-SQL additions:
-//   - Regular ClientCommand replies are deferred until quorum commit.
-//   - A confirmed state-machine channel can defer success until durable apply.
-//   - Single-node regular commands commit immediately (majority of one).
-//   - Pending uncommitted clients fail if leadership is lost.
-//   - Required stable-storage load/save failures fail-stop the Raft node.
-//   - SQL-aware snapshots are created only at an applied/committed boundary,
-//     durably staged before log truncation, and restored before install ACK.
-//   - Interrupted follower snapshot installs are resumed from staged metadata on
-//     restart, closing the SQL-restore/Raft-publication crash window.
-//   - Fresh durable members remain non-serving until a leader consistency
-//     exchange succeeds and their local apply point reaches the advertised commit.
-//
-// CONFIDENCE: raw=0.76 effective=0.68
-// DEPENDS_ON: log, rpc, snapshot, transport
-// RISK: Single-step membership changes are unsafe under certain network
-//       partitions (see Raft §6 for joint-consensus alternative).
-//       InstallSnapshot invariants MUST be human-reviewed before confidence cap
-//       is lifted — see REVIEW_REQUIRED.md §Session13.
-// [HUMAN REVIEW REQUIRED] — see REVIEW_REQUIRED.md §Session13
+//! Raft consensus state machine.
+//!
+//! Phase 3 replaces the historical process-local AddNode/RemoveNode behavior
+//! with committed versioned membership, non-voting learners, and Raft joint
+//! consensus. The newest membership entry in the local log is the *effective*
+//! configuration for elections/commit decisions even before that entry is
+//! committed, as required to avoid incompatible majority rules during a
+//! transition. The last committed configuration is additionally persisted in
+//! `PersistentState` so restart and compaction never fall back to environment
+//! peer counts.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,11 +18,13 @@ use std::time::Duration;
 use crate::consensus::log::{
     PersistentState, RaftPersistenceStore, StagedSnapshot, StagedSnapshotKind,
 };
+use crate::consensus::membership::ClusterMembership;
 use crate::consensus::rpc::{
     AppendEntriesArgs, AppendEntriesReply, InstallSnapshotArgs, InstallSnapshotReply, LogEntry,
     MembershipChange, NodeId, RaftMessage, RequestVoteArgs, RequestVoteReply,
 };
 use crate::consensus::snapshot::StateMachineSnapshotStore;
+use crate::consensus::snapshot_payload::{decode_snapshot_payload, encode_snapshot_payload};
 use crate::consensus::transport::Transport;
 use rand::Rng;
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -51,21 +32,10 @@ use tokio::time::{self, Instant};
 
 // ── Admin payload tags ─────────────────────────────────────────────────────
 
-/// First two bytes of a `ClientCommand::payload` that identify a membership-
-/// change request rather than a regular data command.
 pub const MEMBERSHIP_CHANGE_TAG: &[u8] = &[0xFC, 0xFD];
-
-/// First two bytes of a `ClientCommand::payload` that trigger log compaction
-/// at a given index.  Format: tag(2) + last_index(8 BE) + snapshot_data(*).
 pub const COMPACT_LOG_TAG: &[u8] = &[0xFE, 0xFD];
-
-/// First two bytes of a `ClientCommand::payload` that trigger a leadership
-/// transfer to a specific follower.  Format: tag(2) + target_id_json(*).
 pub const LEADER_TRANSFER_TAG: &[u8] = &[0xFA, 0xFD];
 
-// ── Admin payload helpers (public for tests) ───────────────────────────────
-
-/// Encode a membership-change request as a `ClientCommand::payload`.
 pub fn encode_membership_change(change: &MembershipChange) -> Vec<u8> {
     let mut v = MEMBERSHIP_CHANGE_TAG.to_vec();
     v.extend_from_slice(
@@ -74,11 +44,6 @@ pub fn encode_membership_change(change: &MembershipChange) -> Vec<u8> {
     v
 }
 
-/// Encode a compact-log (snapshot trigger) request as a `ClientCommand::payload`.
-/// `last_index`: highest Raft index to include in the snapshot.
-/// `data`:       opaque state-machine bytes for legacy/non-SQL callers. When a
-///               `StateMachineSnapshotStore` is attached, Raft ignores these
-///               bytes and asks the state machine to create the exact snapshot.
 pub fn encode_compact_log(last_index: u64, data: &[u8]) -> Vec<u8> {
     let mut v = COMPACT_LOG_TAG.to_vec();
     v.extend_from_slice(&last_index.to_be_bytes());
@@ -86,26 +51,16 @@ pub fn encode_compact_log(last_index: u64, data: &[u8]) -> Vec<u8> {
     v
 }
 
-/// Encode a leader-transfer request as a `ClientCommand::payload`.
 pub fn encode_leader_transfer(target: &str) -> Vec<u8> {
     let mut v = LEADER_TRANSFER_TAG.to_vec();
     v.extend_from_slice(target.as_bytes());
     v
 }
 
-// ── Constants ──────────────────────────────────────────────────────────────
-
 const HEARTBEAT_MS: u64 = 50;
-/// Default election timeout base (ms). Final timeout = base + rand(0..base).
 const ELECTION_TIMEOUT_BASE_MS: u64 = 150;
-
-/// Maximum capacity for the bounded apply channel.
 pub const APPLY_CHANNEL_CAPACITY: usize = 1024;
-
-/// Leadership transfer timeout (ms).
 const LEADER_TRANSFER_TIMEOUT_MS: u64 = 5_000;
-
-// ── RaftRole ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RaftRole {
@@ -114,41 +69,21 @@ pub enum RaftRole {
     Leader,
 }
 
-// ── LeaderState ────────────────────────────────────────────────────────────
-
-/// Volatile leader state. Present only when role == Leader.
 struct LeaderState {
-    /// For each peer: index of the next log entry to send.
     next_index: HashMap<NodeId, u64>,
-    /// For each peer: highest log entry known to be replicated.
     match_index: HashMap<NodeId, u64>,
 }
 
-// ── ClientCommand / committed state-machine handoff ────────────────────────
-
-/// A client command submitted to the leader for replication.
-///
-/// For regular data commands, `reply` is resolved only after the entry is
-/// quorum-committed and reaches the configured state-machine apply point. The
-/// historical Session-13 membership/compaction admin commands retain their
-/// legacy acknowledgement behavior until coordinated membership work is done.
 pub struct ClientCommand {
     pub payload: Vec<u8>,
     pub reply: oneshot::Sender<Result<u64, String>>,
 }
 
-/// A committed log entry requiring state-machine application.
-///
-/// A consumer attached through `with_confirmed_apply_tx` MUST resolve
-/// `completion` after its durable state-machine apply succeeds or fails. Raft
-/// does not advance `last_applied`, and regular ClientCommand success is not
-/// reported, until this acknowledgement arrives.
 pub struct CommittedEntry {
     pub entry: LogEntry,
     pub completion: oneshot::Sender<Result<(), String>>,
 }
 
-/// Handle for a spawned Raft event-loop task.
 pub struct RaftTaskHandle {
     shutdown_tx: Option<oneshot::Sender<()>>,
     join_handle: tokio::task::JoinHandle<()>,
@@ -163,8 +98,10 @@ impl RaftTaskHandle {
         let _ = (&mut self.join_handle).await;
     }
 
-    /// Request the Raft node to transfer leadership to any healthy peer.
-    /// Returns `Ok(new_leader_id)` on success, `Err(reason)` on failure/timeout.
+    /// Initiate transfer to an eligible, fully caught-up voter. The returned ID
+    /// identifies the target; callers that need to remove the old leader must
+    /// additionally observe/prove that target as the new leader before issuing
+    /// the removal command.
     pub async fn request_leader_transfer(&self) -> Result<String, String> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.transfer_tx
@@ -190,93 +127,108 @@ impl Drop for RaftTaskHandle {
     }
 }
 
-// ── RaftNode ───────────────────────────────────────────────────────────────
-
-/// A single Raft cluster member.
-///
-/// Call `RaftNode::spawn` to start the event loop in a tokio task; then
-/// communicate via `client_tx` and observe `role()` / `leader_id()`.
 pub struct RaftNode<T: Transport> {
     id: NodeId,
-    peers: Vec<NodeId>,
+    /// Fixed bootstrap/seed view. Once `ps.membership` exists it is no longer a
+    /// source of quorum truth.
+    bootstrap_membership: ClusterMembership,
+    joining_learner: bool,
     transport: Arc<T>,
     ps: PersistentState,
+    /// Latest configuration represented by committed membership plus any newer
+    /// membership entries still present in the local log.
+    effective_membership: ClusterMembership,
 
-    // Volatile state (all nodes).
     commit_index: u64,
     last_applied: u64,
     role: RaftRole,
     leader_id: Option<NodeId>,
 
-    // Candidate state.
-    votes_received: usize,
-
-    // Leader state.
+    votes_received: BTreeSet<NodeId>,
     leader: Option<LeaderState>,
 
-    // Snapshot state (Session 13 / replicated SQL Phase 2).
     snapshot_data: Arc<Vec<u8>>,
     snapshot_store: Option<Arc<dyn StateMachineSnapshotStore>>,
     pending_staged_snapshot: Option<StagedSnapshot>,
 
-    // Serving readiness for fresh-node bootstrap. Persisted restarts preserve
-    // the historical local/stale-read semantics; only truly fresh durable
-    // members with peers start closed until leader-confirmed catch-up completes.
     serving_ready: Arc<AtomicBool>,
     successful_append_seen: bool,
 
-    // Membership-change state (Session 13).
-    membership_change_in_progress: bool,
-
-    // Leadership transfer state (Session 13 — Raft §3.10).
     transfer_in_progress: Option<(NodeId, Instant)>,
-
-    // Persistence (Session 13).
     persistence: Option<Arc<dyn RaftPersistenceStore>>,
-
-    // Election timeout; overrideable for tests.
     election_timeout_base_ms: u64,
 
-    // Legacy apply handoff retained for existing callers/tests.
     apply_tx: Option<mpsc::Sender<LogEntry>>,
-
-    // Confirmed apply handoff used by replicated SQL.
     confirmed_apply_tx: Option<mpsc::Sender<CommittedEntry>>,
-
-    // Regular client replies keyed by appended log index.
     pending_clients: HashMap<u64, oneshot::Sender<Result<u64, String>>>,
+    /// Membership admin RPCs are acknowledged only after the corresponding
+    /// transition reaches its durable apply point. The sender is retained here
+    /// while the event loop remains leader.
+    pending_membership_rpcs: HashMap<u64, NodeId>,
 }
 
 impl<T: Transport> RaftNode<T> {
-    /// Create a node. Call `spawn` to start it.
+    /// Initial fixed-membership constructor retained for backward compatibility.
     pub fn new(id: NodeId, peers: Vec<NodeId>, transport: Arc<T>) -> Self {
+        let bootstrap = ClusterMembership::bootstrap(id.clone(), peers);
+        let mut ps = PersistentState::new();
+        ps.membership = Some(bootstrap.clone());
+        Self::from_bootstrap(id, bootstrap, false, transport, ps)
+    }
+
+    /// Construct a brand-new joining process. Seed voters are routing/bootstrap
+    /// knowledge only; this local ID cannot campaign or vote until the committed
+    /// membership received from Raft says that it is a voter.
+    pub fn new_learner(
+        id: NodeId,
+        seed_voters: Vec<NodeId>,
+        transport: Arc<T>,
+    ) -> Result<Self, String> {
+        let bootstrap = ClusterMembership::bootstrap_learner(id.clone(), seed_voters)?;
+        Ok(Self::from_bootstrap(
+            id,
+            bootstrap,
+            true,
+            transport,
+            PersistentState::new(),
+        ))
+    }
+
+    fn from_bootstrap(
+        id: NodeId,
+        bootstrap_membership: ClusterMembership,
+        joining_learner: bool,
+        transport: Arc<T>,
+        ps: PersistentState,
+    ) -> Self {
         Self {
             id,
-            peers,
+            effective_membership: bootstrap_membership.clone(),
+            bootstrap_membership,
+            joining_learner,
             transport,
-            ps: PersistentState::new(),
+            ps,
             commit_index: 0,
             last_applied: 0,
             role: RaftRole::Follower,
             leader_id: None,
-            votes_received: 0,
+            votes_received: BTreeSet::new(),
             leader: None,
             snapshot_data: Arc::new(vec![]),
             snapshot_store: None,
             pending_staged_snapshot: None,
-            serving_ready: Arc::new(AtomicBool::new(true)),
+            serving_ready: Arc::new(AtomicBool::new(!joining_learner)),
             successful_append_seen: false,
-            membership_change_in_progress: false,
             transfer_in_progress: None,
             persistence: None,
             election_timeout_base_ms: ELECTION_TIMEOUT_BASE_MS,
             apply_tx: None,
             confirmed_apply_tx: None,
             pending_clients: HashMap::new(),
+            pending_membership_rpcs: HashMap::new(),
         }
     }
 
-    /// Shared readiness signal used by the production SQL serving layer.
     pub fn serving_readiness(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.serving_ready)
     }
@@ -287,7 +239,6 @@ impl<T: Transport> RaftNode<T> {
         self
     }
 
-    /// Attach a complete state-machine snapshot creator/restorer.
     pub fn with_snapshot_store(mut self, store: Arc<dyn StateMachineSnapshotStore>) -> Self {
         self.snapshot_store = Some(store);
         let recovered_install = self.recover_staged_snapshot_if_possible();
@@ -297,7 +248,6 @@ impl<T: Transport> RaftNode<T> {
         self
     }
 
-    /// Attach a bounded state-machine channel with explicit completion.
     pub fn with_confirmed_apply_tx(mut self, tx: mpsc::Sender<CommittedEntry>) -> Self {
         let has_unrecoverable_snapshot = (self.ps.snapshot_index != 0
             || !self.snapshot_data.is_empty())
@@ -317,7 +267,6 @@ impl<T: Transport> RaftNode<T> {
         self
     }
 
-    /// Attach a persistence store and recover any active/staged snapshot state.
     pub fn with_persistence(mut self, store: Arc<dyn RaftPersistenceStore>) -> Self {
         let loaded = match store.load() {
             Ok(state) => state,
@@ -328,14 +277,26 @@ impl<T: Transport> RaftNode<T> {
             Ok(snapshot) => snapshot,
             Err(error) => panic!("fatal staged Raft snapshot load failure: {error}"),
         };
+        let mut migrated_phase2_membership = false;
 
-        if let Some((ps, snap)) = loaded {
+        if let Some((mut ps, snap)) = loaded {
             let has_boundary = ps.snapshot_index != 0;
             let has_bytes = !snap.is_empty();
             if has_boundary != has_bytes {
                 panic!(
                     "fatal Raft snapshot recovery: snapshot boundary metadata and active snapshot bytes are inconsistent"
                 );
+            }
+            if ps.membership.is_none() && !self.joining_learner {
+                // One-time Phase-2 -> Phase-3 migration. The fixed configured
+                // bootstrap is authoritative only because no dynamic membership
+                // could have existed in Phase 2.
+                ps.membership = Some(self.bootstrap_membership.clone());
+                migrated_phase2_membership = true;
+            }
+            if let Some(membership) = &ps.membership {
+                self.validate_persisted_membership(membership, &ps)
+                    .unwrap_or_else(|error| panic!("fatal persisted membership state: {error}"));
             }
             self.snapshot_data = Arc::new(snap);
             let snap_idx = ps.snapshot_index;
@@ -346,19 +307,175 @@ impl<T: Transport> RaftNode<T> {
 
         self.persistence = Some(store);
         self.pending_staged_snapshot = staged;
+        self.recompute_effective_membership()
+            .unwrap_or_else(|error| panic!("fatal effective membership recovery: {error}"));
+
         let recovered_install = self.recover_staged_snapshot_if_possible();
         if !recovered_install {
             self.restore_active_snapshot_if_possible();
         }
+        if migrated_phase2_membership && self.pending_staged_snapshot.is_none() {
+            self.persist();
+        }
 
-        if fresh_persistent_state && !self.peers.is_empty() {
+        if fresh_persistent_state
+            && (self.joining_learner
+                || self
+                    .effective_membership
+                    .replication_targets()
+                    .iter()
+                    .any(|id| id != &self.id))
+        {
+            self.serving_ready.store(false, Ordering::Release);
+        }
+        if self
+            .ps
+            .membership
+            .as_ref()
+            .is_some_and(|m| m.is_removed(&self.id))
+        {
             self.serving_ready.store(false, Ordering::Release);
         }
         self
     }
 
-    /// Restore the currently active snapshot if both active state and a state-
-    /// machine snapshot implementation are available.
+    fn validate_persisted_membership(
+        &self,
+        membership: &ClusterMembership,
+        ps: &PersistentState,
+    ) -> Result<(), String> {
+        membership.validate()?;
+        if membership.config_index > ps.last_log_index() {
+            return Err(format!(
+                "membership config index {} is beyond local Raft end {}",
+                membership.config_index,
+                ps.last_log_index()
+            ));
+        }
+        Ok(())
+    }
+
+    fn committed_membership(&self) -> &ClusterMembership {
+        self.ps
+            .membership
+            .as_ref()
+            .unwrap_or(&self.bootstrap_membership)
+    }
+
+    fn decode_membership_command(payload: &[u8]) -> Result<Option<MembershipChange>, String> {
+        if !payload.starts_with(MEMBERSHIP_CHANGE_TAG) {
+            return Ok(None);
+        }
+        let change = serde_json::from_slice::<MembershipChange>(&payload[MEMBERSHIP_CHANGE_TAG.len()..])
+            .map_err(|error| format!("decode membership command: {error}"))?;
+        Ok(Some(change))
+    }
+
+    fn transition_membership(
+        base: &ClusterMembership,
+        change: &MembershipChange,
+        index: u64,
+    ) -> Result<ClusterMembership, String> {
+        match change {
+            MembershipChange::AddNode(id) | MembershipChange::AddLearner(id) => {
+                base.add_learner(id.clone(), index)
+            }
+            MembershipChange::PromoteLearner(id) => base.begin_promotion(id, index),
+            MembershipChange::RemoveNode(id) => base.begin_removal(id, index),
+            MembershipChange::FinalizeJoint => base.finalize_joint(index),
+        }
+    }
+
+    /// Rebuild the latest effective configuration from the last committed
+    /// durable membership and every newer membership command still present in
+    /// the local log. Uncommitted configuration entries therefore immediately
+    /// govern election/commit quorums, while log truncation naturally rolls an
+    /// uncommitted transition back.
+    fn recompute_effective_membership(&mut self) -> Result<(), String> {
+        let mut membership = self.committed_membership().clone();
+        let committed_config_index = membership.config_index;
+        for entry in &self.ps.log {
+            if entry.index <= committed_config_index {
+                continue;
+            }
+            if let Some(change) = Self::decode_membership_command(&entry.command)? {
+                membership = Self::transition_membership(&membership, &change, entry.index)?;
+            }
+        }
+        membership.validate()?;
+        self.effective_membership = membership;
+        self.sync_leader_tracking();
+        Ok(())
+    }
+
+    fn sync_leader_tracking(&mut self) {
+        let Some(leader) = &mut self.leader else {
+            return;
+        };
+        let mut targets = self.effective_membership.replication_targets();
+        targets.remove(&self.id);
+        leader.next_index.retain(|id, _| targets.contains(id));
+        leader.match_index.retain(|id, _| targets.contains(id));
+        let next = self.ps.last_log_index().saturating_add(1);
+        for target in targets {
+            leader.next_index.entry(target.clone()).or_insert(next);
+            leader.match_index.entry(target).or_insert(0);
+        }
+    }
+
+    fn membership_transition_active(&self) -> bool {
+        let committed = self.committed_membership();
+        if committed.is_joint() {
+            return true;
+        }
+        self.ps.log.iter().any(|entry| {
+            entry.index > committed.config_index && entry.command.starts_with(MEMBERSHIP_CHANGE_TAG)
+        })
+    }
+
+    fn validate_snapshot_membership_boundary(
+        membership: &ClusterMembership,
+        boundary: u64,
+    ) -> Result<(), String> {
+        membership.validate()?;
+        if membership.is_joint() {
+            return Err("snapshot may not encode a joint membership transition".to_string());
+        }
+        if membership.config_index > boundary {
+            return Err(format!(
+                "snapshot membership config index {} exceeds snapshot boundary {boundary}",
+                membership.config_index
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_incoming_snapshot_membership(
+        &self,
+        incoming: &ClusterMembership,
+        boundary: u64,
+    ) -> Result<(), String> {
+        Self::validate_snapshot_membership_boundary(incoming, boundary)?;
+        if let Some(local) = &self.ps.membership {
+            if local.config_index > boundary {
+                return Err(format!(
+                    "snapshot boundary {boundary} would regress committed membership at {}",
+                    local.config_index
+                ));
+            }
+            if local.generation > incoming.generation {
+                return Err(format!(
+                    "snapshot membership generation {} regresses local generation {}",
+                    incoming.generation, local.generation
+                ));
+            }
+            if local.generation == incoming.generation && local != incoming {
+                return Err("conflicting membership metadata at the same generation".to_string());
+            }
+        }
+        Ok(())
+    }
+
     fn restore_active_snapshot_if_possible(&self) {
         let has_boundary = self.ps.snapshot_index != 0;
         let has_bytes = !self.snapshot_data.is_empty();
@@ -373,18 +490,33 @@ impl<T: Transport> RaftNode<T> {
         let Some(snapshot_store) = &self.snapshot_store else {
             return;
         };
+        let sql_bytes = match decode_snapshot_payload(&self.snapshot_data) {
+            Ok(Some((membership, sql_bytes))) => {
+                Self::validate_snapshot_membership_boundary(&membership, self.ps.snapshot_index)
+                    .unwrap_or_else(|error| {
+                        panic!("fatal active snapshot membership validation failure: {error}")
+                    });
+                if let Some(current) = &self.ps.membership {
+                    if current.config_index <= self.ps.snapshot_index && current != &membership {
+                        panic!(
+                            "fatal active snapshot recovery: persisted membership conflicts with snapshot membership"
+                        );
+                    }
+                }
+                sql_bytes
+            }
+            Ok(None) => self.snapshot_data.as_slice(),
+            Err(error) => panic!("fatal Raft snapshot envelope recovery failure: {error}"),
+        };
         if let Err(error) = snapshot_store.restore_snapshot(
             self.ps.snapshot_index,
             self.ps.snapshot_term,
-            &self.snapshot_data,
+            sql_bytes,
         ) {
             panic!("fatal state-machine snapshot recovery failure: {error}");
         }
     }
 
-    /// Resolve a crash-left staged snapshot transition when enough components
-    /// are attached. Returns true only when an interrupted installation was
-    /// promoted to the active snapshot, in which case active restore is complete.
     fn recover_staged_snapshot_if_possible(&mut self) -> bool {
         let Some(staged) = self.pending_staged_snapshot.clone() else {
             return false;
@@ -414,26 +546,59 @@ impl<T: Transport> RaftNode<T> {
                     return false;
                 }
 
+                let (incoming_membership, sql_bytes) = match decode_snapshot_payload(&staged.data) {
+                    Ok(Some((membership, sql_bytes))) => {
+                        self.validate_incoming_snapshot_membership(
+                            &membership,
+                            staged.last_included_index,
+                        )
+                        .unwrap_or_else(|error| {
+                            panic!("fatal staged snapshot membership validation failure: {error}")
+                        });
+                        (Some(membership), sql_bytes)
+                    }
+                    Ok(None) => {
+                        if self
+                            .ps
+                            .membership
+                            .as_ref()
+                            .is_some_and(|m| m.config_index > 0)
+                        {
+                            panic!(
+                                "fatal staged snapshot recovery: legacy snapshot cannot replace dynamic membership"
+                            );
+                        }
+                        (None, staged.data.as_slice())
+                    }
+                    Err(error) => panic!("fatal staged snapshot envelope validation failure: {error}"),
+                };
+
                 if let Err(error) = snapshot_store.validate_snapshot(
                     staged.last_included_index,
                     staged.last_included_term,
-                    staged.data.as_slice(),
+                    sql_bytes,
                 ) {
                     panic!("fatal staged state-machine snapshot validation failure: {error}");
                 }
                 if let Err(error) = snapshot_store.restore_snapshot(
                     staged.last_included_index,
                     staged.last_included_term,
-                    staged.data.as_slice(),
+                    sql_bytes,
                 ) {
                     panic!("fatal staged state-machine snapshot recovery failure: {error}");
                 }
 
+                if let Some(membership) = incoming_membership {
+                    self.ps.membership = Some(membership);
+                }
                 self.ps
                     .install_snapshot(staged.last_included_index, staged.last_included_term);
                 self.snapshot_data = Arc::clone(&staged.data);
                 self.commit_index = self.commit_index.max(staged.last_included_index);
                 self.last_applied = self.last_applied.max(staged.last_included_index);
+                self.recompute_effective_membership().unwrap_or_else(|error| {
+                    panic!("fatal effective membership after snapshot recovery: {error}")
+                });
                 if let Err(error) = persistence.save(&self.ps, &self.snapshot_data) {
                     panic!("fatal Raft snapshot recovery publish failure: {error}");
                 }
@@ -474,6 +639,7 @@ impl<T: Transport> RaftNode<T> {
             if let Some(reply) = self.pending_clients.remove(&index) {
                 let _ = reply.send(Err(reason.to_string()));
             }
+            self.pending_membership_rpcs.remove(&index);
         }
     }
 
@@ -482,9 +648,9 @@ impl<T: Transport> RaftNode<T> {
         for (_, reply) in pending {
             let _ = reply.send(Err(reason.to_string()));
         }
+        self.pending_membership_rpcs.clear();
     }
 
-    /// Spawn the Raft event loop.
     pub fn spawn(
         mut self,
     ) -> (
@@ -511,6 +677,7 @@ impl<T: Transport> RaftNode<T> {
             leader_id: None,
             commit_index: self.commit_index,
             last_applied: self.last_applied,
+            membership: self.effective_membership.clone(),
         }));
         let shared_clone = shared.clone();
 
@@ -543,16 +710,17 @@ impl<T: Transport> RaftNode<T> {
                     _ = time::sleep_until(election_deadline) => {
                         if self.role != RaftRole::Leader {
                             self.start_election().await;
-                            election_deadline = Instant::now() + self.election_timeout();
-                        } else {
-                            election_deadline = Instant::now() + self.election_timeout();
                         }
+                        election_deadline = Instant::now() + self.election_timeout();
                     }
                     Some(cmd) = cmd_rx.recv() => {
-                        let legacy_admin_ack = cmd.payload.starts_with(MEMBERSHIP_CHANGE_TAG)
-                            || cmd.payload.starts_with(COMPACT_LOG_TAG);
+                        // Compaction is a local admin operation and retains its
+                        // direct acknowledgement. Membership is no longer a
+                        // legacy append-only acknowledgement: it waits for the
+                        // required committed durable apply/finalization.
+                        let direct_admin_ack = cmd.payload.starts_with(COMPACT_LOG_TAG);
                         match self.handle_client_command(cmd.payload) {
-                            Ok(index) if legacy_admin_ack => {
+                            Ok(index) if direct_admin_ack => {
                                 let _ = cmd.reply.send(Ok(index));
                             }
                             Ok(index) => {
@@ -568,15 +736,10 @@ impl<T: Transport> RaftNode<T> {
                         }
                     }
                     Some(reply_tx) = transfer_rx.recv() => {
-                        let result = if self.role != RaftRole::Leader {
-                            Err("not leader".to_string())
-                        } else if self.peers.is_empty() {
-                            Err("no peers available".to_string())
-                        } else {
-                            let target = self.peers[0].clone();
-                            self.on_leader_transfer(&self.id.clone(), target.clone()).await;
+                        let result = self.choose_transfer_target().and_then(|target| {
+                            self.initiate_leader_transfer(target.clone())?;
                             Ok(target)
-                        };
+                        });
                         let _ = reply_tx.send(result);
                     }
                 }
@@ -589,13 +752,23 @@ impl<T: Transport> RaftNode<T> {
                         return;
                     };
 
+                    let mut joint_started = false;
                     if entry.command.starts_with(MEMBERSHIP_CHANGE_TAG) {
-                        let payload = &entry.command[MEMBERSHIP_CHANGE_TAG.len()..];
-                        if let Ok(change) = serde_json::from_slice::<MembershipChange>(payload) {
-                            self.apply_membership_change(change);
+                        match self.apply_committed_membership(&entry) {
+                            Ok(started) => joint_started = started,
+                            Err(error) => {
+                                self.fail_all_clients(&format!(
+                                    "committed membership apply failed at index {next_index}: {error}"
+                                ));
+                                return;
+                            }
                         }
                     }
 
+                    // All committed log positions, including Raft control
+                    // entries, pass through the state-machine completion point.
+                    // The production SQL state machine records the durable apply
+                    // index for non-SQL entries without mutating SQL data.
                     if let Some(tx) = &self.confirmed_apply_tx {
                         let (completion_tx, completion_rx) = oneshot::channel();
                         let send_result = tokio::select! {
@@ -605,7 +778,7 @@ impl<T: Transport> RaftNode<T> {
                                 return;
                             },
                             result = tx.send(CommittedEntry {
-                                entry,
+                                entry: entry.clone(),
                                 completion: completion_tx,
                             }) => result,
                         };
@@ -644,7 +817,7 @@ impl<T: Transport> RaftNode<T> {
                                 self.fail_all_clients("raft node shutting down during apply handoff");
                                 return;
                             },
-                            result = tx.send(entry) => result,
+                            result = tx.send(entry.clone()) => result,
                         };
                         if send_result.is_err() {
                             self.fail_all_clients("legacy state-machine apply channel closed");
@@ -653,14 +826,82 @@ impl<T: Transport> RaftNode<T> {
                     }
 
                     self.last_applied = next_index;
-                    if let Some(reply) = self.pending_clients.remove(&next_index) {
-                        let _ = reply.send(Ok(next_index));
+
+                    let client_reply = self.pending_clients.remove(&next_index);
+                    let rpc_reply = self.pending_membership_rpcs.remove(&next_index);
+                    if joint_started {
+                        if self.role == RaftRole::Leader {
+                            match self.ensure_joint_finalize_entry() {
+                                Ok(final_index) => {
+                                    if let Some(reply) = client_reply {
+                                        self.pending_clients.insert(final_index, reply);
+                                    }
+                                    if let Some(from) = rpc_reply {
+                                        self.pending_membership_rpcs.insert(final_index, from);
+                                    }
+                                    self.try_advance_commit();
+                                    self.send_heartbeats().await;
+                                }
+                                Err(error) => {
+                                    if let Some(reply) = client_reply {
+                                        let _ = reply.send(Err(error.clone()));
+                                    }
+                                    if let Some(from) = rpc_reply {
+                                        self.transport
+                                            .send(
+                                                &from,
+                                                RaftMessage::MembershipChangeCmdReply {
+                                                    success: false,
+                                                    error: Some(error),
+                                                },
+                                            )
+                                            .await;
+                                    }
+                                }
+                            }
+                        } else {
+                            let error = "joint membership entry committed but leadership changed before finalization; outcome is uncertain and the valid leader must finish the transition".to_string();
+                            if let Some(reply) = client_reply {
+                                let _ = reply.send(Err(error.clone()));
+                            }
+                            if let Some(from) = rpc_reply {
+                                self.transport
+                                    .send(
+                                        &from,
+                                        RaftMessage::MembershipChangeCmdReply {
+                                            success: false,
+                                            error: Some(error),
+                                        },
+                                    )
+                                    .await;
+                            }
+                        }
+                    } else {
+                        if let Some(reply) = client_reply {
+                            let _ = reply.send(Ok(next_index));
+                        }
+                        if let Some(from) = rpc_reply {
+                            self.transport
+                                .send(
+                                    &from,
+                                    RaftMessage::MembershipChangeCmdReply {
+                                        success: true,
+                                        error: None,
+                                    },
+                                )
+                                .await;
+                        }
                     }
                 }
 
                 if !self.serving_ready.load(Ordering::Acquire)
                     && self.successful_append_seen
                     && self.last_applied >= self.commit_index
+                    && !self
+                        .ps
+                        .membership
+                        .as_ref()
+                        .is_some_and(|m| m.is_removed(&self.id))
                 {
                     self.serving_ready.store(true, Ordering::Release);
                 }
@@ -680,6 +921,7 @@ impl<T: Transport> RaftNode<T> {
                     s.leader_id = self.leader_id.clone();
                     s.commit_index = self.commit_index;
                     s.last_applied = self.last_applied;
+                    s.membership = self.effective_membership.clone();
                 }
             }
         });
@@ -709,10 +951,11 @@ impl<T: Transport> RaftNode<T> {
                     .await;
             }
             RaftMessage::RequestVoteReply(reply) => {
-                self.on_request_vote_reply(reply).await;
+                self.on_request_vote_reply(from, reply).await;
             }
             RaftMessage::AppendEntries(args) => {
-                let reset = args.term >= self.ps.current_term;
+                let reset = self.effective_membership.is_voter(&args.leader_id)
+                    && args.term >= self.ps.current_term;
                 let reply = self.on_append_entries(args);
                 self.transport
                     .send(&from, RaftMessage::AppendEntriesReply(reply))
@@ -725,7 +968,8 @@ impl<T: Transport> RaftNode<T> {
                 self.on_append_entries_reply(from, reply).await;
             }
             RaftMessage::InstallSnapshot(args) => {
-                let reset = args.term >= self.ps.current_term;
+                let reset = self.effective_membership.is_voter(&args.leader_id)
+                    && args.term >= self.ps.current_term;
                 let reply = self.on_install_snapshot(args);
                 self.transport
                     .send(&from, RaftMessage::InstallSnapshotReply(reply))
@@ -738,49 +982,61 @@ impl<T: Transport> RaftNode<T> {
                 self.on_install_snapshot_reply(from, reply).await;
             }
             RaftMessage::MembershipChangeCmd(change) => {
-                let success = if self.role == RaftRole::Leader {
-                    let payload = encode_membership_change(&change);
-                    self.handle_client_command(payload).is_ok()
-                } else {
-                    false
-                };
-                self.transport
-                    .send(
-                        &from,
-                        RaftMessage::MembershipChangeCmdReply {
-                            success,
-                            error: if success {
-                                None
-                            } else {
-                                Some("not leader or change in progress".to_string())
+                if self.role != RaftRole::Leader {
+                    self.transport
+                        .send(
+                            &from,
+                            RaftMessage::MembershipChangeCmdReply {
+                                success: false,
+                                error: Some("not leader".to_string()),
                             },
-                        },
-                    )
-                    .await;
+                        )
+                        .await;
+                } else {
+                    let payload = encode_membership_change(&change);
+                    match self.handle_client_command(payload) {
+                        Ok(index) => {
+                            self.pending_membership_rpcs.insert(index, from);
+                            self.try_advance_commit();
+                            self.send_heartbeats().await;
+                        }
+                        Err(error) => {
+                            self.transport
+                                .send(
+                                    &from,
+                                    RaftMessage::MembershipChangeCmdReply {
+                                        success: false,
+                                        error: Some(error),
+                                    },
+                                )
+                                .await;
+                        }
+                    }
+                }
             }
-            RaftMessage::MembershipChangeCmdReply {
-                success: _,
-                error: _,
-            } => {}
+            RaftMessage::MembershipChangeCmdReply { .. } => {}
             RaftMessage::LeaderTransfer { target } => {
                 self.on_leader_transfer(&from, target).await;
             }
-            RaftMessage::LeaderTransferReply {
-                success: _,
-                error: _,
-            } => {}
+            RaftMessage::LeaderTransferReply { .. } => {}
             RaftMessage::TimeoutNow { term } => {
-                self.on_timeout_now(term, &mut election_deadline).await;
+                self.on_timeout_now(&from, term, &mut election_deadline).await;
             }
         }
         election_deadline
     }
 
     async fn start_election(&mut self) {
+        if !self.effective_membership.is_voter(&self.id) {
+            self.role = RaftRole::Follower;
+            self.votes_received.clear();
+            return;
+        }
         self.role = RaftRole::Candidate;
         self.ps.current_term += 1;
         self.ps.voted_for = Some(self.id.clone());
-        self.votes_received = 1;
+        self.votes_received.clear();
+        self.votes_received.insert(self.id.clone());
         self.leader_id = None;
         self.persist();
 
@@ -790,19 +1046,37 @@ impl<T: Transport> RaftNode<T> {
             last_log_index: self.ps.last_log_index(),
             last_log_term: self.ps.last_log_term(),
         };
-        for peer in &self.peers.clone() {
+        let targets = self.effective_membership.election_targets();
+        for peer in targets.iter().filter(|id| *id != &self.id) {
             self.transport
                 .send(peer, RaftMessage::RequestVote(args.clone()))
                 .await;
         }
-        let total_nodes = self.peers.len() + 1;
-        let majority = total_nodes / 2 + 1;
-        if self.votes_received >= majority {
+        if self
+            .effective_membership
+            .has_vote_quorum(&self.votes_received)
+        {
             self.become_leader().await;
         }
     }
 
     fn on_request_vote(&mut self, args: RequestVoteArgs) -> RequestVoteReply {
+        // Membership rejection happens before term adoption. A stale removed
+        // process therefore cannot poison a valid cluster merely by increasing
+        // its local term and sending RequestVote.
+        if !self.effective_membership.is_voter(&self.id)
+            || !self.effective_membership.is_voter(&args.candidate_id)
+            || self
+                .ps
+                .membership
+                .as_ref()
+                .is_some_and(|m| m.is_removed(&args.candidate_id))
+        {
+            return RequestVoteReply {
+                term: self.ps.current_term,
+                vote_granted: false,
+            };
+        }
         if args.term < self.ps.current_term {
             return RequestVoteReply {
                 term: self.ps.current_term,
@@ -832,30 +1106,33 @@ impl<T: Transport> RaftNode<T> {
         }
     }
 
-    async fn on_request_vote_reply(&mut self, reply: RequestVoteReply) {
+    async fn on_request_vote_reply(&mut self, from: NodeId, reply: RequestVoteReply) {
         if reply.term > self.ps.current_term {
             self.become_follower(reply.term);
             return;
         }
-        if self.role != RaftRole::Candidate {
+        if self.role != RaftRole::Candidate || !self.effective_membership.is_voter(&from) {
             return;
         }
         if reply.vote_granted {
-            self.votes_received += 1;
-            let total_nodes = self.peers.len() + 1;
-            let majority = total_nodes / 2 + 1;
-            if self.votes_received >= majority {
+            self.votes_received.insert(from);
+            if self
+                .effective_membership
+                .has_vote_quorum(&self.votes_received)
+            {
                 self.become_leader().await;
             }
         }
     }
 
     async fn send_heartbeats(&self) {
-        for peer in &self.peers {
+        let mut targets = self.effective_membership.replication_targets();
+        targets.remove(&self.id);
+        for peer in targets {
             let next = self
                 .leader
                 .as_ref()
-                .and_then(|l| l.next_index.get(peer))
+                .and_then(|l| l.next_index.get(&peer))
                 .copied()
                 .unwrap_or(1);
 
@@ -869,12 +1146,12 @@ impl<T: Transport> RaftNode<T> {
                     done: true,
                 };
                 self.transport
-                    .send(peer, RaftMessage::InstallSnapshot(snap))
+                    .send(&peer, RaftMessage::InstallSnapshot(snap))
                     .await;
                 continue;
             }
 
-            let prev_log_index = next - 1;
+            let prev_log_index = next.saturating_sub(1);
             let prev_log_term = self.ps.term_at(prev_log_index);
             let entries = self.ps.entries_from(next).to_vec();
             let args = AppendEntriesArgs {
@@ -886,12 +1163,25 @@ impl<T: Transport> RaftNode<T> {
                 leader_commit: self.commit_index,
             };
             self.transport
-                .send(peer, RaftMessage::AppendEntries(args))
+                .send(&peer, RaftMessage::AppendEntries(args))
                 .await;
         }
     }
 
     fn on_append_entries(&mut self, args: AppendEntriesArgs) -> AppendEntriesReply {
+        if !self.effective_membership.is_voter(&args.leader_id)
+            || self
+                .ps
+                .membership
+                .as_ref()
+                .is_some_and(|m| m.is_removed(&args.leader_id))
+        {
+            return AppendEntriesReply {
+                term: self.ps.current_term,
+                success: false,
+                match_index: self.ps.last_log_index(),
+            };
+        }
         if args.term < self.ps.current_term {
             return AppendEntriesReply {
                 term: self.ps.current_term,
@@ -916,6 +1206,9 @@ impl<T: Transport> RaftNode<T> {
         if !args.entries.is_empty() {
             self.ps
                 .truncate_and_append(args.prev_log_index, args.entries);
+            self.recompute_effective_membership().unwrap_or_else(|error| {
+                panic!("fatal replicated membership log validation failure: {error}")
+            });
             self.persist();
         }
 
@@ -935,7 +1228,12 @@ impl<T: Transport> RaftNode<T> {
             self.become_follower(reply.term);
             return;
         }
-        if self.role != RaftRole::Leader {
+        if self.role != RaftRole::Leader
+            || !self
+                .effective_membership
+                .replication_targets()
+                .contains(&from)
+        {
             return;
         }
         if let Some(leader) = &mut self.leader {
@@ -963,15 +1261,15 @@ impl<T: Transport> RaftNode<T> {
             if self.ps.term_at(idx) != self.ps.current_term {
                 continue;
             }
-            let replicated = self
+            let matches = self
                 .leader
                 .as_ref()
-                .map(|l| l.match_index.values().filter(|&&m| m >= idx).count())
-                .unwrap_or(0)
-                + 1;
-            let total_nodes = self.peers.len() + 1;
-            let majority = total_nodes / 2 + 1;
-            if replicated >= majority {
+                .map(|leader| &leader.match_index)
+                .expect("leader state must exist while role is Leader");
+            if self
+                .effective_membership
+                .has_match_quorum(&self.id, matches, idx)
+            {
                 self.commit_index = idx;
                 break;
             }
@@ -979,30 +1277,95 @@ impl<T: Transport> RaftNode<T> {
     }
 
     fn become_follower(&mut self, term: u64) {
-        self.fail_uncommitted_clients("leadership lost before command reached quorum commit");
+        self.fail_uncommitted_clients("leadership lost before command reached required quorum commit");
         self.ps.current_term = term;
         self.ps.voted_for = None;
         self.role = RaftRole::Follower;
         self.leader = None;
+        self.votes_received.clear();
         self.persist();
     }
 
     async fn become_leader(&mut self) {
+        if !self.effective_membership.is_voter(&self.id) {
+            self.role = RaftRole::Follower;
+            return;
+        }
         self.role = RaftRole::Leader;
         self.leader_id = Some(self.id.clone());
         self.serving_ready.store(true, Ordering::Release);
         let next = self.ps.last_log_index() + 1;
         let mut next_index = HashMap::new();
         let mut match_index = HashMap::new();
-        for peer in &self.peers {
+        let mut targets = self.effective_membership.replication_targets();
+        targets.remove(&self.id);
+        for peer in targets {
             next_index.insert(peer.clone(), next);
-            match_index.insert(peer.clone(), 0);
+            match_index.insert(peer, 0);
         }
         self.leader = Some(LeaderState {
             next_index,
             match_index,
         });
+
+        // A leader elected while the committed state is joint must finish the
+        // transition. If a FinalizeJoint entry already exists uncommitted, the
+        // effective config is already stable and it is replicated as-is.
+        if self.committed_membership().is_joint() && self.effective_membership.is_joint() {
+            if let Err(error) = self.ensure_joint_finalize_entry() {
+                panic!("fatal joint-membership recovery on leader election: {error}");
+            }
+        }
         self.send_heartbeats().await;
+    }
+
+    fn validate_membership_request(&self, change: &MembershipChange) -> Result<(), String> {
+        if self.membership_transition_active() {
+            return Err("membership change already in progress".to_string());
+        }
+        let next_index = self.ps.last_log_index().saturating_add(1);
+        match change {
+            MembershipChange::AddNode(id) | MembershipChange::AddLearner(id) => {
+                self.effective_membership
+                    .add_learner(id.clone(), next_index)
+                    .map(|_| ())
+            }
+            MembershipChange::PromoteLearner(id) => {
+                if !self.effective_membership.is_learner(id) {
+                    return Err(format!("node id {id} is not a learner"));
+                }
+                let matched = self
+                    .leader
+                    .as_ref()
+                    .and_then(|leader| leader.match_index.get(id))
+                    .copied()
+                    .unwrap_or(0);
+                if matched < self.commit_index {
+                    return Err(format!(
+                        "learner {id} is not caught up: match_index={matched}, required_commit_index={}",
+                        self.commit_index
+                    ));
+                }
+                self.effective_membership
+                    .begin_promotion(id, next_index)
+                    .map(|_| ())
+            }
+            MembershipChange::RemoveNode(id) => {
+                if id == &self.id && self.effective_membership.is_voter(id) {
+                    return Err(
+                        "cannot remove current leader; transfer leadership and prove the new leader first"
+                            .to_string(),
+                    );
+                }
+                self.effective_membership
+                    .begin_removal(id, next_index)
+                    .map(|_| ())
+            }
+            MembershipChange::FinalizeJoint => Err(
+                "FinalizeJoint is an internal Raft transition and cannot be submitted directly"
+                    .to_string(),
+            ),
+        }
     }
 
     fn handle_client_command(&mut self, payload: Vec<u8>) -> Result<u64, String> {
@@ -1018,16 +1381,12 @@ impl<T: Transport> RaftNode<T> {
         if payload.starts_with(LEADER_TRANSFER_TAG) {
             return Err("use LeaderTransfer RPC, not client command".to_string());
         }
-        if payload.starts_with(MEMBERSHIP_CHANGE_TAG) {
-            if self.membership_change_in_progress {
-                return Err("membership change already in progress".to_string());
-            }
-            self.membership_change_in_progress = true;
-        } else if self.membership_change_in_progress {
-            return Err("membership change in progress; retry later".to_string());
+        if let Some(change) = Self::decode_membership_command(&payload)? {
+            self.validate_membership_request(&change)?;
         }
 
         let idx = self.ps.append(self.ps.current_term, payload);
+        self.recompute_effective_membership()?;
         self.persist();
         Ok(idx)
     }
@@ -1041,11 +1400,29 @@ impl<T: Transport> RaftNode<T> {
                 .try_into()
                 .map_err(|_| "bad last_index bytes".to_string())?,
         );
+        if self.membership_transition_active() {
+            return Err("cannot compact Raft log during membership transition".to_string());
+        }
+        let membership = self
+            .ps
+            .membership
+            .as_ref()
+            .ok_or_else(|| "cannot compact before authoritative membership is known".to_string())?
+            .clone();
+        if membership.is_joint() {
+            return Err("cannot compact a joint membership configuration".to_string());
+        }
 
         if let Some(snapshot_store) = &self.snapshot_store {
             let safe_last = last_index.min(self.commit_index).min(self.last_applied);
             if safe_last <= self.ps.snapshot_index {
                 return Ok(self.ps.snapshot_index);
+            }
+            if membership.config_index > safe_last {
+                return Err(format!(
+                    "snapshot boundary {safe_last} precedes committed membership index {}",
+                    membership.config_index
+                ));
             }
             let last_term = self.ps.term_at(safe_last);
             if last_term == 0 {
@@ -1054,16 +1431,15 @@ impl<T: Transport> RaftNode<T> {
                 ));
             }
 
-            let data = Arc::new(
-                snapshot_store
-                    .create_snapshot(safe_last, last_term)
-                    .map_err(|error| format!("state-machine snapshot creation failed: {error}"))?,
-            );
+            let sql_data = snapshot_store
+                .create_snapshot(safe_last, last_term)
+                .map_err(|error| format!("state-machine snapshot creation failed: {error}"))?;
             snapshot_store
-                .validate_snapshot(safe_last, last_term, data.as_slice())
+                .validate_snapshot(safe_last, last_term, &sql_data)
                 .map_err(|error| {
                     format!("created state-machine snapshot failed validation: {error}")
                 })?;
+            let data = Arc::new(encode_snapshot_payload(&membership, &sql_data)?);
 
             let persistence = self.persistence.as_ref().ok_or_else(|| {
                 "SQL-aware Raft compaction requires durable persistence".to_string()
@@ -1080,6 +1456,7 @@ impl<T: Transport> RaftNode<T> {
 
             self.ps.install_snapshot(safe_last, last_term);
             self.snapshot_data = data;
+            self.recompute_effective_membership()?;
             self.persist();
             return Ok(safe_last);
         }
@@ -1091,7 +1468,7 @@ impl<T: Transport> RaftNode<T> {
             );
         }
 
-        let data = payload[10..].to_vec();
+        let raw_data = payload[10..].to_vec();
         let safe_last = last_index.min(self.commit_index);
         if safe_last == 0 {
             return Ok(0);
@@ -1099,37 +1476,102 @@ impl<T: Transport> RaftNode<T> {
         if safe_last <= self.ps.snapshot_index {
             return Ok(self.ps.snapshot_index);
         }
-
+        if membership.config_index > safe_last {
+            return Err(format!(
+                "snapshot boundary {safe_last} precedes committed membership index {}",
+                membership.config_index
+            ));
+        }
         let last_term = self.ps.term_at(safe_last);
+        let data = encode_snapshot_payload(&membership, &raw_data)?;
         self.ps.install_snapshot(safe_last, last_term);
         self.snapshot_data = Arc::new(data);
+        self.recompute_effective_membership()?;
         self.persist();
         Ok(safe_last)
     }
 
-    fn apply_membership_change(&mut self, change: MembershipChange) {
-        match change {
-            MembershipChange::AddNode(ref new_id) => {
-                if !self.peers.contains(new_id) && new_id != &self.id {
-                    self.peers.push(new_id.clone());
-                    if let Some(leader) = &mut self.leader {
-                        leader.next_index.entry(new_id.clone()).or_insert(1);
-                        leader.match_index.entry(new_id.clone()).or_insert(0);
-                    }
-                }
-            }
-            MembershipChange::RemoveNode(ref gone_id) => {
-                self.peers.retain(|p| p != gone_id);
-                if let Some(leader) = &mut self.leader {
-                    leader.next_index.remove(gone_id);
-                    leader.match_index.remove(gone_id);
-                }
-            }
+    /// Apply a membership log entry to the *committed* durable configuration.
+    /// Returns true when this entry starts joint consensus and therefore needs a
+    /// FinalizeJoint entry before the initiating admin request can succeed.
+    fn apply_committed_membership(&mut self, entry: &LogEntry) -> Result<bool, String> {
+        let Some(change) = Self::decode_membership_command(&entry.command)? else {
+            return Ok(false);
+        };
+        if self
+            .ps
+            .membership
+            .as_ref()
+            .is_some_and(|membership| membership.config_index >= entry.index)
+        {
+            return Ok(matches!(
+                change,
+                MembershipChange::PromoteLearner(_) | MembershipChange::RemoveNode(_)
+            ) && self.committed_membership().is_joint());
         }
-        self.membership_change_in_progress = false;
+        let base = self.committed_membership().clone();
+        let next = Self::transition_membership(&base, &change, entry.index)?;
+        let joint_started = !base.is_joint() && next.is_joint();
+        self.ps.membership = Some(next);
+        self.recompute_effective_membership()?;
+        self.persist();
+        if self
+            .ps
+            .membership
+            .as_ref()
+            .is_some_and(|membership| membership.is_removed(&self.id))
+        {
+            self.serving_ready.store(false, Ordering::Release);
+        }
+        Ok(joint_started)
+    }
+
+    fn ensure_joint_finalize_entry(&mut self) -> Result<u64, String> {
+        if self.role != RaftRole::Leader {
+            return Err("cannot finalize joint membership while not leader".to_string());
+        }
+        if !self.committed_membership().is_joint() {
+            return Err("committed membership is not joint".to_string());
+        }
+        if !self.effective_membership.is_joint() {
+            let committed_index = self.committed_membership().config_index;
+            for entry in &self.ps.log {
+                if entry.index <= committed_index {
+                    continue;
+                }
+                if matches!(
+                    Self::decode_membership_command(&entry.command)?,
+                    Some(MembershipChange::FinalizeJoint)
+                ) {
+                    return Ok(entry.index);
+                }
+            }
+            return Err("effective membership is stable but FinalizeJoint entry is missing".to_string());
+        }
+
+        let idx = self.ps.append(
+            self.ps.current_term,
+            encode_membership_change(&MembershipChange::FinalizeJoint),
+        );
+        self.recompute_effective_membership()?;
+        self.persist();
+        Ok(idx)
     }
 
     fn on_install_snapshot(&mut self, args: InstallSnapshotArgs) -> InstallSnapshotReply {
+        if !self.effective_membership.is_voter(&args.leader_id)
+            || self
+                .ps
+                .membership
+                .as_ref()
+                .is_some_and(|m| m.is_removed(&args.leader_id))
+        {
+            return InstallSnapshotReply {
+                term: self.ps.current_term,
+                success: false,
+                last_included_index: args.last_included_index,
+            };
+        }
         if args.term < self.ps.current_term {
             return InstallSnapshotReply {
                 term: self.ps.current_term,
@@ -1149,7 +1591,6 @@ impl<T: Transport> RaftNode<T> {
                 last_included_index: args.last_included_index,
             };
         }
-
         if args.last_included_index <= self.ps.snapshot_index {
             return InstallSnapshotReply {
                 term: self.ps.current_term,
@@ -1158,12 +1599,50 @@ impl<T: Transport> RaftNode<T> {
             };
         }
 
+        let (incoming_membership, sql_bytes) = match decode_snapshot_payload(&args.data) {
+            Ok(Some((membership, sql_bytes))) => {
+                if self
+                    .validate_incoming_snapshot_membership(&membership, args.last_included_index)
+                    .is_err()
+                {
+                    return InstallSnapshotReply {
+                        term: self.ps.current_term,
+                        success: false,
+                        last_included_index: args.last_included_index,
+                    };
+                }
+                (Some(membership), sql_bytes)
+            }
+            Ok(None) => {
+                if self
+                    .ps
+                    .membership
+                    .as_ref()
+                    .is_some_and(|m| m.config_index > 0)
+                {
+                    return InstallSnapshotReply {
+                        term: self.ps.current_term,
+                        success: false,
+                        last_included_index: args.last_included_index,
+                    };
+                }
+                (None, args.data.as_slice())
+            }
+            Err(_) => {
+                return InstallSnapshotReply {
+                    term: self.ps.current_term,
+                    success: false,
+                    last_included_index: args.last_included_index,
+                }
+            }
+        };
+
         if let Some(snapshot_store) = &self.snapshot_store {
             if snapshot_store
                 .validate_snapshot(
                     args.last_included_index,
                     args.last_included_term,
-                    args.data.as_slice(),
+                    sql_bytes,
                 )
                 .is_err()
             {
@@ -1195,7 +1674,7 @@ impl<T: Transport> RaftNode<T> {
                 .restore_snapshot(
                     args.last_included_index,
                     args.last_included_term,
-                    args.data.as_slice(),
+                    sql_bytes,
                 )
                 .is_err()
             {
@@ -1214,11 +1693,17 @@ impl<T: Transport> RaftNode<T> {
             );
         }
 
+        if let Some(membership) = incoming_membership {
+            self.ps.membership = Some(membership);
+        }
         self.ps
             .install_snapshot(args.last_included_index, args.last_included_term);
         self.snapshot_data = args.data;
         self.commit_index = self.commit_index.max(args.last_included_index);
         self.last_applied = self.last_applied.max(args.last_included_index);
+        self.recompute_effective_membership().unwrap_or_else(|error| {
+            panic!("fatal effective membership after InstallSnapshot: {error}")
+        });
         self.persist();
 
         InstallSnapshotReply {
@@ -1239,6 +1724,13 @@ impl<T: Transport> RaftNode<T> {
         if reply.last_included_index > self.ps.snapshot_index {
             return;
         }
+        if !self
+            .effective_membership
+            .replication_targets()
+            .contains(&from)
+        {
+            return;
+        }
         if let Some(leader) = &mut self.leader {
             let acknowledged = reply.last_included_index;
             let match_index = leader.match_index.entry(from.clone()).or_insert(0);
@@ -1246,74 +1738,108 @@ impl<T: Transport> RaftNode<T> {
             let next_index = leader.next_index.entry(from).or_insert(1);
             *next_index = (*next_index).max(acknowledged.saturating_add(1));
         }
+        self.try_advance_commit();
+    }
+
+    fn choose_transfer_target(&self) -> Result<NodeId, String> {
+        if self.role != RaftRole::Leader {
+            return Err("not leader".to_string());
+        }
+        if self.membership_transition_active() {
+            return Err("membership transition in progress; cannot transfer leadership".to_string());
+        }
+        let last = self.ps.last_log_index();
+        let leader = self
+            .leader
+            .as_ref()
+            .ok_or_else(|| "leader replication state unavailable".to_string())?;
+        self.effective_membership
+            .election_targets()
+            .into_iter()
+            .filter(|id| id != &self.id)
+            .find(|id| leader.match_index.get(id).copied().unwrap_or(0) >= last)
+            .ok_or_else(|| "no eligible up-to-date voter available for leadership transfer".to_string())
+    }
+
+    fn initiate_leader_transfer(&mut self, target: NodeId) -> Result<(), String> {
+        if self.role != RaftRole::Leader {
+            return Err("not leader".to_string());
+        }
+        if self.membership_transition_active() {
+            return Err("membership transition in progress; cannot transfer leadership".to_string());
+        }
+        if !self.effective_membership.is_stable_voter(&target) || target == self.id {
+            return Err(format!("target {target} is not an eligible stable voter"));
+        }
+        let matched = self
+            .leader
+            .as_ref()
+            .and_then(|leader| leader.match_index.get(&target))
+            .copied()
+            .unwrap_or(0);
+        if matched < self.ps.last_log_index() {
+            return Err(format!(
+                "target {target} is not caught up: match_index={matched}, last_log_index={}",
+                self.ps.last_log_index()
+            ));
+        }
+        if self.transfer_in_progress.is_some() {
+            return Err("transfer already in progress".to_string());
+        }
+        let deadline = Instant::now() + Duration::from_millis(LEADER_TRANSFER_TIMEOUT_MS);
+        self.transfer_in_progress = Some((target.clone(), deadline));
+        // Fire-and-forget is performed by the async caller; this helper only
+        // validates and records the transfer state.
+        Ok(())
     }
 
     async fn on_leader_transfer(&mut self, from: &NodeId, target: NodeId) {
-        if self.role != RaftRole::Leader {
-            self.transport
-                .send(
-                    from,
-                    RaftMessage::LeaderTransferReply {
-                        success: false,
-                        error: Some("not leader".to_string()),
-                    },
-                )
-                .await;
-            return;
+        let result = self.initiate_leader_transfer(target.clone());
+        match result {
+            Ok(()) => {
+                self.transport
+                    .send(
+                        &target,
+                        RaftMessage::TimeoutNow {
+                            term: self.ps.current_term,
+                        },
+                    )
+                    .await;
+                self.transport
+                    .send(
+                        from,
+                        RaftMessage::LeaderTransferReply {
+                            success: true,
+                            error: None,
+                        },
+                    )
+                    .await;
+            }
+            Err(error) => {
+                self.transport
+                    .send(
+                        from,
+                        RaftMessage::LeaderTransferReply {
+                            success: false,
+                            error: Some(error),
+                        },
+                    )
+                    .await;
+            }
         }
-        if !self.peers.contains(&target) {
-            self.transport
-                .send(
-                    from,
-                    RaftMessage::LeaderTransferReply {
-                        success: false,
-                        error: Some(format!("unknown target node: {target}")),
-                    },
-                )
-                .await;
-            return;
-        }
-        if self.transfer_in_progress.is_some() {
-            self.transport
-                .send(
-                    from,
-                    RaftMessage::LeaderTransferReply {
-                        success: false,
-                        error: Some("transfer already in progress".to_string()),
-                    },
-                )
-                .await;
-            return;
-        }
-
-        let deadline = Instant::now() + Duration::from_millis(LEADER_TRANSFER_TIMEOUT_MS);
-        self.transfer_in_progress = Some((target.clone(), deadline));
-
-        self.transport
-            .send(
-                &target,
-                RaftMessage::TimeoutNow {
-                    term: self.ps.current_term,
-                },
-            )
-            .await;
-
-        self.transport
-            .send(
-                from,
-                RaftMessage::LeaderTransferReply {
-                    success: true,
-                    error: None,
-                },
-            )
-            .await;
     }
 
-    async fn on_timeout_now(&mut self, term: u64, election_deadline: &mut Instant) {
-        if self.role == RaftRole::Leader {
-            return;
-        }
-        if term < self.ps.current_term {
+    async fn on_timeout_now(
+        &mut self,
+        from: &NodeId,
+        term: u64,
+        election_deadline: &mut Instant,
+    ) {
+        if self.role == RaftRole::Leader
+            || term < self.ps.current_term
+            || !self.effective_membership.is_voter(&self.id)
+            || !self.effective_membership.is_voter(from)
+        {
             return;
         }
         self.start_election().await;
@@ -1327,4 +1853,5 @@ pub struct RaftShared {
     pub leader_id: Option<NodeId>,
     pub commit_index: u64,
     pub last_applied: u64,
+    pub membership: ClusterMembership,
 }
