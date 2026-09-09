@@ -590,7 +590,7 @@ mod tests {
         fs::write(&path, b"NBBK\x01").unwrap();
         let error = verify_backup_file(&path).unwrap_err();
         assert!(matches!(
-            error,
+            &error,
             OfflineBackupError::VerificationIncomplete(_)
         ));
         assert_eq!(
@@ -605,7 +605,10 @@ mod tests {
         let path = output_root.path().join("corrupt.nbbk");
         fs::write(&path, vec![0u8; 256]).unwrap();
         let error = verify_backup_file(&path).unwrap_err();
-        assert!(matches!(error, OfflineBackupError::VerificationCorrupt(_)));
+        assert!(matches!(
+            &error,
+            OfflineBackupError::VerificationCorrupt(_)
+        ));
         assert_eq!(
             error.verification_class(),
             Some(BackupVerificationClass::Corrupt)
@@ -629,7 +632,7 @@ mod tests {
 
         let error = verify_backup_file(&path).unwrap_err();
         assert!(matches!(
-            error,
+            &error,
             OfflineBackupError::VerificationUnsupported(_)
         ));
         assert_eq!(
@@ -643,7 +646,7 @@ mod tests {
         let root = TempDir::new().unwrap();
         let error = verify_backup_file(root.path()).unwrap_err();
         assert!(matches!(
-            error,
+            &error,
             OfflineBackupError::VerificationNotRegularFile(_)
         ));
         assert_eq!(
@@ -662,7 +665,10 @@ mod tests {
         drop(file);
 
         let error = verify_backup_file(&path).unwrap_err();
-        assert!(matches!(error, OfflineBackupError::VerificationTooLarge));
+        assert!(matches!(
+            &error,
+            OfflineBackupError::VerificationTooLarge
+        ));
         assert_eq!(
             error.verification_class(),
             Some(BackupVerificationClass::UnsafeInput)
