@@ -206,11 +206,7 @@ impl OnlineBackupCoordinator {
             }
 
             self.ensure_leader().await?;
-            let backup = NeuralBaseBackup::new_online(
-                created_unix_ms,
-                membership,
-                sql_snapshot,
-            )?;
+            let backup = NeuralBaseBackup::new_online(created_unix_ms, membership, sql_snapshot)?;
             if backup.manifest.metadata.latest_sql_apply_index != boundary {
                 // A confirmed barrier must be the durable apply frontier inside
                 // the same RocksDB snapshot. Anything else is a raced capture.
@@ -399,9 +395,7 @@ fn sync_parent_dir(_parent: &Path) -> Result<(), OnlineBackupError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::consensus::{
-        ChannelTransport, CommittedEntry, RaftNode, RaftPersistenceStore,
-    };
+    use crate::consensus::{ChannelTransport, CommittedEntry, RaftNode, RaftPersistenceStore};
     use crate::replicated_state_machine::ReplicatedSqlStateMachine;
     use tempfile::TempDir;
 
@@ -463,13 +457,7 @@ mod tests {
         }
 
         Harness {
-            coordinator: OnlineBackupCoordinator::new(
-                client_tx,
-                shared,
-                engine,
-                clock,
-                readiness,
-            ),
+            coordinator: OnlineBackupCoordinator::new(client_tx, shared, engine, clock, readiness),
             handle,
             apply_task,
             _db: db,
@@ -543,8 +531,7 @@ mod tests {
         );
         let readiness = node.serving_readiness();
         let (client_tx, shared, handle) = node.spawn();
-        let coordinator =
-            OnlineBackupCoordinator::new(client_tx, shared, engine, clock, readiness);
+        let coordinator = OnlineBackupCoordinator::new(client_tx, shared, engine, clock, readiness);
 
         let error = coordinator
             .create_online_backup_at(&destination, 1234)
@@ -570,11 +557,6 @@ mod tests {
 
         let mut changed = before.clone();
         changed.append(2, b"concurrent".to_vec());
-        assert!(!raft_fingerprint_unchanged(
-            &before,
-            &[],
-            &changed,
-            &[]
-        ));
+        assert!(!raft_fingerprint_unchanged(&before, &[], &changed, &[]));
     }
 }
