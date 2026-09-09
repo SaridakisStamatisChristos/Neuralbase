@@ -558,7 +558,10 @@ mod tests {
         let encoded = backup.encode().unwrap();
         let decoded = NeuralBaseBackup::decode(&encoded).unwrap();
         assert_eq!(decoded.manifest.kind, BackupKind::Online);
-        assert_eq!(decoded.manifest.recovery_semantics, RecoverySemantics::NewCluster);
+        assert_eq!(
+            decoded.manifest.recovery_semantics,
+            RecoverySemantics::NewCluster
+        );
         assert_eq!(decoded, backup);
     }
 
