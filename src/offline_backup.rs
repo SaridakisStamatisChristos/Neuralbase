@@ -605,10 +605,7 @@ mod tests {
         let path = output_root.path().join("corrupt.nbbk");
         fs::write(&path, vec![0u8; 256]).unwrap();
         let error = verify_backup_file(&path).unwrap_err();
-        assert!(matches!(
-            &error,
-            OfflineBackupError::VerificationCorrupt(_)
-        ));
+        assert!(matches!(&error, OfflineBackupError::VerificationCorrupt(_)));
         assert_eq!(
             error.verification_class(),
             Some(BackupVerificationClass::Corrupt)
@@ -665,10 +662,7 @@ mod tests {
         drop(file);
 
         let error = verify_backup_file(&path).unwrap_err();
-        assert!(matches!(
-            &error,
-            OfflineBackupError::VerificationTooLarge
-        ));
+        assert!(matches!(&error, OfflineBackupError::VerificationTooLarge));
         assert_eq!(
             error.verification_class(),
             Some(BackupVerificationClass::UnsafeInput)
