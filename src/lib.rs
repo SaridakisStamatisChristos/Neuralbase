@@ -29,6 +29,7 @@ pub mod replicated_snapshot_hooks;
 pub mod replicated_snapshot_manager;
 pub mod replicated_sql;
 pub mod replicated_state_machine;
+pub mod restore;
 pub mod rocksdb_catalog;
 pub mod scheduler;
 pub mod server;
