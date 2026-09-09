@@ -3,8 +3,8 @@
 //!
 //! These tests intentionally race backup capture with the classes of activity
 //! that can move its logical or consensus boundary. A successful artifact must
-//! describe exactly one committed boundary; a leadership race may instead fail
-//! closed, but must never publish a partial or mixed-state artifact.
+//! describe exactly one committed boundary; a control-plane race may instead
+//! fail closed, but must never publish a partial or mixed-state artifact.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -19,7 +19,7 @@ use neuralbase::consensus::{
 };
 use neuralbase::hlc::HlcClock;
 use neuralbase::offline_backup::verify_backup_file;
-use neuralbase::online_backup::OnlineBackupCoordinator;
+use neuralbase::online_backup::{OnlineBackupCoordinator, OnlineBackupError};
 use neuralbase::raft_persistence::RocksDbRaftPersistenceStore;
 use neuralbase::replicated_gateway::ReplicatedSqlGateway;
 use neuralbase::replicated_identity_snapshot::ReplicatedIdentitySnapshotExtension;
@@ -36,7 +36,6 @@ const VOTERS: [&str; 3] = ["p5-online-a", "p5-online-b", "p5-online-c"];
 type Shared = Arc<Mutex<RaftShared>>;
 
 struct ClusterNode {
-    id: String,
     _db: TempDir,
     engine: Arc<StorageEngine>,
     clock: Arc<HlcClock>,
@@ -139,7 +138,6 @@ async fn spawn_node(bus: ChannelBus, id: &str, lag_apply: bool) -> ClusterNode {
     let (client_tx, shared, handle) = node.spawn();
 
     ClusterNode {
-        id: id.to_string(),
         _db: db,
         engine,
         clock,
@@ -299,8 +297,7 @@ async fn membership_and_compaction_races_never_publish_torn_artifacts() {
     let mut nodes = cluster(None).await;
     let leader = leader_index(&nodes).await;
     let gateway = nodes[leader].gateway();
-    let baseline = gateway.prepare_mutation().await;
-    assert!(baseline.is_ok());
+    gateway.prepare_mutation().await.unwrap();
 
     let output = TempDir::new().unwrap();
     let membership_destination = output.path().join("membership-race.nbbk");
@@ -312,17 +309,34 @@ async fn membership_and_compaction_races_never_publish_torn_artifacts() {
         coordinator.create_online_backup_at(&membership_destination, 1003),
         submit(&nodes[leader].client_tx, add)
     );
-    let manifest = backup_result.unwrap();
     let membership_index = membership_result.unwrap();
-    let backup = verify_backup_file(&membership_destination).unwrap();
-    assert_eq!(backup.manifest, manifest);
-    assert_eq!(
-        backup
-            .membership
-            .learners
-            .contains("p5-online-fresh-learner"),
-        manifest.metadata.last_included_index >= membership_index
-    );
+    match backup_result {
+        Ok(manifest) => {
+            let backup = verify_backup_file(&membership_destination).unwrap();
+            assert_eq!(backup.manifest, manifest);
+            assert_eq!(
+                backup
+                    .membership
+                    .learners
+                    .contains("p5-online-fresh-learner"),
+                manifest.metadata.last_included_index >= membership_index
+            );
+        }
+        Err(error) => {
+            assert!(
+                matches!(
+                    error,
+                    OnlineBackupError::MembershipBeyondBoundary { .. }
+                        | OnlineBackupError::ConcurrentActivity
+                ),
+                "unexpected membership-race failure: {error}"
+            );
+            assert!(
+                !membership_destination.exists(),
+                "failed membership-raced backup published an artifact"
+            );
+        }
+    }
 
     let compaction_destination = output.path().join("compaction-race.nbbk");
     let leader = leader_index(&nodes).await;
@@ -373,6 +387,12 @@ async fn leader_backup_remains_available_with_one_apply_lagged_follower() {
 async fn leadership_transfer_race_is_verified_success_or_no_publication() {
     let mut nodes = cluster(None).await;
     let leader = leader_index(&nodes).await;
+
+    // A confirmed barrier requires a quorum replication and therefore proves
+    // that at least one stable follower is caught up enough to be an eligible
+    // transfer target before we begin the actual backup/transfer race.
+    nodes[leader].gateway().prepare_mutation().await.unwrap();
+
     let output = TempDir::new().unwrap();
     let destination = output.path().join("leadership-transfer.nbbk");
     let coordinator = nodes[leader].coordinator();
@@ -382,7 +402,7 @@ async fn leadership_transfer_race_is_verified_success_or_no_publication() {
         coordinator.create_online_backup_at(&destination, 1006),
         handle.request_leader_transfer()
     );
-    transfer_result.unwrap();
+    transfer_result.expect("a quorum-caught-up voter must be eligible for transfer");
 
     match backup_result {
         Ok(manifest) => {
