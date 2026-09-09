@@ -31,12 +31,14 @@ pub const MAX_BACKUP_BYTES: usize =
 #[repr(u8)]
 pub enum BackupKind {
     Offline = 1,
+    Online = 2,
 }
 
 impl BackupKind {
     fn decode(value: u8) -> Result<Self, BackupCodecError> {
         match value {
             1 => Ok(Self::Offline),
+            2 => Ok(Self::Online),
             other => Err(BackupCodecError::UnsupportedBackupKind(other)),
         }
     }
@@ -171,6 +173,17 @@ impl NeuralBaseBackup {
             membership,
             sql_snapshot,
         };
+        backup.validate()?;
+        Ok(backup)
+    }
+
+    pub fn new_online(
+        created_unix_ms: u64,
+        membership: ClusterMembership,
+        sql_snapshot: Vec<u8>,
+    ) -> Result<Self, BackupCodecError> {
+        let mut backup = Self::new_offline(created_unix_ms, membership, sql_snapshot)?;
+        backup.manifest.kind = BackupKind::Online;
         backup.validate()?;
         Ok(backup)
     }
@@ -537,6 +550,16 @@ mod tests {
         let second = backup.encode().unwrap();
         assert_eq!(first, second);
         assert_eq!(NeuralBaseBackup::decode(&first).unwrap(), backup);
+    }
+
+    #[test]
+    fn online_backup_kind_roundtrips_without_changing_restore_semantics() {
+        let backup = NeuralBaseBackup::new_online(9, membership(), sql_snapshot(7)).unwrap();
+        let encoded = backup.encode().unwrap();
+        let decoded = NeuralBaseBackup::decode(&encoded).unwrap();
+        assert_eq!(decoded.manifest.kind, BackupKind::Online);
+        assert_eq!(decoded.manifest.recovery_semantics, RecoverySemantics::NewCluster);
+        assert_eq!(decoded, backup);
     }
 
     #[test]
