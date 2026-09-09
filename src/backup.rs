@@ -24,10 +24,8 @@ pub const BACKUP_STATE_MACHINE_COMPAT_VERSION: u16 = 1;
 pub const MAX_BACKUP_MEMBERSHIP_BYTES: usize = 1024 * 1024;
 const CHECKSUM_BYTES: usize = 32;
 const HEADER_BYTES: usize = 148;
-pub const MAX_BACKUP_BYTES: usize = HEADER_BYTES
-    + MAX_BACKUP_MEMBERSHIP_BYTES
-    + MAX_REPLICATED_SNAPSHOT_BYTES
-    + CHECKSUM_BYTES;
+pub const MAX_BACKUP_BYTES: usize =
+    HEADER_BYTES + MAX_BACKUP_MEMBERSHIP_BYTES + MAX_REPLICATED_SNAPSHOT_BYTES + CHECKSUM_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -103,7 +101,9 @@ pub enum BackupCodecError {
     UnsupportedRecoverySemantics(u8),
     #[error("unsupported NeuralBase state-machine compatibility version {0}")]
     UnsupportedStateMachineVersion(u16),
-    #[error("backup declares SQL snapshot format version {0}, expected {REPLICATED_SNAPSHOT_VERSION}")]
+    #[error(
+        "backup declares SQL snapshot format version {0}, expected {REPLICATED_SNAPSHOT_VERSION}"
+    )]
     SnapshotVersionMismatch(u8),
     #[error("backup declares membership format version {0}, expected {MEMBERSHIP_FORMAT_VERSION}")]
     MembershipVersionMismatch(u8),
@@ -177,7 +177,6 @@ impl NeuralBaseBackup {
 
     pub fn encode(&self) -> Result<Vec<u8>, BackupCodecError> {
         self.validate()?;
-
         let membership_bytes = canonical_membership_bytes(&self.membership)?;
         if membership_bytes.len() > MAX_BACKUP_MEMBERSHIP_BYTES {
             return Err(BackupCodecError::MembershipTooLarge);
@@ -298,8 +297,8 @@ impl NeuralBaseBackup {
             return Err(BackupCodecError::MembershipTooLarge);
         }
         let snapshot_len_u64 = reader.u64()?;
-        let snapshot_len = usize::try_from(snapshot_len_u64)
-            .map_err(|_| BackupCodecError::SnapshotTooLarge)?;
+        let snapshot_len =
+            usize::try_from(snapshot_len_u64).map_err(|_| BackupCodecError::SnapshotTooLarge)?;
         if snapshot_len > MAX_REPLICATED_SNAPSHOT_BYTES {
             return Err(BackupCodecError::SnapshotTooLarge);
         }
@@ -432,9 +431,7 @@ impl NeuralBaseBackup {
     }
 }
 
-fn canonical_membership_bytes(
-    membership: &ClusterMembership,
-) -> Result<Vec<u8>, BackupCodecError> {
+fn canonical_membership_bytes(membership: &ClusterMembership) -> Result<Vec<u8>, BackupCodecError> {
     membership
         .validate()
         .map_err(BackupCodecError::InvalidMembership)?;
@@ -533,8 +530,9 @@ mod tests {
 
     #[test]
     fn backup_roundtrip_is_exact_and_deterministic() {
-        let backup = NeuralBaseBackup::new_offline(1_725_000_000_123, membership(), sql_snapshot(7))
-            .unwrap();
+        let backup =
+            NeuralBaseBackup::new_offline(1_725_000_000_123, membership(), sql_snapshot(7))
+                .unwrap();
         let first = backup.encode().unwrap();
         let second = backup.encode().unwrap();
         assert_eq!(first, second);
