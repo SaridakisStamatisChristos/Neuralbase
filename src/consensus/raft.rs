@@ -1315,6 +1315,16 @@ impl<T: Transport> RaftNode<T> {
         self.role = RaftRole::Leader;
         self.leader_id = Some(self.id.clone());
         self.serving_ready.store(true, Ordering::Release);
+
+        // `commit_index` is volatile and restarts at the durable snapshot
+        // boundary. If this leader has a durable log tail beyond that boundary,
+        // a current-term no-op is required before Raft may safely advance the
+        // commit index over prior-term entries (§5.4.2). Without this barrier a
+        // committed-but-not-yet-applied identity/SQL entry can remain stranded
+        // forever after a whole-cluster restart until an unrelated write occurs.
+        // Empty commands are intentional Raft control entries; the replicated
+        // state machine advances only its durable apply cursor for them.
+        let recovery_barrier_needed = self.commit_index < self.ps.last_log_index();
         let next = self.ps.last_log_index() + 1;
         let mut next_index = HashMap::new();
         let mut match_index = HashMap::new();
@@ -1329,6 +1339,12 @@ impl<T: Transport> RaftNode<T> {
             match_index,
         });
 
+        if recovery_barrier_needed {
+            let barrier_index = self.ps.append(self.ps.current_term, Vec::new());
+            debug_assert_eq!(barrier_index, next);
+            self.persist();
+        }
+
         // A leader elected while the committed state is joint must finish the
         // transition. If a FinalizeJoint entry already exists uncommitted, the
         // effective config is already stable and it is replicated as-is.
@@ -1337,6 +1353,10 @@ impl<T: Transport> RaftNode<T> {
                 panic!("fatal joint-membership recovery on leader election: {error}");
             }
         }
+        // A single-node recovery barrier/finalizer has quorum immediately; in a
+        // multi-node cluster follower replies will call this again as match
+        // indexes advance.
+        self.try_advance_commit();
         self.send_heartbeats().await;
     }
 
