@@ -434,6 +434,7 @@ async fn restored_cluster_uses_fresh_generation_and_survives_failover_and_full_r
         first_learner_persistent.snapshot_index >= report.boundary_index,
         "empty recovery learner must bootstrap through the restored snapshot boundary"
     );
+    drop(first_learner_store);
     let two_voters = ids_set(&RECOVERY[..2]);
     for node in &recovery_nodes {
         wait_membership(node, |state| {
