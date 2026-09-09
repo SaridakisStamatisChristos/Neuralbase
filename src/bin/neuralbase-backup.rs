@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use neuralbase::offline_backup::{create_offline_backup, verify_backup_file};
+use neuralbase::restore::restore_new_cluster;
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1).collect()) {
@@ -57,6 +58,27 @@ fn run(args: Vec<String>) -> Result<(), String> {
             );
             Ok(())
         }
+        "restore" => {
+            let backup = required_flag(&args[1..], "--backup")?;
+            let target = required_flag(&args[1..], "--target")?;
+            let node_id = required_flag(&args[1..], "--node-id")?;
+            reject_unknown_flags(&args[1..], &["--backup", "--target", "--node-id"])?;
+            let report = restore_new_cluster(
+                &PathBuf::from(backup),
+                &PathBuf::from(target),
+                node_id,
+            )
+            .map_err(|error| error.to_string())?;
+            println!(
+                "restore complete: boundary_index={} boundary_term={} recovery_node_id={} recovery_membership_generation={} source_membership_generation={}",
+                report.boundary_index,
+                report.boundary_term,
+                report.recovery_node_id,
+                report.recovery_membership_generation,
+                report.source_manifest.membership_generation,
+            );
+            Ok(())
+        }
         "help" | "--help" | "-h" => {
             println!("{}", usage());
             Ok(())
@@ -105,9 +127,11 @@ fn usage() -> String {
         "usage:",
         "  neuralbase-backup create --db <rocksdb-path> --output <backup.nbbk>",
         "  neuralbase-backup verify --backup <backup.nbbk>",
+        "  neuralbase-backup restore --backup <backup.nbbk> --target <new-rocksdb-path> --node-id <fresh-node-id>",
         "",
         "create is offline-only: the source RocksDB must not be open by NeuralBase.",
-        "the destination is created with no-overwrite atomic publication semantics.",
+        "restore creates a fresh recovery cluster and refuses an existing target directory.",
+        "the restore node id must not appear anywhere in the source membership history.",
     ]
     .join("\n")
 }
@@ -122,6 +146,21 @@ mod tests {
         assert!(error.contains("--db"));
         let error = run(vec!["verify".to_string()]).unwrap_err();
         assert!(error.contains("--backup"));
+        let error = run(vec!["restore".to_string()]).unwrap_err();
+        assert!(error.contains("--backup"));
+    }
+
+    #[test]
+    fn cli_restore_requires_fresh_node_id_argument() {
+        let error = run(vec![
+            "restore".to_string(),
+            "--backup".to_string(),
+            "x.nbbk".to_string(),
+            "--target".to_string(),
+            "db".to_string(),
+        ])
+        .unwrap_err();
+        assert!(error.contains("--node-id"));
     }
 
     #[test]
