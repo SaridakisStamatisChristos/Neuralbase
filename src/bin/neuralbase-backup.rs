@@ -63,12 +63,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let target = required_flag(&args[1..], "--target")?;
             let node_id = required_flag(&args[1..], "--node-id")?;
             reject_unknown_flags(&args[1..], &["--backup", "--target", "--node-id"])?;
-            let report = restore_new_cluster(
-                &PathBuf::from(backup),
-                &PathBuf::from(target),
-                node_id,
-            )
-            .map_err(|error| error.to_string())?;
+            let report =
+                restore_new_cluster(&PathBuf::from(backup), &PathBuf::from(target), node_id)
+                    .map_err(|error| error.to_string())?;
             println!(
                 "restore complete: boundary_index={} boundary_term={} recovery_node_id={} recovery_membership_generation={} source_membership_generation={}",
                 report.boundary_index,
