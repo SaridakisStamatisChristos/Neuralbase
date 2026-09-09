@@ -104,7 +104,11 @@ async fn elected_leader_commits_prior_term_tail_after_whole_cluster_restart() {
             .expect("apply channel must remain open");
 
         assert_eq!(first.index, 1, "node {} replay order", ids[ordinal]);
-        assert_eq!(first.command, prior_payload, "node {} prior payload", ids[ordinal]);
+        assert_eq!(
+            first.command, prior_payload,
+            "node {} prior payload",
+            ids[ordinal]
+        );
         assert_eq!(second.index, 2, "node {} barrier index", ids[ordinal]);
         assert!(
             second.command.is_empty(),
