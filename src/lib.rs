@@ -13,6 +13,7 @@ pub mod hlc;
 pub mod index_advisor;
 pub mod join_graph;
 pub mod mvcc;
+pub mod offline_backup;
 pub mod optimizer;
 pub mod protocol;
 pub mod query_executor;
