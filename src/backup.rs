@@ -521,7 +521,7 @@ mod tests {
         ClusterMembership::bootstrap("n1".to_string(), ["n2".to_string(), "n3".to_string()])
     }
 
-    fn rewrite_checksum(bytes: &mut Vec<u8>) {
+    fn rewrite_checksum(bytes: &mut [u8]) {
         let len = bytes.len();
         let checksum_at = len - CHECKSUM_BYTES;
         let checksum = Sha256::digest(&bytes[..checksum_at]);
