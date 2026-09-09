@@ -388,9 +388,11 @@ async fn leadership_transfer_race_is_verified_success_or_no_publication() {
     let mut nodes = cluster(None).await;
     let leader = leader_index(&nodes).await;
 
-    // A confirmed barrier requires a quorum replication and therefore proves
-    // that at least one stable follower is caught up enough to be an eligible
-    // transfer target before we begin the actual backup/transfer race.
+    // Establish an initially caught-up quorum before the race. The online
+    // backup is allowed to win the next scheduling turn and append its barrier
+    // first, temporarily making every follower one index behind. In that case
+    // leadership transfer must fail closed rather than treating the stale
+    // follower as eligible.
     nodes[leader].gateway().prepare_mutation().await.unwrap();
 
     let output = TempDir::new().unwrap();
@@ -402,7 +404,12 @@ async fn leadership_transfer_race_is_verified_success_or_no_publication() {
         coordinator.create_online_backup_at(&destination, 1006),
         handle.request_leader_transfer()
     );
-    transfer_result.expect("a quorum-caught-up voter must be eligible for transfer");
+    if let Err(error) = transfer_result {
+        assert!(
+            error.contains("no eligible up-to-date voter") || error.contains("not leader"),
+            "unexpected leadership-transfer race failure: {error}"
+        );
+    }
 
     match backup_result {
         Ok(manifest) => {
