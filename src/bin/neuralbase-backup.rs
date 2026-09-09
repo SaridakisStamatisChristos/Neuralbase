@@ -41,8 +41,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "verify" => {
             let backup = required_flag(&args[1..], "--backup")?;
             reject_unknown_flags(&args[1..], &["--backup"])?;
-            let verified = verify_backup_file(&PathBuf::from(backup))
-                .map_err(|error| error.to_string())?;
+            let verified =
+                verify_backup_file(&PathBuf::from(backup)).map_err(|error| error.to_string())?;
             println!(
                 "backup valid: format={} boundary_index={} boundary_term={} sql_apply_index={} membership_generation={} membership_config_index={} recovery={:?} identity_included={} encrypted={}",
                 verified.manifest.state_machine_compat_version,
