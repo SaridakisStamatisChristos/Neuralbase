@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod backup;
 pub mod binder;
 pub mod catalog;
 pub mod cluster;
