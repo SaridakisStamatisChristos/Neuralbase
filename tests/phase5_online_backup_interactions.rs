@@ -280,7 +280,8 @@ async fn concurrent_identity_mutation_is_ordered_by_the_backup_boundary() {
     let create = create_result.unwrap();
     let backup = verify_backup_file(&destination).unwrap();
     let snapshot = ReplicatedSqlSnapshot::decode(&backup.sql_snapshot).unwrap();
-    let identity = ReplicatedIdentitySnapshotExtension::decode(&snapshot.metadata_extension).unwrap();
+    let identity =
+        ReplicatedIdentitySnapshotExtension::decode(&snapshot.metadata_extension).unwrap();
     let has_alice = match identity {
         ReplicatedIdentitySnapshotExtension::Initialized(state) => state.contains_user("alice"),
         ReplicatedIdentitySnapshotExtension::Uninitialized => false,
@@ -362,10 +363,16 @@ async fn leader_backup_remains_available_with_one_apply_lagged_follower() {
     let lagged = 2;
     let mut nodes = cluster(Some(lagged)).await;
     let leader = leader_index(&nodes).await;
-    assert_ne!(leader, lagged, "the intentionally stalled node must not lead");
+    assert_ne!(
+        leader, lagged,
+        "the intentionally stalled node must not lead"
+    );
     let gateway = nodes[leader].gateway();
     gateway.create_table(schema()).await.unwrap();
-    gateway.insert(&insert_plan(1, "quorum-only")).await.unwrap();
+    gateway
+        .insert(&insert_plan(1, "quorum-only"))
+        .await
+        .unwrap();
 
     let output = TempDir::new().unwrap();
     let destination = output.path().join("lagged-follower.nbbk");
