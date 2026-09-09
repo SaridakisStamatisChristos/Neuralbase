@@ -24,6 +24,15 @@ use crate::replicated_snapshot_manager::{ReplicatedSqlSnapshotManager, SnapshotM
 use crate::replicated_state_machine::{ReplicatedSqlApplyError, ReplicatedSqlStateMachine};
 use crate::storage::{StorageEngine, StorageError};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackupVerificationClass {
+    Incomplete,
+    Unsupported,
+    Corrupt,
+    UnsafeInput,
+    Io,
+}
+
 #[derive(Debug, Error)]
 pub enum OfflineBackupError {
     #[error("backup source does not exist: {0}")]
@@ -67,16 +76,43 @@ pub enum OfflineBackupError {
     MissingBoundaryTerm(u64),
     #[error("export logical state for offline backup: {0}")]
     Snapshot(#[from] SnapshotManagerError),
-    #[error("encode or verify offline backup: {0}")]
+    #[error("encode offline backup: {0}")]
     Codec(#[from] BackupCodecError),
+    #[error("backup verification requires a regular file: {0}")]
+    VerificationNotRegularFile(PathBuf),
+    #[error("backup verification found an incomplete artifact: {0}")]
+    VerificationIncomplete(BackupCodecError),
+    #[error("backup verification found an unsupported artifact: {0}")]
+    VerificationUnsupported(BackupCodecError),
+    #[error("backup verification found a corrupt artifact: {0}")]
+    VerificationCorrupt(BackupCodecError),
+    #[error("backup verification I/O failure: {0}")]
+    VerificationIo(io::Error),
+    #[error("backup verification input exceeds {MAX_BACKUP_BYTES} bytes")]
+    VerificationTooLarge,
     #[error("system clock is before the Unix epoch")]
     ClockBeforeEpoch,
     #[error("backup timestamp does not fit milliseconds since Unix epoch")]
     ClockOverflow,
     #[error("backup I/O failure: {0}")]
     Io(#[from] io::Error),
-    #[error("backup file exceeds {MAX_BACKUP_BYTES} bytes")]
-    FileTooLarge,
+}
+
+impl OfflineBackupError {
+    /// Stable high-level classification for errors returned by
+    /// [`verify_backup_file`]. Non-verification errors return `None`.
+    pub fn verification_class(&self) -> Option<BackupVerificationClass> {
+        match self {
+            Self::VerificationIncomplete(_) => Some(BackupVerificationClass::Incomplete),
+            Self::VerificationUnsupported(_) => Some(BackupVerificationClass::Unsupported),
+            Self::VerificationCorrupt(_) => Some(BackupVerificationClass::Corrupt),
+            Self::VerificationNotRegularFile(_) | Self::VerificationTooLarge => {
+                Some(BackupVerificationClass::UnsafeInput)
+            }
+            Self::VerificationIo(_) => Some(BackupVerificationClass::Io),
+            _ => None,
+        }
+    }
 }
 
 /// Create one offline backup and atomically publish it at `destination`.
@@ -184,19 +220,83 @@ pub fn create_offline_backup_at(
 }
 
 /// Verify a backup independently of any database target or restore operation.
+///
+/// Verification accepts only a regular file, rejects symlinks/special files,
+/// bounds the read even if the file grows after metadata inspection, and
+/// classifies strict codec failures as incomplete, unsupported, or corrupt.
 pub fn verify_backup_file(path: &Path) -> Result<NeuralBaseBackup, OfflineBackupError> {
-    let mut file = File::open(path)?;
-    let metadata = file.metadata()?;
+    let path_metadata = fs::symlink_metadata(path).map_err(OfflineBackupError::VerificationIo)?;
+    if !path_metadata.file_type().is_file() {
+        return Err(OfflineBackupError::VerificationNotRegularFile(
+            path.to_path_buf(),
+        ));
+    }
+
+    let file = File::open(path).map_err(OfflineBackupError::VerificationIo)?;
+    let metadata = file
+        .metadata()
+        .map_err(OfflineBackupError::VerificationIo)?;
+    if !metadata.file_type().is_file() {
+        return Err(OfflineBackupError::VerificationNotRegularFile(
+            path.to_path_buf(),
+        ));
+    }
+
     let max = u64::try_from(MAX_BACKUP_BYTES).unwrap_or(u64::MAX);
     if metadata.len() > max {
-        return Err(OfflineBackupError::FileTooLarge);
+        return Err(OfflineBackupError::VerificationTooLarge);
     }
-    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
-    file.read_to_end(&mut bytes)?;
+
+    let capacity = usize::try_from(metadata.len())
+        .unwrap_or(MAX_BACKUP_BYTES)
+        .min(MAX_BACKUP_BYTES);
+    let mut bytes = Vec::with_capacity(capacity);
+    let mut bounded = file.take(max.saturating_add(1));
+    bounded
+        .read_to_end(&mut bytes)
+        .map_err(OfflineBackupError::VerificationIo)?;
     if bytes.len() > MAX_BACKUP_BYTES {
-        return Err(OfflineBackupError::FileTooLarge);
+        return Err(OfflineBackupError::VerificationTooLarge);
     }
-    NeuralBaseBackup::decode(&bytes).map_err(Into::into)
+
+    NeuralBaseBackup::decode(&bytes).map_err(classify_verification_codec)
+}
+
+fn classify_verification_codec(error: BackupCodecError) -> OfflineBackupError {
+    match error {
+        error @ BackupCodecError::UnexpectedEof => {
+            OfflineBackupError::VerificationIncomplete(error)
+        }
+        error @ BackupCodecError::LengthMismatch { declared, actual } if actual < declared => {
+            OfflineBackupError::VerificationIncomplete(error)
+        }
+        error @ BackupCodecError::UnsupportedVersion(_) => {
+            OfflineBackupError::VerificationUnsupported(error)
+        }
+        error @ BackupCodecError::UnsupportedFlags(_) => {
+            OfflineBackupError::VerificationUnsupported(error)
+        }
+        error @ BackupCodecError::UnsupportedBackupKind(_) => {
+            OfflineBackupError::VerificationUnsupported(error)
+        }
+        error @ BackupCodecError::UnsupportedRecoverySemantics(_) => {
+            OfflineBackupError::VerificationUnsupported(error)
+        }
+        error @ BackupCodecError::UnsupportedStateMachineVersion(_) => {
+            OfflineBackupError::VerificationUnsupported(error)
+        }
+        error @ BackupCodecError::SnapshotVersionMismatch(_) => {
+            OfflineBackupError::VerificationUnsupported(error)
+        }
+        error @ BackupCodecError::MembershipVersionMismatch(_) => {
+            OfflineBackupError::VerificationUnsupported(error)
+        }
+        error @ BackupCodecError::EncryptionUnsupported => {
+            OfflineBackupError::VerificationUnsupported(error)
+        }
+        BackupCodecError::TooLarge => OfflineBackupError::VerificationTooLarge,
+        error => OfflineBackupError::VerificationCorrupt(error),
+    }
 }
 
 fn validate_paths(db_path: &Path, destination: &Path) -> Result<(), OfflineBackupError> {
@@ -355,12 +455,14 @@ fn sync_parent_dir(_parent: &Path) -> Result<(), OfflineBackupError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backup::BACKUP_FORMAT_VERSION;
     use crate::consensus::{
         encode_snapshot_payload, ClusterMembership, PersistentState, StagedSnapshot,
         StagedSnapshotKind,
     };
     use crate::replicated_identity_snapshot::ReplicatedIdentitySnapshotExtension;
     use crate::replicated_snapshot::SnapshotMetadata;
+    use sha2::{Digest, Sha256};
     use tempfile::TempDir;
 
     fn initialize_source(root: &TempDir) -> PathBuf {
@@ -482,11 +584,107 @@ mod tests {
     }
 
     #[test]
-    fn malformed_or_incomplete_artifact_never_verifies() {
+    fn malformed_or_incomplete_artifact_is_classified_incomplete() {
         let output_root = TempDir::new().unwrap();
         let path = output_root.path().join("broken.nbbk");
         fs::write(&path, b"NBBK\x01").unwrap();
-        assert!(verify_backup_file(&path).is_err());
+        let error = verify_backup_file(&path).unwrap_err();
+        assert!(matches!(
+            error,
+            OfflineBackupError::VerificationIncomplete(_)
+        ));
+        assert_eq!(
+            error.verification_class(),
+            Some(BackupVerificationClass::Incomplete)
+        );
+    }
+
+    #[test]
+    fn checksum_failure_is_classified_corrupt() {
+        let output_root = TempDir::new().unwrap();
+        let path = output_root.path().join("corrupt.nbbk");
+        fs::write(&path, vec![0u8; 256]).unwrap();
+        let error = verify_backup_file(&path).unwrap_err();
+        assert!(matches!(error, OfflineBackupError::VerificationCorrupt(_)));
+        assert_eq!(
+            error.verification_class(),
+            Some(BackupVerificationClass::Corrupt)
+        );
+    }
+
+    #[test]
+    fn future_format_is_classified_unsupported_after_integrity_rewrite() {
+        let source_root = TempDir::new().unwrap();
+        let output_root = TempDir::new().unwrap();
+        let db_path = initialize_source(&source_root);
+        let path = output_root.path().join("future.nbbk");
+        create_offline_backup_at(&db_path, &path, 1234).unwrap();
+
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[4] = BACKUP_FORMAT_VERSION.saturating_add(1);
+        let payload_len = bytes.len() - 32;
+        let checksum = Sha256::digest(&bytes[..payload_len]);
+        bytes[payload_len..].copy_from_slice(&checksum);
+        fs::write(&path, &bytes).unwrap();
+
+        let error = verify_backup_file(&path).unwrap_err();
+        assert!(matches!(
+            error,
+            OfflineBackupError::VerificationUnsupported(_)
+        ));
+        assert_eq!(
+            error.verification_class(),
+            Some(BackupVerificationClass::Unsupported)
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_non_regular_input_before_reading() {
+        let root = TempDir::new().unwrap();
+        let error = verify_backup_file(root.path()).unwrap_err();
+        assert!(matches!(
+            error,
+            OfflineBackupError::VerificationNotRegularFile(_)
+        ));
+        assert_eq!(
+            error.verification_class(),
+            Some(BackupVerificationClass::UnsafeInput)
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_oversized_sparse_file_without_unbounded_read() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("oversized.nbbk");
+        let file = File::create(&path).unwrap();
+        file.set_len(u64::try_from(MAX_BACKUP_BYTES).unwrap() + 1)
+            .unwrap();
+        drop(file);
+
+        let error = verify_backup_file(&path).unwrap_err();
+        assert!(matches!(error, OfflineBackupError::VerificationTooLarge));
+        assert_eq!(
+            error.verification_class(),
+            Some(BackupVerificationClass::UnsafeInput)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verifier_rejects_symlink_even_when_target_is_regular() {
+        use std::os::unix::fs::symlink;
+
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("target.nbbk");
+        let link = root.path().join("link.nbbk");
+        fs::write(&target, b"regular-target").unwrap();
+        symlink(&target, &link).unwrap();
+
+        let error = verify_backup_file(&link).unwrap_err();
+        assert!(matches!(
+            error,
+            OfflineBackupError::VerificationNotRegularFile(_)
+        ));
     }
 
     #[test]
