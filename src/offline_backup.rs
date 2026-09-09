@@ -92,8 +92,8 @@ pub fn create_offline_backup(
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| OfflineBackupError::ClockBeforeEpoch)?;
-    let created_unix_ms = u64::try_from(duration.as_millis())
-        .map_err(|_| OfflineBackupError::ClockOverflow)?;
+    let created_unix_ms =
+        u64::try_from(duration.as_millis()).map_err(|_| OfflineBackupError::ClockOverflow)?;
     create_offline_backup_at(db_path, destination, created_unix_ms)
 }
 
@@ -129,9 +129,9 @@ pub fn create_offline_backup_at(
         .membership
         .clone()
         .ok_or(OfflineBackupError::MissingMembership)?;
-    membership
-        .validate()
-        .map_err(|error| OfflineBackupError::Raft(format!("invalid committed membership: {error}")))?;
+    membership.validate().map_err(|error| {
+        OfflineBackupError::Raft(format!("invalid committed membership: {error}"))
+    })?;
 
     validate_active_snapshot(&persistent, &active_snapshot)?;
 
@@ -211,9 +211,7 @@ fn validate_paths(db_path: &Path, destination: &Path) -> Result<(), OfflineBacku
     // `StorageEngine::open` has create-if-missing semantics. Require RocksDB's
     // existing-database marker so a typo can never create and "back up" a new DB.
     if !db_path.join("CURRENT").is_file() {
-        return Err(OfflineBackupError::SourceNotRocksDb(
-            db_path.to_path_buf(),
-        ));
+        return Err(OfflineBackupError::SourceNotRocksDb(db_path.to_path_buf()));
     }
     let parent = destination
         .parent()
@@ -409,11 +407,11 @@ mod tests {
         let verified = verify_backup_file(&destination).unwrap();
         assert_eq!(verified.manifest, manifest);
         assert_eq!(verified.membership.voters.len(), 1);
-        assert!(output_root
-            .path()
-            .read_dir()
+        assert!(output_root.path().read_dir().unwrap().all(|entry| !entry
             .unwrap()
-            .all(|entry| !entry.unwrap().file_name().to_string_lossy().contains("partial")));
+            .file_name()
+            .to_string_lossy()
+            .contains("partial")));
     }
 
     #[test]
@@ -447,12 +445,9 @@ mod tests {
         drop(store);
         drop(engine);
 
-        let error = create_offline_backup_at(
-            &db_path,
-            &output_root.path().join("cluster.nbbk"),
-            1234,
-        )
-        .unwrap_err();
+        let error =
+            create_offline_backup_at(&db_path, &output_root.path().join("cluster.nbbk"), 1234)
+                .unwrap_err();
         assert!(matches!(error, OfflineBackupError::StagedRaftSnapshot));
     }
 
@@ -477,12 +472,9 @@ mod tests {
         drop(store);
         drop(engine);
 
-        let error = create_offline_backup_at(
-            &db_path,
-            &output_root.path().join("cluster.nbbk"),
-            1234,
-        )
-        .unwrap_err();
+        let error =
+            create_offline_backup_at(&db_path, &output_root.path().join("cluster.nbbk"), 1234)
+                .unwrap_err();
         assert!(matches!(
             error,
             OfflineBackupError::InvalidActiveRaftSnapshot(_)
