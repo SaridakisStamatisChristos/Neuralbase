@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod backup;
+pub mod backup_encryption;
 pub mod binder;
 pub mod catalog;
 pub mod cluster;
