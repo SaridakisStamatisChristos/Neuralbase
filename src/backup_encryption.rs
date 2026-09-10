@@ -124,17 +124,13 @@ pub fn load_backup_encryption_key(
 ) -> Result<BackupEncryptionKey, BackupEncryptionError> {
     let before = fs::symlink_metadata(path).map_err(|source| key_io(path, source))?;
     if !before.file_type().is_file() {
-        return Err(BackupEncryptionError::KeyNotRegularFile(
-            path.to_path_buf(),
-        ));
+        return Err(BackupEncryptionError::KeyNotRegularFile(path.to_path_buf()));
     }
 
     let file = File::open(path).map_err(|source| key_io(path, source))?;
     let opened = file.metadata().map_err(|source| key_io(path, source))?;
     if !opened.file_type().is_file() {
-        return Err(BackupEncryptionError::KeyNotRegularFile(
-            path.to_path_buf(),
-        ));
+        return Err(BackupEncryptionError::KeyNotRegularFile(path.to_path_buf()));
     }
 
     #[cfg(unix)]
@@ -159,11 +155,9 @@ pub fn load_backup_encryption_key(
     file.take((BACKUP_ENCRYPTION_KEY_BYTES + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(|source| key_io(path, source))?;
-    BackupEncryptionKey::from_vec(bytes).map_err(|actual| {
-        BackupEncryptionError::InvalidKeyLength {
-            path: path.to_path_buf(),
-            actual,
-        }
+    BackupEncryptionKey::from_vec(bytes).map_err(|actual| BackupEncryptionError::InvalidKeyLength {
+        path: path.to_path_buf(),
+        actual,
     })
 }
 
@@ -260,7 +254,8 @@ fn encrypt_backup_with_nonce(
     if payload.len() > MAX_BACKUP_BYTES {
         return Err(BackupEncryptionError::TooLarge);
     }
-    let plaintext_len = u64::try_from(payload.len()).map_err(|_| BackupEncryptionError::TooLarge)?;
+    let plaintext_len =
+        u64::try_from(payload.len()).map_err(|_| BackupEncryptionError::TooLarge)?;
     let header = build_header(nonce, plaintext_len);
     let packet_key = packet_key(key, nonce)?;
     let tag = packet_key
@@ -302,9 +297,7 @@ fn packet_key(
     let tls13 = TLS13_CHACHA20_POLY1305_SHA256
         .tls13()
         .ok_or(BackupEncryptionError::CryptoUnavailable)?;
-    let algorithm = tls13
-        .quic
-        .ok_or(BackupEncryptionError::CryptoUnavailable)?;
+    let algorithm = tls13.quic.ok_or(BackupEncryptionError::CryptoUnavailable)?;
     if algorithm.aead_key_len() != BACKUP_ENCRYPTION_KEY_BYTES {
         return Err(BackupEncryptionError::CryptoUnavailable);
     }
@@ -337,8 +330,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn backup() -> NeuralBaseBackup {
-        let membership =
-            ClusterMembership::bootstrap("n1".to_string(), Vec::<String>::new());
+        let membership = ClusterMembership::bootstrap("n1".to_string(), Vec::<String>::new());
         let snapshot = ReplicatedSqlSnapshot {
             metadata: SnapshotMetadata {
                 last_included_index: 7,
@@ -363,8 +355,7 @@ mod tests {
     #[test]
     fn authenticated_container_roundtrips_and_cannot_be_republished_plain() {
         let original = backup();
-        let encrypted =
-            encrypt_backup_with_nonce(&original, &key(7), [9u8; NONCE_BYTES]).unwrap();
+        let encrypted = encrypt_backup_with_nonce(&original, &key(7), [9u8; NONCE_BYTES]).unwrap();
         assert_eq!(&encrypted[..4], MAGIC);
 
         let decrypted = decrypt_backup(&encrypted, &key(7)).unwrap();
@@ -461,7 +452,10 @@ mod tests {
 
     #[test]
     fn key_debug_output_is_redacted() {
-        assert_eq!(format!("{:?}", key(0x41)), "BackupEncryptionKey([REDACTED])");
+        assert_eq!(
+            format!("{:?}", key(0x41)),
+            "BackupEncryptionKey([REDACTED])"
+        );
     }
 
     #[test]
