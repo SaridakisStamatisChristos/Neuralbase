@@ -407,7 +407,7 @@ async fn restored_cluster_uses_fresh_generation_and_survives_failover_and_full_r
     wait_membership(&recovery_nodes[0], |state| {
         state.membership.voters == ids_set(&[RECOVERY[0]])
             && state.membership.removed.is_superset(&source_history)
-            && state.membership.generation >= source_generation + 1
+            && state.membership.generation > source_generation
     })
     .await;
 
