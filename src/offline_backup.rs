@@ -722,4 +722,33 @@ mod tests {
         let mode = fs::metadata(&destination).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
     }
+
+    #[test]
+    fn interrupted_staged_backup_is_never_promoted_and_retry_is_clean() {
+        let source_root = TempDir::new().unwrap();
+        let output_root = TempDir::new().unwrap();
+        let db_path = initialize_source(&source_root);
+        let destination = output_root.path().join("cluster.nbbk");
+        let staged = output_root
+            .path()
+            .join(format!(".cluster.nbbk.partial-{}-1234", std::process::id()));
+
+        // Simulate a crash after a complete staged file was fsynced but before
+        // publication. Even independently valid staged bytes are not authority.
+        let staged_backup = capture_offline_backup_at(&db_path, &destination, 1234).unwrap();
+        fs::write(&staged, staged_backup.encode().unwrap()).unwrap();
+        assert!(verify_backup_file(&staged).is_ok());
+
+        let error = create_offline_backup_at(&db_path, &destination, 1234).unwrap_err();
+        assert!(matches!(error, OfflineBackupError::Io(_)));
+        assert!(!destination.exists());
+        assert!(
+            !staged.exists(),
+            "failed attempt must quarantine/remove its stale stage"
+        );
+
+        let manifest = create_offline_backup_at(&db_path, &destination, 1234).unwrap();
+        let verified = verify_backup_file(&destination).unwrap();
+        assert_eq!(verified.manifest, manifest);
+    }
 }

@@ -549,4 +549,102 @@ mod tests {
         assert!(restore_new_cluster(&backup_path, &target, "recovery-1").is_err());
         assert!(!target.exists());
     }
+
+    #[test]
+    fn stale_restore_stages_from_multiple_crash_boundaries_are_never_resumed() {
+        let root = TempDir::new().unwrap();
+        let backup = fixture_backup();
+        let backup_path = write_backup(&root, &backup);
+        let target = root.path().join("recovered-db");
+        let recovery_node_id = "recovery-1";
+        let recovery_membership = build_recovery_membership(&backup, recovery_node_id).unwrap();
+        let active_snapshot =
+            encode_snapshot_payload(&recovery_membership, &backup.sql_snapshot).unwrap();
+        let stage = |attempt: u16| {
+            root.path().join(format!(
+                ".recovered-db.restore-partial-{}-{}-{attempt}",
+                std::process::id(),
+                backup.manifest.created_unix_ms
+            ))
+        };
+
+        // Crash boundary 1: staging directory + durable 'building' marker only.
+        let prepared = stage(0);
+        fs::create_dir(&prepared).unwrap();
+        write_restore_marker(
+            &prepared.join(RESTORE_MARKER),
+            "building",
+            &backup,
+            &recovery_membership,
+            recovery_node_id,
+        )
+        .unwrap();
+
+        // Crash boundary 2: logical SQL/identity data durably restored, but no
+        // authoritative Raft recovery metadata has been published in the stage.
+        let data_restored = stage(1);
+        fs::create_dir(&data_restored).unwrap();
+        write_restore_marker(
+            &data_restored.join(RESTORE_MARKER),
+            "building",
+            &backup,
+            &recovery_membership,
+            recovery_node_id,
+        )
+        .unwrap();
+        {
+            let engine = Arc::new(StorageEngine::open(&data_restored).unwrap());
+            let manager = ReplicatedSqlSnapshotManager::new(
+                Arc::clone(&engine),
+                Arc::new(InMemoryCatalog::default()),
+                Arc::new(HlcClock::new(500)),
+            );
+            manager.restore(&backup.sql_snapshot).unwrap();
+        }
+
+        // Crash boundary 3: complete verified staged database, representing a
+        // crash after durable restore/metadata but before atomic target publish.
+        let fully_staged = stage(2);
+        fs::create_dir(&fully_staged).unwrap();
+        restore_into_staging(
+            &fully_staged,
+            &backup,
+            &recovery_membership,
+            &active_snapshot,
+            recovery_node_id,
+        )
+        .unwrap();
+        write_restore_marker(
+            &fully_staged.join(RESTORE_MARKER),
+            "validated",
+            &backup,
+            &recovery_membership,
+            recovery_node_id,
+        )
+        .unwrap();
+
+        assert!(!target.exists());
+        let report = restore_new_cluster(&backup_path, &target, recovery_node_id).unwrap();
+        assert_eq!(
+            report.boundary_index,
+            backup.manifest.metadata.last_included_index
+        );
+        assert!(target.join("CURRENT").is_file());
+        assert!(!target.join(RESTORE_MARKER).exists());
+
+        // The retry must allocate a fresh stage instead of interpreting any
+        // stale crash artifact as resumable authority. Stale stages remain
+        // quarantined for explicit operator cleanup/forensics.
+        assert!(prepared.join(RESTORE_MARKER).is_file());
+        assert!(data_restored.join(RESTORE_MARKER).is_file());
+        assert!(fully_staged.join(RESTORE_MARKER).is_file());
+
+        let engine = Arc::new(StorageEngine::open(&target).unwrap());
+        let manager = ReplicatedSqlSnapshotManager::new(
+            Arc::clone(&engine),
+            Arc::new(InMemoryCatalog::default()),
+            Arc::new(HlcClock::new(500)),
+        );
+        assert_eq!(manager.export(7, 3).unwrap(), backup.sql_snapshot);
+    }
 }
