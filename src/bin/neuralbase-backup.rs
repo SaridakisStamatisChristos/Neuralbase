@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use neuralbase::backup_encryption::{
+    create_encrypted_offline_backup, load_backup_encryption_key, verify_encrypted_backup_file,
+};
 use neuralbase::offline_backup::{create_offline_backup, verify_backup_file};
-use neuralbase::restore::restore_new_cluster;
+use neuralbase::restore::{restore_encrypted_new_cluster, restore_new_cluster};
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1).collect()) {
@@ -24,9 +27,17 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "create" => {
             let db = required_flag(&args[1..], "--db")?;
             let output = required_flag(&args[1..], "--output")?;
-            reject_unknown_flags(&args[1..], &["--db", "--output"])?;
-            let manifest = create_offline_backup(&PathBuf::from(db), &PathBuf::from(output))
-                .map_err(|error| error.to_string())?;
+            let key_file = optional_flag(&args[1..], "--key-file")?;
+            reject_unknown_flags(&args[1..], &["--db", "--output", "--key-file"])?;
+            let manifest = if let Some(key_file) = key_file {
+                let key = load_backup_encryption_key(Path::new(key_file))
+                    .map_err(|error| error.to_string())?;
+                create_encrypted_offline_backup(&PathBuf::from(db), &PathBuf::from(output), &key)
+                    .map_err(|error| error.to_string())?
+            } else {
+                create_offline_backup(&PathBuf::from(db), &PathBuf::from(output))
+                    .map_err(|error| error.to_string())?
+            };
             println!(
                 "backup created: boundary_index={} boundary_term={} sql_apply_index={} membership_generation={} membership_config_index={} identity_included={} encrypted={}",
                 manifest.metadata.last_included_index,
@@ -41,9 +52,16 @@ fn run(args: Vec<String>) -> Result<(), String> {
         }
         "verify" => {
             let backup = required_flag(&args[1..], "--backup")?;
-            reject_unknown_flags(&args[1..], &["--backup"])?;
-            let verified =
-                verify_backup_file(&PathBuf::from(backup)).map_err(|error| error.to_string())?;
+            let key_file = optional_flag(&args[1..], "--key-file")?;
+            reject_unknown_flags(&args[1..], &["--backup", "--key-file"])?;
+            let verified = if let Some(key_file) = key_file {
+                let key = load_backup_encryption_key(Path::new(key_file))
+                    .map_err(|error| error.to_string())?;
+                verify_encrypted_backup_file(&PathBuf::from(backup), &key)
+                    .map_err(|error| error.to_string())?
+            } else {
+                verify_backup_file(&PathBuf::from(backup)).map_err(|error| error.to_string())?
+            };
             println!(
                 "backup valid: format={} boundary_index={} boundary_term={} sql_apply_index={} membership_generation={} membership_config_index={} recovery={:?} identity_included={} encrypted={}",
                 verified.manifest.state_machine_compat_version,
@@ -62,10 +80,25 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let backup = required_flag(&args[1..], "--backup")?;
             let target = required_flag(&args[1..], "--target")?;
             let node_id = required_flag(&args[1..], "--node-id")?;
-            reject_unknown_flags(&args[1..], &["--backup", "--target", "--node-id"])?;
-            let report =
-                restore_new_cluster(&PathBuf::from(backup), &PathBuf::from(target), node_id)
+            let key_file = optional_flag(&args[1..], "--key-file")?;
+            reject_unknown_flags(
+                &args[1..],
+                &["--backup", "--target", "--node-id", "--key-file"],
+            )?;
+            let report = if let Some(key_file) = key_file {
+                let key = load_backup_encryption_key(Path::new(key_file))
                     .map_err(|error| error.to_string())?;
+                restore_encrypted_new_cluster(
+                    &PathBuf::from(backup),
+                    &key,
+                    &PathBuf::from(target),
+                    node_id,
+                )
+                .map_err(|error| error.to_string())?
+            } else {
+                restore_new_cluster(&PathBuf::from(backup), &PathBuf::from(target), node_id)
+                    .map_err(|error| error.to_string())?
+            };
             println!(
                 "restore complete: boundary_index={} boundary_term={} recovery_node_id={} recovery_membership_generation={} source_membership_generation={}",
                 report.boundary_index,
@@ -101,6 +134,23 @@ fn required_flag<'a>(args: &'a [String], flag: &str) -> Result<&'a str, String> 
     Err(format!("missing required {flag}\n{}", usage()))
 }
 
+fn optional_flag<'a>(args: &'a [String], flag: &str) -> Result<Option<&'a str>, String> {
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == flag {
+            let value = args
+                .get(index + 1)
+                .ok_or_else(|| format!("missing value for {flag}"))?;
+            if value.starts_with("--") {
+                return Err(format!("missing value for {flag}"));
+            }
+            return Ok(Some(value));
+        }
+        index += 1;
+    }
+    Ok(None)
+}
+
 fn reject_unknown_flags(args: &[String], allowed: &[&str]) -> Result<(), String> {
     if args.len() % 2 != 0 {
         return Err(usage());
@@ -122,11 +172,13 @@ fn reject_unknown_flags(args: &[String], allowed: &[&str]) -> Result<(), String>
 fn usage() -> String {
     [
         "usage:",
-        "  neuralbase-backup create --db <rocksdb-path> --output <backup.nbbk>",
-        "  neuralbase-backup verify --backup <backup.nbbk>",
-        "  neuralbase-backup restore --backup <backup.nbbk> --target <new-rocksdb-path> --node-id <fresh-node-id>",
+        "  neuralbase-backup create --db <rocksdb-path> --output <backup> [--key-file <raw-32-byte-key>]",
+        "  neuralbase-backup verify --backup <backup> [--key-file <raw-32-byte-key>]",
+        "  neuralbase-backup restore --backup <backup> --target <new-rocksdb-path> --node-id <fresh-node-id> [--key-file <raw-32-byte-key>]",
         "",
         "create is offline-only: the source RocksDB must not be open by NeuralBase.",
+        "--key-file selects authenticated NBEC v1 encryption; key bytes are never accepted on argv.",
+        "without --key-file, create/verify/restore use the plaintext NBBK v1 format.",
         "restore creates a fresh recovery cluster and refuses an existing target directory.",
         "the restore node id must not appear anywhere in the source membership history.",
     ]
@@ -158,6 +210,22 @@ mod tests {
         ])
         .unwrap_err();
         assert!(error.contains("--node-id"));
+    }
+
+    #[test]
+    fn optional_key_file_requires_a_value() {
+        let args = vec!["--key-file".to_string()];
+        let error = optional_flag(&args, "--key-file").unwrap_err();
+        assert!(error.contains("missing value for --key-file"));
+    }
+
+    #[test]
+    fn optional_key_file_returns_the_path_without_reading_key_material() {
+        let args = vec!["--key-file".to_string(), "backup.key".to_string()];
+        assert_eq!(
+            optional_flag(&args, "--key-file").unwrap(),
+            Some("backup.key")
+        );
     }
 
     #[test]

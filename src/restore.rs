@@ -15,6 +15,9 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::backup::{BackupManifest, NeuralBaseBackup};
+use crate::backup_encryption::{
+    verify_encrypted_backup_file, BackupEncryptionError, BackupEncryptionKey,
+};
 use crate::catalog::InMemoryCatalog;
 use crate::consensus::{
     encode_snapshot_payload, ClusterMembership, PersistentState, RaftPersistenceStore,
@@ -43,6 +46,8 @@ pub struct RestoreReport {
 pub enum RestoreError {
     #[error("backup validation failed before restore: {0}")]
     Backup(#[from] OfflineBackupError),
+    #[error("encrypted backup validation failed before restore: {0}")]
+    EncryptedBackup(#[from] BackupEncryptionError),
     #[error("restore target already exists: {0}")]
     TargetExists(PathBuf),
     #[error("restore target must have an existing parent directory")]
@@ -90,6 +95,30 @@ pub fn restore_new_cluster(
 ) -> Result<RestoreReport, RestoreError> {
     validate_target(target)?;
     let backup = verify_backup_file(backup_path)?;
+    restore_verified_new_cluster(backup, target, recovery_node_id)
+}
+
+/// Restore an authenticated encrypted backup into a brand-new recovery cluster.
+///
+/// Decryption and complete backup validation finish before any restore target or
+/// staging directory is created, so a wrong key or tampered artifact cannot
+/// publish partial database state.
+pub fn restore_encrypted_new_cluster(
+    backup_path: &Path,
+    key: &BackupEncryptionKey,
+    target: &Path,
+    recovery_node_id: &str,
+) -> Result<RestoreReport, RestoreError> {
+    validate_target(target)?;
+    let backup = verify_encrypted_backup_file(backup_path, key)?;
+    restore_verified_new_cluster(backup, target, recovery_node_id)
+}
+
+fn restore_verified_new_cluster(
+    backup: NeuralBaseBackup,
+    target: &Path,
+    recovery_node_id: &str,
+) -> Result<RestoreReport, RestoreError> {
     let recovery_membership = build_recovery_membership(&backup, recovery_node_id)?;
     let boundary = backup.manifest.metadata.last_included_index;
     let boundary_term = backup.manifest.metadata.last_included_term;

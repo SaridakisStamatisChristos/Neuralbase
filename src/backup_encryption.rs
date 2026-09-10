@@ -8,9 +8,10 @@
 //! relabelling of plaintext backups.
 
 use std::fmt;
-use std::fs::{self, File};
-use std::io::{self, Read};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::{rngs::OsRng, RngCore};
 use rustls::crypto::cipher::{AeadKey, Iv};
@@ -18,7 +19,8 @@ use rustls::crypto::ring::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256;
 use rustls::crypto::SharedSecret;
 use thiserror::Error;
 
-use crate::backup::{BackupCodecError, NeuralBaseBackup, MAX_BACKUP_BYTES};
+use crate::backup::{BackupCodecError, BackupManifest, NeuralBaseBackup, MAX_BACKUP_BYTES};
+use crate::offline_backup::{capture_offline_backup_at, OfflineBackupError};
 
 const MAGIC: &[u8; 4] = b"NBEC";
 pub const ENCRYPTED_BACKUP_FORMAT_VERSION: u8 = 1;
@@ -86,6 +88,30 @@ pub enum BackupEncryptionError {
         #[source]
         source: io::Error,
     },
+    #[error("encrypted backup input is not a regular file: {0}")]
+    InputNotRegularFile(PathBuf),
+    #[error("encrypted backup input changed while being opened: {0}")]
+    InputChangedDuringOpen(PathBuf),
+    #[error("encrypted backup file I/O failure for {path}: {source}")]
+    FileIo {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("encrypted backup destination already exists: {0}")]
+    DestinationExists(PathBuf),
+    #[error("encrypted backup destination must have an existing parent directory")]
+    DestinationParentMissing,
+    #[error("encrypted backup destination must name a file")]
+    DestinationFileNameMissing,
+    #[error("captured offline backup failed: {0}")]
+    Offline(#[from] OfflineBackupError),
+    #[error("system clock is before the Unix epoch")]
+    ClockBeforeEpoch,
+    #[error("backup timestamp does not fit milliseconds since Unix epoch")]
+    ClockOverflow,
+    #[error("staged encrypted backup did not decode to the captured logical backup")]
+    StagedVerificationMismatch,
     #[error("secure random nonce generation failed")]
     RandomFailure,
     #[error("required ChaCha20-Poly1305 backup crypto provider is unavailable")]
@@ -159,6 +185,41 @@ pub fn load_backup_encryption_key(
         path: path.to_path_buf(),
         actual,
     })
+}
+
+/// Create one encrypted offline backup without writing plaintext backup bytes to disk.
+pub fn create_encrypted_offline_backup(
+    db_path: &Path,
+    destination: &Path,
+    key: &BackupEncryptionKey,
+) -> Result<BackupManifest, BackupEncryptionError> {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| BackupEncryptionError::ClockBeforeEpoch)?;
+    let created_unix_ms =
+        u64::try_from(duration.as_millis()).map_err(|_| BackupEncryptionError::ClockOverflow)?;
+    create_encrypted_offline_backup_at(db_path, destination, key, created_unix_ms)
+}
+
+/// Deterministic timestamp variant used by executable tests.
+pub fn create_encrypted_offline_backup_at(
+    db_path: &Path,
+    destination: &Path,
+    key: &BackupEncryptionKey,
+    created_unix_ms: u64,
+) -> Result<BackupManifest, BackupEncryptionError> {
+    let backup = capture_offline_backup_at(db_path, destination, created_unix_ms)?;
+    let encrypted = encrypt_backup(&backup, key)?;
+    publish_encrypted_atomically(destination, &encrypted, &backup, key, created_unix_ms)
+}
+
+/// Independently authenticate, decrypt, and strictly validate an encrypted backup file.
+pub fn verify_encrypted_backup_file(
+    path: &Path,
+    key: &BackupEncryptionKey,
+) -> Result<NeuralBaseBackup, BackupEncryptionError> {
+    let bytes = read_encrypted_backup_file(path)?;
+    decrypt_backup(&bytes, key)
 }
 
 /// Encrypt one logical NBBK backup into an authenticated NBEC v1 artifact.
@@ -319,6 +380,141 @@ fn key_io(path: &Path, source: io::Error) -> BackupEncryptionError {
         path: path.to_path_buf(),
         source,
     }
+}
+
+fn file_io(path: &Path, source: io::Error) -> BackupEncryptionError {
+    BackupEncryptionError::FileIo {
+        path: path.to_path_buf(),
+        source,
+    }
+}
+
+fn read_encrypted_backup_file(path: &Path) -> Result<Vec<u8>, BackupEncryptionError> {
+    let before = fs::symlink_metadata(path).map_err(|source| file_io(path, source))?;
+    if !before.file_type().is_file() {
+        return Err(BackupEncryptionError::InputNotRegularFile(
+            path.to_path_buf(),
+        ));
+    }
+    if before.len() > MAX_ENCRYPTED_BACKUP_BYTES as u64 {
+        return Err(BackupEncryptionError::TooLarge);
+    }
+
+    let file = File::open(path).map_err(|source| file_io(path, source))?;
+    let opened = file.metadata().map_err(|source| file_io(path, source))?;
+    if !opened.file_type().is_file() {
+        return Err(BackupEncryptionError::InputNotRegularFile(
+            path.to_path_buf(),
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if before.dev() != opened.dev() || before.ino() != opened.ino() {
+            return Err(BackupEncryptionError::InputChangedDuringOpen(
+                path.to_path_buf(),
+            ));
+        }
+    }
+    if opened.len() > MAX_ENCRYPTED_BACKUP_BYTES as u64 {
+        return Err(BackupEncryptionError::TooLarge);
+    }
+
+    let mut bytes = Vec::with_capacity(opened.len() as usize);
+    file.take(MAX_ENCRYPTED_BACKUP_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|source| file_io(path, source))?;
+    if bytes.len() > MAX_ENCRYPTED_BACKUP_BYTES {
+        return Err(BackupEncryptionError::TooLarge);
+    }
+    Ok(bytes)
+}
+
+fn publish_encrypted_atomically(
+    destination: &Path,
+    bytes: &[u8],
+    backup: &NeuralBaseBackup,
+    key: &BackupEncryptionKey,
+    created_unix_ms: u64,
+) -> Result<BackupManifest, BackupEncryptionError> {
+    let parent = destination
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if !parent.is_dir() {
+        return Err(BackupEncryptionError::DestinationParentMissing);
+    }
+    let file_name = destination
+        .file_name()
+        .ok_or(BackupEncryptionError::DestinationFileNameMissing)?
+        .to_string_lossy();
+    if destination.exists() {
+        return Err(BackupEncryptionError::DestinationExists(
+            destination.to_path_buf(),
+        ));
+    }
+    let staged = parent.join(format!(
+        ".{file_name}.partial-{}-{created_unix_ms}",
+        std::process::id()
+    ));
+
+    let result = (|| -> Result<BackupManifest, BackupEncryptionError> {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&staged)
+            .map_err(|source| file_io(&staged, source))?;
+        file.write_all(bytes)
+            .map_err(|source| file_io(&staged, source))?;
+        file.sync_all().map_err(|source| file_io(&staged, source))?;
+        drop(file);
+
+        let verified = verify_encrypted_backup_file(&staged, key)?;
+        let mut expected_manifest = backup.manifest.clone();
+        expected_manifest.encrypted = true;
+        if verified.manifest != expected_manifest
+            || verified.membership != backup.membership
+            || verified.sql_snapshot != backup.sql_snapshot
+        {
+            return Err(BackupEncryptionError::StagedVerificationMismatch);
+        }
+
+        match fs::hard_link(&staged, destination) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                return Err(BackupEncryptionError::DestinationExists(
+                    destination.to_path_buf(),
+                ));
+            }
+            Err(error) => return Err(file_io(destination, error)),
+        }
+        sync_parent_dir(parent)?;
+        fs::remove_file(&staged).map_err(|source| file_io(&staged, source))?;
+        sync_parent_dir(parent)?;
+        Ok(verified.manifest)
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&staged);
+    }
+    result
+}
+
+#[cfg(unix)]
+fn sync_parent_dir(parent: &Path) -> Result<(), BackupEncryptionError> {
+    File::open(parent)
+        .and_then(|file| file.sync_all())
+        .map_err(|source| file_io(parent, source))
+}
+
+#[cfg(not(unix))]
+fn sync_parent_dir(_parent: &Path) -> Result<(), BackupEncryptionError> {
+    Ok(())
 }
 
 #[cfg(test)]

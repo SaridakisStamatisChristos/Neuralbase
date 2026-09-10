@@ -139,6 +139,21 @@ pub fn create_offline_backup_at(
     destination: &Path,
     created_unix_ms: u64,
 ) -> Result<BackupManifest, OfflineBackupError> {
+    let backup = capture_offline_backup_at(db_path, destination, created_unix_ms)?;
+    let encoded = backup.encode()?;
+    publish_atomically(destination, &encoded, created_unix_ms)?;
+    Ok(backup.manifest)
+}
+
+/// Capture one internally consistent offline logical backup without publishing it.
+///
+/// This crate-private boundary lets authenticated-encryption publication consume
+/// the same proven capture path without ever materializing a plaintext backup file.
+pub(crate) fn capture_offline_backup_at(
+    db_path: &Path,
+    destination: &Path,
+    created_unix_ms: u64,
+) -> Result<NeuralBaseBackup, OfflineBackupError> {
     validate_paths(db_path, destination)?;
     if destination.exists() {
         return Err(OfflineBackupError::DestinationExists(
@@ -212,11 +227,8 @@ pub fn create_offline_backup_at(
         Arc::clone(&clock),
     );
     let sql_snapshot = manager.export(boundary, boundary_term)?;
-    let backup = NeuralBaseBackup::new_offline(created_unix_ms, membership, sql_snapshot)?;
-    let encoded = backup.encode()?;
-
-    publish_atomically(destination, &encoded, created_unix_ms)?;
-    Ok(backup.manifest)
+    NeuralBaseBackup::new_offline(created_unix_ms, membership, sql_snapshot)
+        .map_err(OfflineBackupError::from)
 }
 
 /// Verify a backup independently of any database target or restore operation.
