@@ -336,7 +336,10 @@ async fn restored_cluster_uses_fresh_generation_and_survives_failover_and_full_r
     let source_leader = leader_index(&source_nodes).await;
     let gateway = source_nodes[source_leader].gateway();
     gateway.create_table(schema()).await.unwrap();
-    gateway.insert(&insert_plan(1, "before-disaster")).await.unwrap();
+    gateway
+        .insert(&insert_plan(1, "before-disaster"))
+        .await
+        .unwrap();
     gateway.initialize_identity(&[]).await.unwrap();
     gateway
         .create_user("alice", "phase5-recovery-secret", false)
