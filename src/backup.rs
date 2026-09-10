@@ -207,6 +207,7 @@ impl NeuralBaseBackup {
     /// Encode an NBBK plaintext payload that is valid only inside the NBEC
     /// authenticated encrypted container. This method is intentionally
     /// crate-private so callers cannot publish a marked bare NBBK artifact.
+    #[cfg(test)]
     pub(crate) fn encode_encrypted_payload(&self) -> Result<Vec<u8>, BackupCodecError> {
         let mut marked = self.clone();
         marked.manifest.encrypted = true;
@@ -277,6 +278,7 @@ impl NeuralBaseBackup {
     /// Decode an authenticated NBEC plaintext payload. The caller must have
     /// authenticated the outer container first; a missing inner marker fails
     /// closed so a plaintext NBBK cannot be relabelled as encrypted.
+    #[cfg(test)]
     pub(crate) fn decode_encrypted_payload(bytes: &[u8]) -> Result<Self, BackupCodecError> {
         Self::decode_with_marker(bytes, true)
     }
