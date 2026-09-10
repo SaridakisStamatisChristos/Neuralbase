@@ -1,0 +1,54 @@
+name: phase5-nbec-staging
+
+on:
+  push:
+    branches:
+      - phase5-nbec-rebased-staging
+
+permissions:
+  contents: read
+
+jobs:
+  nbec:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      LIBCLANG_PATH: /usr/lib/llvm-18/lib
+      ROCKSDB_INCLUDE_DIR: /usr/include
+    steps:
+      - name: Checkout NBEC staging
+        uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            llvm-18-dev \
+            libclang-18-dev \
+            clang-18 \
+            librocksdb-dev \
+            nasm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88.0"
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Run NBEC unit tests
+        run: cargo test --lib backup_encryption::tests --locked
+
+      - name: Run rustfmt check
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
