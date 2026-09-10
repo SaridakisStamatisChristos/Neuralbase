@@ -47,9 +47,17 @@ jobs:
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
 
-      - name: Apply encrypted operator-path slice
+      - name: Prepare encrypted operator-path slice
+        shell: bash
         run: |
-          python3 scripts/phase5_encrypted_ops_patch.py
+          set -euo pipefail
+          if grep -q 'pub fn create_encrypted_offline_backup(' src/backup_encryption.rs \
+             && grep -q 'pub fn restore_encrypted_new_cluster(' src/restore.rs \
+             && test -f tests/phase5_encrypted_ops.rs; then
+            echo 'permanent encrypted operator-path source is already committed; testing it directly'
+          else
+            python3 scripts/phase5_encrypted_ops_patch.py
+          fi
           cargo fmt --all
 
       - name: Run encrypted operator-path tests
@@ -68,7 +76,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet; then
+          if git diff --quiet -- src/offline_backup.rs src/backup_encryption.rs src/restore.rs src/bin/neuralbase-backup.rs tests/phase5_encrypted_ops.rs; then
             exit 0
           fi
           git config user.name "github-actions[bot]"
