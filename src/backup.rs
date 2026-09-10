@@ -281,10 +281,7 @@ impl NeuralBaseBackup {
         Self::decode_with_marker(bytes, true)
     }
 
-    fn decode_with_marker(
-        bytes: &[u8],
-        expect_encrypted: bool,
-    ) -> Result<Self, BackupCodecError> {
+    fn decode_with_marker(bytes: &[u8], expect_encrypted: bool) -> Result<Self, BackupCodecError> {
         if bytes.len() > MAX_BACKUP_BYTES {
             return Err(BackupCodecError::TooLarge);
         }
