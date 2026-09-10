@@ -80,6 +80,36 @@ pub enum RestoreError {
     StagingPathExhausted,
     #[error("restore target appeared while restore was being built: {0}")]
     TargetAppeared(PathBuf),
+    #[error("incomplete restore staging directory exists while target is absent: {0}")]
+    IncompleteRestoreStage(PathBuf),
+}
+
+/// Refuse clustered startup from an absent target while a matching restore stage exists.
+///
+/// A crash before atomic restore publication leaves only hidden sibling staging directories.
+/// Starting a clustered node at the absent final path must not silently create a fresh empty
+/// database and thereby discard the operator's recovery intent. Once the final target exists,
+/// it is authoritative and stale siblings do not block startup.
+pub fn ensure_clustered_startup_restore_safe(target: &Path) -> Result<(), RestoreError> {
+    if target.exists() {
+        return Ok(());
+    }
+    let name = target
+        .file_name()
+        .ok_or(RestoreError::TargetNameMissing)?
+        .to_string_lossy();
+    let parent = target
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let prefix = format!(".{name}.restore-partial-");
+    for entry in fs::read_dir(parent)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() && entry.file_name().to_string_lossy().starts_with(&prefix) {
+            return Err(RestoreError::IncompleteRestoreStage(entry.path()));
+        }
+    }
+    Ok(())
 }
 
 /// Restore `backup_path` into a brand-new database directory at `target`.
