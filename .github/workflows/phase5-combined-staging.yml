@@ -1,0 +1,74 @@
+name: phase5-combined-staging
+
+on:
+  push:
+    branches:
+      - phase5-combined-staging
+
+permissions:
+  contents: write
+
+jobs:
+  combined-phase5:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout combined staging
+        uses: actions/checkout@v5
+        with:
+          ref: phase5-combined-staging
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake pkg-config libssl-dev
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+          components: rustfmt,clippy
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+
+      - name: Assemble only proven permanent Phase 5 slices
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git cherry-pick b2a7534cce21c9be05c655fccb753697626a2c33
+          git cherry-pick 49454d3f1cd5f6924ff87ae74cb158c8fc408e81
+          git cherry-pick 0b037e1dd627e7021994bdff04b3b98c9c598f88
+          git cherry-pick 2a1f15853c16b1c6a23fb608f264f16299a15fed
+          git cherry-pick 048f1974cfcb2302439703fa6de3aca8fad81418
+          git cherry-pick 75e2a521fce53ac8d7813da58b2d9d835b503e52
+
+      - name: Run focused Phase 5 recovery matrix
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib backup_encryption::tests
+          cargo test --locked --lib offline_backup::tests
+          cargo test --locked --lib restore::tests
+          cargo test --locked --lib online_backup::tests
+          cargo test --locked --test phase5_encrypted_ops
+          cargo test --locked --test phase5_online_backup_interactions
+          cargo test --locked --test phase5_cluster_recovery
+          cargo test --locked --test phase5_recovery_process
+          cargo test --locked --test phase5_restore_startup_guard
+          cargo test --locked --test confidence_yaml
+
+      - name: Reject stale recovery claims
+        run: |
+          set -euo pipefail
+          ! grep -R -n -E 'backup/restore.*not implemented|backup/PITR/disaster recovery.*not implemented|backup/disaster-recovery workflows remain open|cluster-wide user/auth restoration' README.md AGENTS.md CONFIDENCE.md CONFIDENCE.yaml CHANGELOG.md SECURITY.md ROADMAP.md docs ops/RUNBOOK.md
+
+      - name: Run rustfmt check
+        run: cargo fmt --all -- --check
+
+      - name: Run all-features Clippy
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+      - name: Push assembled tested tree
+        run: |
+          set -euo pipefail
+          git push origin HEAD:phase5-combined-staging
