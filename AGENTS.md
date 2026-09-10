@@ -4,9 +4,9 @@ Repository-specific guidance for coding agents and automated contributors.
 
 ## Project identity
 
-NeuralBase is an experimental Rust SQL engine. Configured fixed-membership clusters replicate persistent table `CREATE TABLE`, `DROP TABLE`, `INSERT`, `UPDATE`, and `DELETE` through a deterministic Raft-backed SQL state machine. The Phase 2 lifecycle also has a SQL-aware logical snapshot path for safe compaction and recovery of an already-configured fixed logical member from empty local storage plus the remaining Raft suffix.
+NeuralBase is an experimental Rust SQL engine. Configured clusters replicate persistent table mutations and SCRAM identity through deterministic Raft-backed state machines, use SQL-aware snapshots, support learner/joint-consensus membership changes, and provide the tested Phase-5 NBBK/NBEC backup/restore/fresh-cluster recovery lifecycle.
 
-Do not turn those scoped guarantees into a claim of general or production SQL HA. User/auth mutations remain per-node, reads are local and may lag, dynamic membership is not coordinated, automatic node replacement is not implemented, and backup/disaster-recovery workflows remain open.
+Do not turn those scoped guarantees into a claim of general or production SQL HA. Reads are still local and may lag, deployment membership reconciliation and automatic node replacement are not implemented, PITR/automatic DR remain open, and the online backup coordinator is currently an in-process API rather than a standalone live-server CLI.
 
 ## Toolchain and gates
 
@@ -27,7 +27,7 @@ Run the narrowest relevant tests during iteration and the complete affected gate
 4. Do not hide deterministic hangs behind timeouts; timeouts are diagnostics/safety guards.
 5. Keep local durability distinct from replicated durability in code comments and docs.
 6. Snapshot creation must be durable before Raft prefix truncation; snapshot installation must restore durable SQL state before success acknowledgement.
-7. Do not enable HPA for the fixed-membership Raft deployment until coordinated membership changes exist.
+7. Do not enable HPA until deployment reconciliation sequences replica changes through the existing coordinated membership protocol.
 8. Update relevant docs with behavioral/configuration changes.
 9. Do not commit build logs, Clippy output, temporary databases, secrets, or private keys.
 

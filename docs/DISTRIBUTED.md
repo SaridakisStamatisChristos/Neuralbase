@@ -57,6 +57,16 @@ Phase 3 adds explicit consensus membership operations:
 
 The primary regression path exercises 3 → 4 → 3 while preserving writes. Phase 4 additionally proves replicated identity survives learner snapshot bootstrap, promotion, credential rotation and removal.
 
+## Operator backup and fresh-cluster recovery
+
+Phase 5 adds a distinct operator recovery lifecycle. NBBK v1 contains a bounded/checksummed logical SQL+identity snapshot, explicit compatibility/boundary metadata and committed membership recovery semantics. Offline creation requires the source RocksDB lock to be free. Online creation is leader-coordinated around a confirmed barrier and stable durable frontier; concurrent activity must order around the recorded boundary or make the attempt retry/fail closed.
+
+NBEC v1 provides authenticated ChaCha20-Poly1305 encryption around the logical backup. Wrong-key/tampered artifacts fail authentication before restore target creation. Keys are out-of-band and are never stored inside the backup.
+
+Restore is fresh-target-only. It creates one fresh single-voter recovery generation, tombstones historical source IDs, preserves the backed-up logical/Raft boundary, and publishes only after complete staged verification. Cluster recovery then adds fresh learners through the existing snapshot/log and joint-consensus membership lifecycle. It never copies one restored consensus disk to create several voters.
+
+Interrupted restore remnants remain hidden non-authoritative stages and are never automatically resumed. A retry constructs a fresh stage. The operator procedure and compatibility/key rules are in `ops/RUNBOOK.md`.
+
 ## Deployment boundary
 
 The checked-in Compose/Kubernetes/Helm assets still describe a static process topology. The consensus layer can change membership, but no controller automatically sequences StatefulSet replica changes with learner admission/catch-up/promotion/removal. HPA therefore remains intentionally disabled/rejected.
@@ -74,6 +84,7 @@ Reads are local. There is no Raft ReadIndex/lease protocol for arbitrary followe
 - empty-storage snapshot+suffix reconstruction;
 - learner admission/catch-up, joint-consensus promotion/removal and durable finalized membership;
 - stale removed-node protection;
-- replicated SCRAM identity, strict migration, failover rotation/drop and process-level authentication convergence.
+- replicated SCRAM identity, strict migration, failover rotation/drop and process-level authentication convergence;
+- versioned offline/online backup, independent verification, authenticated encrypted backup, fresh-target restore and fresh-generation cluster recovery.
 
-Still open before stronger production claims: automatic operator membership reconciliation, linearizable/defined stronger reads, backup/PITR/disaster recovery, broader authorization/security, upgrade/storage-chaos evidence and production performance characterization.
+Still open before stronger production claims: automatic operator membership reconciliation, linearizable/defined stronger reads, PITR and automatic DR, broader authorization/security, upgrade/storage-chaos evidence and production performance characterization.

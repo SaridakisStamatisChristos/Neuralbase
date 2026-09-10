@@ -44,6 +44,14 @@ Integration suites add:
 
 The process test uses independent/nonexistent per-node user-file paths, so successful authentication after restart demonstrates replicated RocksDB authority rather than accidental shared-file state.
 
+## Phase 5 backup/restore/DR evidence
+
+Phase-5 focused and integration suites cover the explicit NBBK codec/limits/checksums; offline source locking and atomic publication; independent verification classifications; fresh-target restore of SQL/catalog/HLC/apply/identity state; fresh recovery membership generation and stale-source tombstones; leader-coordinated online boundary capture under SQL/identity/membership/compaction/leadership races; authenticated NBEC encryption, wrong-key/tamper rejection and restrictive permissions; interrupted backup publication and representative stale restore stages; and full fresh-generation cluster rebuilding through learner catch-up/promotion, failover and restart.
+
+`tests/phase5_recovery_process.rs` uses real `neuralbase` and `neuralbase-backup` OS processes/binaries for backup, restore, authentication, post-restore write and restart evidence. `tests/phase5_cluster_recovery.rs` exercises the wider restored-cluster lifecycle with independent RocksDB-backed Raft nodes.
+
+Online backup tests exercise the in-process `OnlineBackupCoordinator`; this is not evidence for a standalone live-server backup CLI endpoint.
+
 ## Confidence gate
 
 `tests/confidence_yaml.rs` protects the machine-readable boundary. It requires production readiness to remain false while asserting the tested Phase 3 membership and Phase 4 auth-replication capabilities, and it keeps automatic membership reconciliation/HPA and linearizable follower reads false.
@@ -62,4 +70,4 @@ A successful render does not prove live Kubernetes membership orchestration, upg
 
 Green CI means the exact checked commit passed the repository's current executable gates. For the distributed path it supports replicated tables, SQL-aware snapshots, coordinated membership and replicated SCRAM identity under the tested scenarios.
 
-It still does **not** mean production readiness, complete PostgreSQL compatibility, linearizable arbitrary-follower reads, automatic deployment membership reconciliation/HPA, backup/PITR/disaster recovery, security certification, or performance superiority outside measured workloads.
+It still does **not** mean production readiness, complete PostgreSQL compatibility, linearizable arbitrary-follower reads, automatic deployment membership reconciliation/HPA, PITR or automatic DR, security certification, or performance superiority outside measured workloads.

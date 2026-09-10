@@ -13,6 +13,7 @@ use neuralbase::raft_persistence::RocksDbRaftPersistenceStore;
 use neuralbase::replicated_gateway::ReplicatedSqlGateway;
 use neuralbase::replicated_snapshot_hooks::ReplicatedSqlSnapshotHooks;
 use neuralbase::replicated_state_machine::ReplicatedSqlStateMachine;
+use neuralbase::restore::ensure_clustered_startup_restore_safe;
 use neuralbase::rocksdb_catalog;
 use neuralbase::server;
 use neuralbase::storage::StorageEngine;
@@ -318,6 +319,13 @@ async fn main() -> io::Result<()> {
     let catalog: Arc<InMemoryCatalog> = Arc::new(InMemoryCatalog::with_tpch_all_tables());
 
     let storage_engine = if let Some(db_path) = env_with_legacy("NEURALBASE_DB_PATH", "DB_PATH") {
+        if clustered {
+            ensure_clustered_startup_restore_safe(Path::new(&db_path)).map_err(|error| {
+                io::Error::other(format!(
+                    "clustered startup restore-safety check failed: {error}"
+                ))
+            })?;
+        }
         match StorageEngine::open(Path::new(&db_path)) {
             Ok(engine) => {
                 tracing::info!(db_path, "RocksDB storage engine opened");

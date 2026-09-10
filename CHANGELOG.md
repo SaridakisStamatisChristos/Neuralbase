@@ -40,6 +40,17 @@ NeuralBase is currently a **pre-1.0 experimental project**. The crate version is
 - Added restart/replay, three-node failover/rotation/drop, membership lifecycle, snapshot-bootstrap and real-process PostgreSQL authentication tests.
 - Single-node mode retains the historical local registry for backward compatibility.
 
+### Operational backup / restore / disaster recovery — Phase 5
+
+- Added explicit versioned NBBK logical backup artifacts rather than exposing raw internal Raft snapshot bytes.
+- Added offline backup with source-lock enforcement, independent verification, restrictive atomic publication and strict compatibility/corruption handling.
+- Added leader-coordinated online backup with one committed/applied logical boundary and race/fail-closed coverage.
+- Added crash-safe fresh-target restore with SQL/catalog/HLC/apply/replicated-identity recovery, fresh membership generation and historical-node tombstones.
+- Added fresh-generation cluster rebuild through learner catch-up/promotion, new writes, leader failover and full restart.
+- Added authenticated NBEC v1 backup encryption, raw 32-byte key-file handling, wrong-key/tamper rejection and restrictive permissions.
+- Added interruption evidence, real-process recovery evidence, compatibility/key semantics and an operator DR runbook.
+- PITR, automatic DR and a standalone live-server online-backup CLI remain out of scope.
+
 ### Documentation and deployment
 
 - Synchronized architecture, distributed semantics, SQL support, threat model, testing, roadmap and confidence claims through Phases 3 and 4.
@@ -50,7 +61,7 @@ NeuralBase is currently a **pre-1.0 experimental project**. The crate version is
 
 - Reads remain local; arbitrary follower reads are not claimed linearizable.
 - Membership operations are not automatically reconciled by the checked-in Kubernetes/Helm deployment; HPA remains rejected.
-- Backup/restore, PITR and disaster-recovery workflows are not implemented by the internal snapshot catch-up path.
+- Manual Phase-5 backup/restore/fresh-cluster DR is implemented and tested; PITR and automatic disaster recovery remain unimplemented.
 - Authorization remains intentionally limited compared with a production database security model.
 - These changes do **not** make NeuralBase production-ready or justify a general production-HA claim.
 

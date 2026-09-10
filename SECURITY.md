@@ -29,7 +29,8 @@ Security-relevant areas include, but are not limited to:
 - malformed SQL/input resource exhaustion;
 - RocksDB/storage path handling;
 - container/Kubernetes/Helm defaults;
-- dependency/supply-chain vulnerabilities.
+- dependency/supply-chain vulnerabilities;
+- operator backup confidentiality/integrity, recovery fencing and key handling.
 
 ## Supported versions
 
@@ -39,7 +40,7 @@ The project has not published a stable release series. Security fixes target the
 
 Current architecture has several explicit boundaries:
 
-- SQL data and user-registry state are per-node; they are not yet replicated through Raft.
+- Clustered SQL table state and SCRAM identity are replicated through Raft; standalone mode retains its local behavior. Operator backups therefore contain sensitive database and verifier material.
 - Deployment manifests are development/research topology examples, not a production security baseline.
 - TLS/authentication must be configured for the target environment.
 - Availability controls and resource budgets reduce some denial-of-service risks but do not constitute a complete hostile-tenant isolation model.

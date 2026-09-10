@@ -23,6 +23,13 @@ system:
     joint_consensus: true
     auth_replication: true
     replicated_auth_method: scram-sha-256
+    operator_backup_restore: true
+    offline_backup: true
+    online_backup: true
+    encrypted_backup: true
+    fresh_cluster_dr: true
+    pitr: false
+    automatic_dr: false
     automatic_membership_reconciliation: false
     hpa_safe: false
     production_ha: false
@@ -32,7 +39,7 @@ system:
     membership changes, and replicated SCRAM identity. Replicated mutation success
     waits for Raft quorum commit and confirmed durable local state-machine apply.
     This does not imply production HA, linearizable follower reads, automatic
-    Kubernetes membership reconciliation, backup/restore, PITR, or disaster recovery.
+    Kubernetes membership reconciliation, PITR, or automatic disaster recovery.
 
 artifacts:
   - artifact: wire_protocol_v3
@@ -168,8 +175,8 @@ artifacts:
       - tests/replicated_sql_snapshot_cycles.rs
     limitation: >-
       Persistent table CREATE/DROP/INSERT/UPDATE/DELETE and SQL-aware snapshot
-      recovery are tested. Reads remain local and may be stale; backup/restore,
-      disaster recovery and production HA are not implemented.
+      recovery are tested. Reads remain local and may be stale; production HA and
+      stronger follower-read guarantees are not implemented.
 
   - artifact: membership_changes
     effective: 0.74
@@ -203,6 +210,27 @@ artifacts:
       Replicated credentials are SCRAM verifier material only. Legacy migration is
       explicit and digest-selected; malformed/duplicate/MD5 registries fail closed.
       This is identity consistency evidence, not a complete authorization system.
+
+  - artifact: backup_recovery
+    effective: 0.76
+    status: offline_online_encrypted_fresh_cluster_dr_tested
+    criticality: release_boundary
+    evidence:
+      - src/backup.rs
+      - src/offline_backup.rs
+      - src/online_backup.rs
+      - src/backup_encryption.rs
+      - src/restore.rs
+      - src/bin/neuralbase-backup.rs
+      - tests/phase5_online_backup_interactions.rs
+      - tests/phase5_cluster_recovery.rs
+      - tests/phase5_recovery_process.rs
+      - tests/phase5_encrypted_ops.rs
+    limitation: >-
+      The external CLI provides offline create/verify/restore. Online backup is a
+      tested in-process leader coordinator, not a standalone live-server CLI.
+      Recovery creates a fresh cluster generation; it is not in-place restore into
+      an existing live cluster. PITR and automatic DR are not implemented.
 
   - artifact: deployment_manifests
     effective: 0.70
