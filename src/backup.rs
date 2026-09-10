@@ -24,6 +24,8 @@ pub const BACKUP_STATE_MACHINE_COMPAT_VERSION: u16 = 1;
 pub const MAX_BACKUP_MEMBERSHIP_BYTES: usize = 1024 * 1024;
 const CHECKSUM_BYTES: usize = 32;
 const HEADER_BYTES: usize = 148;
+const BACKUP_FLAG_ENCRYPTED: u8 = 0x01;
+const BACKUP_KNOWN_FLAGS: u8 = BACKUP_FLAG_ENCRYPTED;
 pub const MAX_BACKUP_BYTES: usize =
     HEADER_BYTES + MAX_BACKUP_MEMBERSHIP_BYTES + MAX_REPLICATED_SNAPSHOT_BYTES + CHECKSUM_BYTES;
 
@@ -111,7 +113,7 @@ pub enum BackupCodecError {
     MembershipVersionMismatch(u8),
     #[error("Phase-5 backup v1 requires replicated identity state to be included explicitly")]
     IdentityRequired,
-    #[error("Phase-5 backup v1 does not yet support encryption")]
+    #[error("encrypted NBBK payload requires the authenticated backup-container decoder")]
     EncryptionUnsupported,
     #[error("backup membership metadata exceeds {MAX_BACKUP_MEMBERSHIP_BYTES} bytes")]
     MembershipTooLarge,
@@ -210,7 +212,7 @@ impl NeuralBaseBackup {
         );
         out.extend_from_slice(MAGIC);
         out.push(BACKUP_FORMAT_VERSION);
-        out.push(0); // v1 flags: encryption/compression are not yet defined.
+        out.push(0);
         out.push(self.manifest.kind as u8);
         out.push(self.manifest.recovery_semantics as u8);
         out.extend_from_slice(&self.manifest.state_machine_compat_version.to_be_bytes());
@@ -264,8 +266,11 @@ impl NeuralBaseBackup {
             return Err(BackupCodecError::UnsupportedVersion(version));
         }
         let flags = reader.u8()?;
-        if flags != 0 {
+        if flags & !BACKUP_KNOWN_FLAGS != 0 {
             return Err(BackupCodecError::UnsupportedFlags(flags));
+        }
+        if flags & BACKUP_FLAG_ENCRYPTED != 0 {
+            return Err(BackupCodecError::EncryptionUnsupported);
         }
         let kind = BackupKind::decode(reader.u8()?)?;
         let recovery_semantics = RecoverySemantics::decode(reader.u8()?)?;
@@ -563,6 +568,30 @@ mod tests {
             RecoverySemantics::NewCluster
         );
         assert_eq!(decoded, backup);
+    }
+
+    #[test]
+    fn encrypted_marker_is_reserved_for_authenticated_container_decoder() {
+        let backup = NeuralBaseBackup::new_offline(7, membership(), sql_snapshot(7)).unwrap();
+        let mut encoded = backup.encode().unwrap();
+        encoded[5] = BACKUP_FLAG_ENCRYPTED;
+        rewrite_checksum(&mut encoded);
+        assert!(matches!(
+            NeuralBaseBackup::decode(&encoded),
+            Err(BackupCodecError::EncryptionUnsupported)
+        ));
+    }
+
+    #[test]
+    fn unknown_flag_bits_remain_explicitly_unsupported() {
+        let backup = NeuralBaseBackup::new_offline(7, membership(), sql_snapshot(7)).unwrap();
+        let mut encoded = backup.encode().unwrap();
+        encoded[5] = 0x80;
+        rewrite_checksum(&mut encoded);
+        assert!(matches!(
+            NeuralBaseBackup::decode(&encoded),
+            Err(BackupCodecError::UnsupportedFlags(0x80))
+        ));
     }
 
     #[test]
