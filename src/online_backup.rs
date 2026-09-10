@@ -21,6 +21,9 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::{sleep, Duration, Instant};
 
 use crate::backup::{BackupCodecError, BackupKind, BackupManifest, NeuralBaseBackup};
+use crate::backup_encryption::{
+    publish_encrypted_backup, BackupEncryptionError, BackupEncryptionKey,
+};
 use crate::catalog::InMemoryCatalog;
 use crate::consensus::{
     ClientCommand, PersistentState, RaftPersistenceStore, RaftRole, RaftShared,
@@ -80,6 +83,8 @@ pub enum OnlineBackupError {
     Codec(#[from] BackupCodecError),
     #[error("independent online backup verification failed: {0}")]
     Verification(OfflineBackupError),
+    #[error("encrypted online backup publication failed: {0}")]
+    Encryption(#[from] BackupEncryptionError),
     #[error("system clock is before the Unix epoch")]
     ClockBeforeEpoch,
     #[error("backup timestamp does not fit milliseconds since Unix epoch")]
@@ -134,7 +139,47 @@ impl OnlineBackupCoordinator {
         created_unix_ms: u64,
     ) -> Result<BackupManifest, OnlineBackupError> {
         validate_destination(destination)?;
+        let backup = self.capture_online_backup_at(created_unix_ms).await?;
+        let encoded = backup.encode()?;
+        publish_atomically(destination, &encoded, created_unix_ms)?;
+        Ok(backup.manifest)
+    }
 
+    /// Create a leader-coordinated online backup directly as an authenticated NBEC artifact.
+    ///
+    /// Capture semantics are identical to plaintext online backup: one confirmed Raft barrier,
+    /// one stable state-machine boundary, and fail-closed retry on concurrent durable movement.
+    /// Plaintext NBBK bytes are never published when this method is selected.
+    pub async fn create_encrypted_online_backup(
+        &self,
+        destination: &Path,
+        key: &BackupEncryptionKey,
+    ) -> Result<BackupManifest, OnlineBackupError> {
+        let duration = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| OnlineBackupError::ClockBeforeEpoch)?;
+        let created_unix_ms =
+            u64::try_from(duration.as_millis()).map_err(|_| OnlineBackupError::ClockOverflow)?;
+        self.create_encrypted_online_backup_at(destination, key, created_unix_ms)
+            .await
+    }
+
+    /// Deterministic timestamp variant used by executable tests.
+    pub async fn create_encrypted_online_backup_at(
+        &self,
+        destination: &Path,
+        key: &BackupEncryptionKey,
+        created_unix_ms: u64,
+    ) -> Result<BackupManifest, OnlineBackupError> {
+        validate_destination(destination)?;
+        let backup = self.capture_online_backup_at(created_unix_ms).await?;
+        publish_encrypted_backup(&backup, destination, key, created_unix_ms).map_err(Into::into)
+    }
+
+    async fn capture_online_backup_at(
+        &self,
+        created_unix_ms: u64,
+    ) -> Result<NeuralBaseBackup, OnlineBackupError> {
         for _ in 0..MAX_CAPTURE_ATTEMPTS {
             self.ensure_leader().await?;
             let boundary = self.submit_barrier().await?;
@@ -212,9 +257,7 @@ impl OnlineBackupCoordinator {
                 // the same RocksDB snapshot. Anything else is a raced capture.
                 continue;
             }
-            let encoded = backup.encode()?;
-            publish_atomically(destination, &encoded, created_unix_ms)?;
-            return Ok(backup.manifest);
+            return Ok(backup);
         }
 
         Err(OnlineBackupError::ConcurrentActivity)
@@ -395,6 +438,7 @@ fn sync_parent_dir(_parent: &Path) -> Result<(), OnlineBackupError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backup_encryption::verify_encrypted_backup_file;
     use crate::consensus::{ChannelTransport, CommittedEntry, RaftNode, RaftPersistenceStore};
     use crate::replicated_state_machine::ReplicatedSqlStateMachine;
     use tempfile::TempDir;
@@ -491,6 +535,55 @@ mod tests {
             .file_name()
             .to_string_lossy()
             .contains("partial")));
+
+        harness.handle.shutdown().await;
+        harness.apply_task.abort();
+    }
+
+    #[tokio::test]
+    async fn encrypted_online_backup_reuses_exact_boundary_and_authenticated_publication() {
+        let harness = single_node_harness().await;
+        let output = TempDir::new().unwrap();
+        let destination = output.path().join("online.nbec");
+        let key = BackupEncryptionKey::from_bytes([0x41; 32]);
+
+        let manifest = harness
+            .coordinator
+            .create_encrypted_online_backup_at(&destination, &key, 2234)
+            .await
+            .unwrap();
+        assert_eq!(manifest.kind, BackupKind::Online);
+        assert!(manifest.encrypted);
+        assert!(manifest.metadata.last_included_index > 0);
+        assert_eq!(
+            manifest.metadata.latest_sql_apply_index,
+            manifest.metadata.last_included_index
+        );
+
+        let verified = verify_encrypted_backup_file(&destination, &key).unwrap();
+        assert_eq!(verified.manifest, manifest);
+        assert_eq!(verified.manifest.kind, BackupKind::Online);
+        assert!(verified.manifest.encrypted);
+
+        let wrong_key = BackupEncryptionKey::from_bytes([0x42; 32]);
+        assert!(matches!(
+            verify_encrypted_backup_file(&destination, &wrong_key),
+            Err(BackupEncryptionError::AuthenticationFailed)
+        ));
+        assert!(output.path().read_dir().unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("partial")));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&destination).unwrap().permissions().mode() & 0o077,
+                0
+            );
+        }
 
         harness.handle.shutdown().await;
         harness.apply_task.abort();
