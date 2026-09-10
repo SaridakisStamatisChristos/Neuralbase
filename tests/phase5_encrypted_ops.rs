@@ -57,13 +57,9 @@ fn encrypted_offline_backup_verifies_and_restores_without_plaintext_artifact() {
     assert_eq!(verified.manifest, manifest);
 
     let target = output_root.path().join("restored-db");
-    let report = restore_encrypted_new_cluster(
-        &backup_path,
-        &encryption_key,
-        &target,
-        "recovery-a",
-    )
-    .unwrap();
+    let report =
+        restore_encrypted_new_cluster(&backup_path, &encryption_key, &target, "recovery-a")
+            .unwrap();
     assert!(report.source_manifest.encrypted);
     assert!(target.join("CURRENT").is_file());
 }
@@ -77,8 +73,8 @@ fn wrong_key_fails_before_restore_target_is_created() {
     create_encrypted_offline_backup_at(&db_path, &backup_path, &key(7), 1234).unwrap();
 
     let target = output_root.path().join("wrong-key-target");
-    let error = restore_encrypted_new_cluster(&backup_path, &key(8), &target, "recovery-a")
-        .unwrap_err();
+    let error =
+        restore_encrypted_new_cluster(&backup_path, &key(8), &target, "recovery-a").unwrap_err();
     assert!(matches!(
         error,
         RestoreError::EncryptedBackup(BackupEncryptionError::AuthenticationFailed)
@@ -101,13 +97,8 @@ fn tampered_ciphertext_fails_before_restore_target_is_created() {
     fs::write(&backup_path, bytes).unwrap();
 
     let target = output_root.path().join("tampered-target");
-    let error = restore_encrypted_new_cluster(
-        &backup_path,
-        &encryption_key,
-        &target,
-        "recovery-a",
-    )
-    .unwrap_err();
+    let error = restore_encrypted_new_cluster(&backup_path, &encryption_key, &target, "recovery-a")
+        .unwrap_err();
     assert!(matches!(
         error,
         RestoreError::EncryptedBackup(BackupEncryptionError::AuthenticationFailed)
