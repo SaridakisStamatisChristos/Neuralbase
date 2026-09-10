@@ -153,6 +153,7 @@ pub struct RaftNode<T: Transport> {
 
     serving_ready: Arc<AtomicBool>,
     successful_append_seen: bool,
+    recovery_readiness_pending: bool,
 
     transfer_in_progress: Option<(NodeId, Instant)>,
     persistence: Option<Arc<dyn RaftPersistenceStore>>,
@@ -219,6 +220,7 @@ impl<T: Transport> RaftNode<T> {
             pending_staged_snapshot: None,
             serving_ready: Arc::new(AtomicBool::new(!joining_learner)),
             successful_append_seen: false,
+            recovery_readiness_pending: false,
             transfer_in_progress: None,
             persistence: None,
             election_timeout_base_ms: ELECTION_TIMEOUT_BASE_MS,
@@ -318,6 +320,14 @@ impl<T: Transport> RaftNode<T> {
             self.persist();
         }
 
+        // A process that loaded any durable Raft state must re-prove a safe
+        // serving frontier. `commit_index` is volatile, so blindly inheriting
+        // constructor readiness can expose SQL/identity state before restart
+        // recovery has established which durable tail entries are committed.
+        if !fresh_persistent_state {
+            self.recovery_readiness_pending = true;
+            self.serving_ready.store(false, Ordering::Release);
+        }
         if fresh_persistent_state
             && (self.joining_learner
                 || self
@@ -911,14 +921,27 @@ impl<T: Transport> RaftNode<T> {
                     }
                 }
 
-                if !self.serving_ready.load(Ordering::Acquire)
+                let removed = self
+                    .ps
+                    .membership
+                    .as_ref()
+                    .is_some_and(|membership| membership.is_removed(&self.id));
+                if self.recovery_readiness_pending && !removed {
+                    let current_term_commit_proven = self.commit_index > self.ps.snapshot_index
+                        && self.ps.term_at(self.commit_index) == self.ps.current_term;
+                    let follower_has_no_unresolved_tail = self.role != RaftRole::Leader
+                        && self.successful_append_seen
+                        && self.commit_index == self.ps.last_log_index();
+                    if self.last_applied >= self.commit_index
+                        && (current_term_commit_proven || follower_has_no_unresolved_tail)
+                    {
+                        self.recovery_readiness_pending = false;
+                        self.serving_ready.store(true, Ordering::Release);
+                    }
+                } else if !self.serving_ready.load(Ordering::Acquire)
                     && self.successful_append_seen
                     && self.last_applied >= self.commit_index
-                    && !self
-                        .ps
-                        .membership
-                        .as_ref()
-                        .is_some_and(|m| m.is_removed(&self.id))
+                    && !removed
                 {
                     self.serving_ready.store(true, Ordering::Release);
                 }
@@ -1314,7 +1337,19 @@ impl<T: Transport> RaftNode<T> {
         }
         self.role = RaftRole::Leader;
         self.leader_id = Some(self.id.clone());
-        self.serving_ready.store(true, Ordering::Release);
+        if !self.recovery_readiness_pending {
+            self.serving_ready.store(true, Ordering::Release);
+        }
+
+        // `commit_index` is volatile and restarts at the durable snapshot
+        // boundary. A leader recovering persisted state always appends a
+        // current-term no-op before becoming ready. An unresolved durable tail
+        // requires the same barrier before Raft may safely advance the commit
+        // index over prior-term entries (§5.4.2). Empty commands are intentional
+        // Raft control entries; the replicated state machine advances only its
+        // durable apply cursor for them.
+        let recovery_barrier_needed =
+            self.recovery_readiness_pending || self.commit_index < self.ps.last_log_index();
         let next = self.ps.last_log_index() + 1;
         let mut next_index = HashMap::new();
         let mut match_index = HashMap::new();
@@ -1329,6 +1364,12 @@ impl<T: Transport> RaftNode<T> {
             match_index,
         });
 
+        if recovery_barrier_needed {
+            let barrier_index = self.ps.append(self.ps.current_term, Vec::new());
+            debug_assert_eq!(barrier_index, next);
+            self.persist();
+        }
+
         // A leader elected while the committed state is joint must finish the
         // transition. If a FinalizeJoint entry already exists uncommitted, the
         // effective config is already stable and it is replicated as-is.
@@ -1337,6 +1378,10 @@ impl<T: Transport> RaftNode<T> {
                 panic!("fatal joint-membership recovery on leader election: {error}");
             }
         }
+        // A single-node recovery barrier/finalizer has quorum immediately; in a
+        // multi-node cluster follower replies will call this again as match
+        // indexes advance.
+        self.try_advance_commit();
         self.send_heartbeats().await;
     }
 

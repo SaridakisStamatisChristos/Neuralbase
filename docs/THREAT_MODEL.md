@@ -52,7 +52,15 @@ Residual risks include operator misuse of the membership API, address/configurat
 
 Snapshots are bounded/checksummed, staged before compaction and restored before InstallSnapshot success. They include identity, so a recovered member does not depend on an unrelated local credential mirror. Corrupt or regressive state fails closed.
 
-Internal cluster snapshot catch-up is not an operator backup/PITR/disaster-recovery product.
+Internal cluster snapshot catch-up is not itself an operator backup product. Phase 5 adds distinct NBBK/NBEC operator artifacts and a fresh-cluster restore lifecycle.
+
+## Operator backup security
+
+Operator backups contain application rows, catalog/state metadata and replicated SCRAM verifier material, so they remain sensitive even though plaintext user passwords are not represented in the replicated identity snapshot.
+
+NBBK is integrity-protected but plaintext. NBEC v1 adds authenticated ChaCha20-Poly1305 confidentiality/integrity. The 32-byte decryption key is supplied out of band; it is not embedded in the artifact. The Unix key loader rejects group/other-readable key files, key debug output is redacted, and executable CLI evidence checks that raw key bytes are absent from normal command output. Wrong keys and authenticated-byte tampering fail before restore target creation.
+
+NBEC v1 does not carry a key identifier. External key inventory/rotation is therefore an operator responsibility. Old keys must remain available while backups encrypted under them are retained. RocksDB databases and internal Raft logs remain outside this backup-container encryption boundary and are not transparently encrypted at rest.
 
 ## Read-consistency risk
 
@@ -64,7 +72,7 @@ SQL TLS and Raft mTLS are configuration-dependent rather than secure-by-default 
 
 ## Current production blockers
 
-Stronger production claims require secure-by-default deployment profiles, certificate/secret lifecycle, richer authorization/auditability, automatic membership reconciliation, operator-facing backup/PITR/disaster recovery, defined stronger read modes, broader partition/storage/upgrade chaos testing, and production resource/performance characterization.
+Stronger production claims require secure-by-default deployment profiles, certificate/secret lifecycle, richer authorization/auditability, automatic membership reconciliation, defined stronger read modes, broader partition/storage/upgrade chaos testing, and production resource/performance characterization. PITR and automatic DR remain unimplemented; Phase-5 backup encryption does not imply general database-at-rest encryption.
 
 ## Evidence references
 
@@ -75,4 +83,5 @@ Stronger production claims require secure-by-default deployment profiles, certif
 - `tests/phase3_membership.rs` — learner/joint-consensus lifecycle.
 - `tests/phase4_identity*.rs` — identity failover/recovery/membership/process evidence.
 - `tests/raft_persistence_fail_closed.rs` and replicated SQL snapshot/process suites — durability/failure evidence.
+- `src/backup*.rs`, `src/offline_backup.rs`, `src/online_backup.rs`, `src/restore.rs` and `tests/phase5_*` — operator recovery/security evidence.
 - `CONFIDENCE.md` / `CONFIDENCE.yaml` — machine-readable claim boundary.

@@ -12,6 +12,7 @@ NeuralBase combines a local SQL engine with a Raft consensus subsystem and deter
 - **Snapshot before truncation; restore before ACK.** Compaction/recovery ordering is explicit.
 - **Membership is a consensus operation.** Learners do not vote; promotion/removal use coordinated configuration changes.
 - **Local reads remain local.** Arbitrary follower reads are not claimed linearizable.
+- **Operator recovery is a separate artifact lifecycle.** NBBK/NBEC backup verification and fresh-cluster restore do not reuse raw internal Raft snapshot bytes or copied consensus disks.
 
 ## High-level flow
 
@@ -78,6 +79,18 @@ Finalized membership is durable and overrides stale bootstrap peer configuration
 
 This capability does not automatically reconcile Kubernetes replicas; deployment orchestration remains separate.
 
+## Operator backup and disaster-recovery architecture
+
+`src/backup.rs` defines the explicit versioned NBBK logical backup envelope. Offline capture reuses the deterministic SQL/identity snapshot machinery but adds committed membership/recovery metadata and operator-facing integrity/version semantics. `src/online_backup.rs` coordinates a leader barrier and requires one unchanged durable Raft/state-machine capture boundary.
+
+`src/backup_encryption.rs` wraps logical backups in authenticated NBEC v1 ChaCha20-Poly1305 containers. Key bytes are supplied out of band from an exact raw 32-byte key file for the CLI path and are not embedded in the artifact. Plaintext and encrypted online creation share one capture path; encrypted offline/online publication share one authenticated publication primitive.
+
+`src/restore.rs` verifies before target creation, builds one fresh recovery authority in a hidden sibling stage, validates the complete staged RocksDB state, then atomically publishes the new target. Historical source IDs are tombstoned and a fresh recovery membership generation is established. Stale `.restore-partial-*` crash remnants are never resumed automatically; a retry builds a fresh stage.
+
+Cluster rebuilding deliberately starts from that single fresh authority. Additional nodes must join as empty-disk fresh-ID learners through the existing membership/snapshot path and be promoted normally. Copying one restored RocksDB directory to manufacture voters is outside the design and unsafe.
+
+`OnlineBackupCoordinator` is currently an in-process runtime API rather than a standalone live-server CLI endpoint. The external `neuralbase-backup` command is the offline create/verify/restore tool.
+
 ## Read-consistency boundary
 
 `SELECT` reads local applied state. Fresh/reconstructing members have a serving-readiness gate, but normal follower reads may still lag committed state because there is no ReadIndex/lease-based linearizable read mode.
@@ -93,7 +106,10 @@ This capability does not automatically reconcile Kubernetes replicas; deployment
 - `src/replicated_snapshot*.rs` — logical snapshot codec, export/restore and Raft hooks.
 - `src/consensus/membership.rs` / `src/consensus/raft.rs` — Raft, learners and joint-consensus lifecycle.
 - `src/raft_persistence.rs` — RocksDB-backed Raft stable state and staged snapshots.
+- `src/backup.rs` / `offline_backup.rs` / `online_backup.rs` — versioned operator backup contract and consistent capture.
+- `src/backup_encryption.rs` — authenticated NBEC container, key-file validation and encrypted publication.
+- `src/restore.rs` — fresh-generation staged restore and atomic target publication.
 
 ## Current acceptance boundary
 
-Executable evidence supports replicated persistent tables, SQL-aware snapshot/recovery, coordinated membership changes and replicated SCRAM identity. Stronger production claims still require defined stronger read consistency, operator-facing backup/disaster recovery, automated deployment membership reconciliation, broader security/authorization, chaos/upgrade validation and production performance characterization.
+Executable evidence supports replicated persistent tables, SQL-aware snapshot/recovery, coordinated membership changes, replicated SCRAM identity, and the documented Phase-5 backup/restore/fresh-cluster DR model. Stronger production claims still require defined stronger read consistency, automatic deployment membership reconciliation, PITR/automatic DR if desired, broader security/authorization, chaos/upgrade validation and production performance characterization.

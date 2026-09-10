@@ -136,10 +136,7 @@ fn pg16_client() -> Client {
             }
         }
     }
-    panic!(
-        "failed to connect to PostgreSQL 16 reference: {:?}",
-        last_err
-    );
+    panic!("failed to connect to PostgreSQL 16 reference: {last_err:?}");
 }
 
 fn yyyymmdd_to_iso(date: i32) -> String {

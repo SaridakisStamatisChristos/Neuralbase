@@ -79,6 +79,13 @@ fn distributed_claim_tracks_membership_and_identity_without_overclaiming_product
         scope["replicated_auth_method"].as_str(),
         Some("scram-sha-256")
     );
+    assert_eq!(scope["operator_backup_restore"].as_bool(), Some(true));
+    assert_eq!(scope["offline_backup"].as_bool(), Some(true));
+    assert_eq!(scope["online_backup"].as_bool(), Some(true));
+    assert_eq!(scope["encrypted_backup"].as_bool(), Some(true));
+    assert_eq!(scope["fresh_cluster_dr"].as_bool(), Some(true));
+    assert_eq!(scope["pitr"].as_bool(), Some(false));
+    assert_eq!(scope["automatic_dr"].as_bool(), Some(false));
     assert_eq!(
         scope["automatic_membership_reconciliation"].as_bool(),
         Some(false)
@@ -121,5 +128,14 @@ fn distributed_claim_tracks_membership_and_identity_without_overclaiming_product
     assert_eq!(
         identity["status"].as_str(),
         Some("scram_verifier_replication_and_migration_tested")
+    );
+
+    let recovery = artifacts
+        .iter()
+        .find(|item| item["artifact"].as_str() == Some("backup_recovery"))
+        .expect("backup_recovery boundary must be explicit");
+    assert_eq!(
+        recovery["status"].as_str(),
+        Some("offline_online_encrypted_fresh_cluster_dr_tested")
     );
 }
