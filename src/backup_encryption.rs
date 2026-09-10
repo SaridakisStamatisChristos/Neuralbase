@@ -209,8 +209,21 @@ pub fn create_encrypted_offline_backup_at(
     created_unix_ms: u64,
 ) -> Result<BackupManifest, BackupEncryptionError> {
     let backup = capture_offline_backup_at(db_path, destination, created_unix_ms)?;
-    let encrypted = encrypt_backup(&backup, key)?;
-    publish_encrypted_atomically(destination, &encrypted, &backup, key, created_unix_ms)
+    publish_encrypted_backup(&backup, destination, key, created_unix_ms)
+}
+
+/// Encrypt, independently verify, and atomically publish one already-captured logical backup.
+///
+/// This crate-private publication primitive is shared by offline and online capture paths so
+/// both formats use exactly the same authenticated-container and durable-publication semantics.
+pub(crate) fn publish_encrypted_backup(
+    backup: &NeuralBaseBackup,
+    destination: &Path,
+    key: &BackupEncryptionKey,
+    created_unix_ms: u64,
+) -> Result<BackupManifest, BackupEncryptionError> {
+    let encrypted = encrypt_backup(backup, key)?;
+    publish_encrypted_atomically(destination, &encrypted, backup, key, created_unix_ms)
 }
 
 /// Independently authenticate, decrypt, and strictly validate an encrypted backup file.
