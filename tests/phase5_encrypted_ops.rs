@@ -120,3 +120,100 @@ fn encrypted_backup_publication_is_restrictive() {
     let mode = fs::metadata(&backup_path).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600);
 }
+
+#[test]
+fn encrypted_cli_never_echoes_raw_key_material() {
+    use std::process::Command;
+
+    fn write_key(path: &std::path::Path, byte: u8) {
+        fs::write(path, [byte; BACKUP_ENCRYPTION_KEY_BYTES]).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+
+    fn assert_secret_absent(output: &std::process::Output, secret: &str) {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !stdout.contains(secret),
+            "raw key leaked to stdout: {stdout}"
+        );
+        assert!(
+            !stderr.contains(secret),
+            "raw key leaked to stderr: {stderr}"
+        );
+    }
+
+    let source_root = TempDir::new().unwrap();
+    let output_root = TempDir::new().unwrap();
+    let db_path = initialize_source(&source_root);
+    let backup_path = output_root.path().join("cli.nbec");
+    let target = output_root.path().join("cli-restored");
+    let key_path = output_root.path().join("backup.key");
+    let wrong_key_path = output_root.path().join("wrong.key");
+    write_key(&key_path, b'K');
+    write_key(&wrong_key_path, b'W');
+    let raw_key_marker = "KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK";
+
+    let create = Command::new(env!("CARGO_BIN_EXE_neuralbase-backup"))
+        .arg("create")
+        .arg("--db")
+        .arg(&db_path)
+        .arg("--output")
+        .arg(&backup_path)
+        .arg("--key-file")
+        .arg(&key_path)
+        .output()
+        .unwrap();
+    assert!(
+        create.status.success(),
+        "{}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+    assert_secret_absent(&create, raw_key_marker);
+
+    let verify = Command::new(env!("CARGO_BIN_EXE_neuralbase-backup"))
+        .arg("verify")
+        .arg("--backup")
+        .arg(&backup_path)
+        .arg("--key-file")
+        .arg(&key_path)
+        .output()
+        .unwrap();
+    assert!(verify.status.success());
+    assert_secret_absent(&verify, raw_key_marker);
+
+    let restore = Command::new(env!("CARGO_BIN_EXE_neuralbase-backup"))
+        .arg("restore")
+        .arg("--backup")
+        .arg(&backup_path)
+        .arg("--target")
+        .arg(&target)
+        .arg("--node-id")
+        .arg("cli-recovery")
+        .arg("--key-file")
+        .arg(&key_path)
+        .output()
+        .unwrap();
+    assert!(
+        restore.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restore.stderr)
+    );
+    assert_secret_absent(&restore, raw_key_marker);
+
+    let wrong = Command::new(env!("CARGO_BIN_EXE_neuralbase-backup"))
+        .arg("verify")
+        .arg("--backup")
+        .arg(&backup_path)
+        .arg("--key-file")
+        .arg(&wrong_key_path)
+        .output()
+        .unwrap();
+    assert!(!wrong.status.success());
+    assert!(String::from_utf8_lossy(&wrong.stderr).contains("authentication failed"));
+    assert_secret_absent(&wrong, raw_key_marker);
+}
