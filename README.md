@@ -7,7 +7,7 @@
 **NeuralBase is an experimental SQL engine in Rust** with a PostgreSQL-compatible wire endpoint, MVCC/RocksDB storage, vectorized/general execution, an ONNX join-order optimizer, and a multi-process Raft subsystem over TCP/TLS.
 
 > [!IMPORTANT]
-> NeuralBase is **pre-1.0 research/development software**. Configured clusters replicate persistent table mutations and SCRAM identity through Raft, support SQL-aware snapshot/recovery, and implement learner/joint-consensus membership changes. Successful replicated mutations wait for quorum commit plus confirmed durable local apply. This is still not a production-HA claim: follower reads are local and may lag, Kubernetes membership reconciliation is not automatic, backup/PITR/disaster-recovery workflows remain open, and authorization/security hardening is incomplete.
+> NeuralBase is **pre-1.0 research/development software**. Configured clusters replicate persistent table mutations and SCRAM identity through Raft, support SQL-aware snapshot/recovery, and implement learner/joint-consensus membership changes. Successful replicated mutations wait for quorum commit plus confirmed durable local apply. This is still not a production-HA claim: follower reads are local and may lag, Kubernetes membership reconciliation is not automatic, operator backup/restore and fresh-cluster disaster recovery are implemented and tested to the documented Phase-5 scope; PITR, automatic disaster recovery, and broader authorization/security hardening remain open.
 
 ## Current highlights
 
@@ -24,6 +24,8 @@
 - Cluster authentication from authoritative replicated RocksDB identity state.
 - Strict digest-authorized migration from legacy SCRAM `users.json`; MD5 verifier material is rejected from replication.
 - Real multi-process failover/restart coverage for SQL state and replicated authentication.
+- Versioned NBBK offline/online backup, independent verification, crash-safe fresh-cluster restore, and authenticated NBEC backup encryption.
+- Fresh-generation cluster recovery through one restored authority plus learner catch-up/promotion, failover and restart evidence.
 - PostgreSQL 16 row-for-row TPC-H Q1-Q22 reference checks at a small deterministic scale.
 - Docker Compose, Kubernetes StatefulSet and Helm development deployments.
 
@@ -92,7 +94,8 @@ A fresh cluster with authentication disabled and no legacy file may initialize r
 | Legacy identity migration | **Explicit digest-selected SCRAM migration implemented** |
 | Linearizable arbitrary-follower reads | **Not implemented** |
 | Automatic Kubernetes membership reconciliation / HPA | **Not implemented** |
-| Backup / PITR / disaster recovery | **Not implemented** |
+| Backup / restore / fresh-cluster DR | **Implemented and tested to Phase-5 scope** |
+| Point-in-time recovery / automatic DR | **Not implemented** |
 | Production SQL HA | **Not claimed** |
 
 ## Configuration
@@ -136,7 +139,7 @@ Green CI is evidence for the exact checked commit and tested scopes, not a produ
 
 ## Project maturity
 
-Phases 1–4 close replicated table mutations, SQL-aware snapshot/recovery, coordinated membership, and replicated identity under the repository's tested failure model. The next high-value correctness work is operator-facing recovery/backup and stronger read-consistency semantics, followed by automatic membership orchestration and broader production hardening.
+Phases 1–5 close replicated table mutations, SQL-aware snapshot/recovery, coordinated membership, replicated identity, and the documented operator backup/restore/fresh-cluster DR model under the repository's tested failure model. The next high-value correctness work is explicit stronger read-consistency semantics, followed by automatic membership orchestration and broader production hardening. PITR remains a later recovery extension.
 
 ## License
 

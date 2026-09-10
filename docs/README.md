@@ -12,13 +12,14 @@ This directory contains the technical documentation for NeuralBase. The root `RE
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Single-node, Kubernetes/Helm, migration, TLS and scaling constraints |
 | [TESTING.md](TESTING.md) | CI gates and executable evidence limits |
 | [THREAT_MODEL.md](THREAT_MODEL.md) | Threats, trust boundaries and residual risks |
+| [`../ops/RUNBOOK.md`](../ops/RUNBOOK.md) | Tested backup/restore and disaster-recovery operator procedure |
 | [TSAN.md](TSAN.md) | ThreadSanitizer workflow and caveats |
 
 Repository-level material includes [`../ROADMAP.md`](../ROADMAP.md), [`../CONFIDENCE.md`](../CONFIDENCE.md), [`../CONFIDENCE.yaml`](../CONFIDENCE.yaml), [`../CHANGELOG.md`](../CHANGELOG.md), [`../CONTRIBUTING.md`](../CONTRIBUTING.md), and [`../SECURITY.md`](../SECURITY.md).
 
 ## Current distributed claim in one sentence
 
-Configured clusters replicate persistent table mutations and SCRAM identity through Raft with quorum commit + confirmed durable local apply before success; SQL-aware snapshots preserve both table and identity state; learner/joint-consensus membership transitions are implemented and tested; this still excludes linearizable arbitrary-follower reads, automatic deployment membership reconciliation/HPA, backup/PITR/disaster recovery, and production-HA claims.
+Configured clusters replicate persistent table mutations and SCRAM identity through Raft with quorum commit + confirmed durable local apply before success; SQL-aware snapshots preserve both table and identity state; learner/joint-consensus membership transitions and Phase-5 operator backup/restore/fresh-cluster DR are implemented and tested; this still excludes PITR, automatic DR, linearizable arbitrary-follower reads, automatic deployment membership reconciliation/HPA, and production-HA claims.
 
 ## Documentation rule
 
