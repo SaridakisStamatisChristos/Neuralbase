@@ -115,6 +115,8 @@ pub enum BackupCodecError {
     IdentityRequired,
     #[error("encrypted NBBK payload requires the authenticated backup-container decoder")]
     EncryptionUnsupported,
+    #[error("authenticated backup-container plaintext is missing its encrypted NBBK marker")]
+    EncryptionMarkerRequired,
     #[error("backup membership metadata exceeds {MAX_BACKUP_MEMBERSHIP_BYTES} bytes")]
     MembershipTooLarge,
     #[error("backup embedded SQL snapshot exceeds {MAX_REPLICATED_SNAPSHOT_BYTES} bytes")]
@@ -190,8 +192,29 @@ impl NeuralBaseBackup {
         Ok(backup)
     }
 
+    /// Encode the ordinary plaintext NBBK artifact.
+    ///
+    /// An object returned by the authenticated encrypted-container decoder keeps
+    /// `manifest.encrypted = true`; deliberately refuse to emit that object as a
+    /// bare NBBK file, because doing so would strip the AEAD protection.
     pub fn encode(&self) -> Result<Vec<u8>, BackupCodecError> {
-        self.validate()?;
+        if self.manifest.encrypted {
+            return Err(BackupCodecError::EncryptionUnsupported);
+        }
+        self.encode_with_marker()
+    }
+
+    /// Encode an NBBK plaintext payload that is valid only inside the NBEC
+    /// authenticated encrypted container. This method is intentionally
+    /// crate-private so callers cannot publish a marked bare NBBK artifact.
+    pub(crate) fn encode_encrypted_payload(&self) -> Result<Vec<u8>, BackupCodecError> {
+        let mut marked = self.clone();
+        marked.manifest.encrypted = true;
+        marked.encode_with_marker()
+    }
+
+    fn encode_with_marker(&self) -> Result<Vec<u8>, BackupCodecError> {
+        self.validate_logical()?;
         let membership_bytes = canonical_membership_bytes(&self.membership)?;
         if membership_bytes.len() > MAX_BACKUP_MEMBERSHIP_BYTES {
             return Err(BackupCodecError::MembershipTooLarge);
@@ -212,7 +235,11 @@ impl NeuralBaseBackup {
         );
         out.extend_from_slice(MAGIC);
         out.push(BACKUP_FORMAT_VERSION);
-        out.push(0);
+        out.push(if self.manifest.encrypted {
+            BACKUP_FLAG_ENCRYPTED
+        } else {
+            0
+        });
         out.push(self.manifest.kind as u8);
         out.push(self.manifest.recovery_semantics as u8);
         out.extend_from_slice(&self.manifest.state_machine_compat_version.to_be_bytes());
@@ -244,6 +271,20 @@ impl NeuralBaseBackup {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, BackupCodecError> {
+        Self::decode_with_marker(bytes, false)
+    }
+
+    /// Decode an authenticated NBEC plaintext payload. The caller must have
+    /// authenticated the outer container first; a missing inner marker fails
+    /// closed so a plaintext NBBK cannot be relabelled as encrypted.
+    pub(crate) fn decode_encrypted_payload(bytes: &[u8]) -> Result<Self, BackupCodecError> {
+        Self::decode_with_marker(bytes, true)
+    }
+
+    fn decode_with_marker(
+        bytes: &[u8],
+        expect_encrypted: bool,
+    ) -> Result<Self, BackupCodecError> {
         if bytes.len() > MAX_BACKUP_BYTES {
             return Err(BackupCodecError::TooLarge);
         }
@@ -269,8 +310,11 @@ impl NeuralBaseBackup {
         if flags & !BACKUP_KNOWN_FLAGS != 0 {
             return Err(BackupCodecError::UnsupportedFlags(flags));
         }
-        if flags & BACKUP_FLAG_ENCRYPTED != 0 {
-            return Err(BackupCodecError::EncryptionUnsupported);
+        let encrypted = flags & BACKUP_FLAG_ENCRYPTED != 0;
+        match (expect_encrypted, encrypted) {
+            (false, true) => return Err(BackupCodecError::EncryptionUnsupported),
+            (true, false) => return Err(BackupCodecError::EncryptionMarkerRequired),
+            _ => {}
         }
         let kind = BackupKind::decode(reader.u8()?)?;
         let recovery_semantics = RecoverySemantics::decode(reader.u8()?)?;
@@ -372,16 +416,23 @@ impl NeuralBaseBackup {
                 membership_generation,
                 membership_config_index,
                 identity_included,
-                encrypted: false,
+                encrypted,
             },
             membership,
             sql_snapshot,
         };
-        backup.validate()?;
+        backup.validate_logical()?;
         Ok(backup)
     }
 
     pub fn validate(&self) -> Result<(), BackupCodecError> {
+        if self.manifest.encrypted {
+            return Err(BackupCodecError::EncryptionUnsupported);
+        }
+        self.validate_logical()
+    }
+
+    fn validate_logical(&self) -> Result<(), BackupCodecError> {
         if self.manifest.state_machine_compat_version != BACKUP_STATE_MACHINE_COMPAT_VERSION {
             return Err(BackupCodecError::UnsupportedStateMachineVersion(
                 self.manifest.state_machine_compat_version,
@@ -399,9 +450,6 @@ impl NeuralBaseBackup {
         }
         if !self.manifest.identity_included {
             return Err(BackupCodecError::IdentityRequired);
-        }
-        if self.manifest.encrypted {
-            return Err(BackupCodecError::EncryptionUnsupported);
         }
         if self.sql_snapshot.len() > MAX_REPLICATED_SNAPSHOT_BYTES {
             return Err(BackupCodecError::SnapshotTooLarge);
@@ -571,14 +619,27 @@ mod tests {
     }
 
     #[test]
-    fn encrypted_marker_is_reserved_for_authenticated_container_decoder() {
-        let backup = NeuralBaseBackup::new_offline(7, membership(), sql_snapshot(7)).unwrap();
-        let mut encoded = backup.encode().unwrap();
-        encoded[5] = BACKUP_FLAG_ENCRYPTED;
-        rewrite_checksum(&mut encoded);
+    fn encrypted_payload_roundtrips_only_through_private_marked_codec() {
+        let backup = NeuralBaseBackup::new_offline(11, membership(), sql_snapshot(7)).unwrap();
+        let encoded = backup.encode_encrypted_payload().unwrap();
+        assert_eq!(encoded[5], BACKUP_FLAG_ENCRYPTED);
         assert!(matches!(
             NeuralBaseBackup::decode(&encoded),
             Err(BackupCodecError::EncryptionUnsupported)
+        ));
+        let decoded = NeuralBaseBackup::decode_encrypted_payload(&encoded).unwrap();
+        assert!(decoded.manifest.encrypted);
+        assert_eq!(decoded.membership, backup.membership);
+        assert_eq!(decoded.sql_snapshot, backup.sql_snapshot);
+    }
+
+    #[test]
+    fn encrypted_decoder_requires_inner_marker() {
+        let backup = NeuralBaseBackup::new_offline(13, membership(), sql_snapshot(7)).unwrap();
+        let encoded = backup.encode().unwrap();
+        assert!(matches!(
+            NeuralBaseBackup::decode_encrypted_payload(&encoded),
+            Err(BackupCodecError::EncryptionMarkerRequired)
         ));
     }
 
