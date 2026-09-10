@@ -1,0 +1,86 @@
+name: phase5-restore-startup-guard-staging
+
+on:
+  push:
+    branches:
+      - phase5-restore-startup-guard-staging
+
+permissions:
+  contents: write
+
+jobs:
+  startup-guard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      LIBCLANG_PATH: /usr/lib/llvm-18/lib
+      ROCKSDB_INCLUDE_DIR: /usr/include
+    steps:
+      - name: Checkout staging branch
+        uses: actions/checkout@v5
+        with:
+          ref: phase5-restore-startup-guard-staging
+          persist-credentials: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            llvm-18-dev \
+            libclang-18-dev \
+            clang-18 \
+            librocksdb-dev \
+            nasm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88.0"
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Prepare startup guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -q 'ensure_clustered_startup_restore_safe' src/main.rs \
+             && test -f tests/phase5_restore_startup_guard.rs; then
+            echo 'restore startup guard already committed; testing directly'
+          else
+            python3 scripts/phase5_restore_startup_guard_patch.py
+          fi
+          cargo fmt --all
+
+      - name: Run restore startup guard tests
+        run: |
+          cargo test --test phase5_restore_startup_guard --locked
+          cargo test --lib restore::tests --locked
+          cargo test --test phase5_recovery_process --locked
+
+      - name: Run rustfmt check
+        run: cargo fmt --all -- --check
+
+      - name: Run all-features Clippy
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+      - name: Commit tested permanent guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          paths=(src/restore.rs src/main.rs tests/phase5_restore_startup_guard.rs)
+          if git diff --quiet -- "${paths[@]}"; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${paths[@]}"
+          git commit -m "Refuse clustered startup over incomplete restore"
+          git push origin HEAD:phase5-restore-startup-guard-staging
