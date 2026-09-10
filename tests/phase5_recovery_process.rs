@@ -168,9 +168,9 @@ fn wait_ready(node: &mut NodeProcess, auth_required: bool) {
 }
 
 fn retryable_pre_submit(error: &postgres::Error) -> bool {
-    error.as_db_error().is_some_and(|db| {
-        matches!(db.code().code(), "25006" | "57P03")
-    })
+    error
+        .as_db_error()
+        .is_some_and(|db| matches!(db.code().code(), "25006" | "57P03"))
 }
 
 enum MutationAttempt {
@@ -354,10 +354,7 @@ fn process_backup_restore_boot_auth_write_and_restart() {
     let membership = persistent
         .membership
         .expect("recovered membership must be persisted");
-    assert_eq!(
-        membership.voters,
-        BTreeSet::from([RECOVERY_ID.to_string()])
-    );
+    assert_eq!(membership.voters, BTreeSet::from([RECOVERY_ID.to_string()]));
     assert!(membership.removed.contains(SOURCE_ID));
     assert!(!membership.voters.contains(SOURCE_ID));
 
