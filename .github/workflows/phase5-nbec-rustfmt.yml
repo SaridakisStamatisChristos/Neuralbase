@@ -1,0 +1,40 @@
+name: phase5-nbec-rustfmt
+
+on:
+  push:
+    branches:
+      - phase5-nbec-rebased-staging
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout NBEC staging
+        uses: actions/checkout@v5
+        with:
+          ref: phase5-nbec-rebased-staging
+          persist-credentials: true
+
+      - name: Install pinned Rust formatter
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+          components: rustfmt
+
+      - name: Apply and commit rustfmt
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          if git diff --quiet; then
+            echo "rustfmt already clean"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- '*.rs'
+          git commit -m "Apply rustfmt to NBEC staging"
+          git push origin HEAD:phase5-nbec-rebased-staging
