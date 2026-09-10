@@ -2,7 +2,7 @@
 
 **Updated:** 2026-09-08
 
-NeuralBase remains pre-1.0 research/development software. The evidence boundary now includes replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated Raft membership changes, and strongly consistent replicated SCRAM identity. It remains deliberately narrower than a production-HA database claim.
+NeuralBase remains pre-1.0 research/development software. The evidence boundary now includes replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated Raft membership changes, strongly consistent replicated SCRAM identity, and the documented Phase-5 operator backup/restore/fresh-cluster DR model. It remains deliberately narrower than a production-HA database claim.
 
 ## Strongest evidence
 
@@ -15,6 +15,7 @@ NeuralBase remains pre-1.0 research/development software. The evidence boundary 
 - Phase 4 routes clustered user DDL through Raft, derives SCRAM material before proposal, stores identity atomically with the replicated apply cursor, snapshots identity, and authenticates from replicated RocksDB state.
 - Phase 4 tests cover three-node identity convergence, leader-loss password rotation/drop, crash/replay, snapshot reconstruction, learner promotion/removal, and real-process PostgreSQL authentication across restart/failover/rejoin.
 - Strict legacy migration requires an exact `NEURALBASE_IDENTITY_MIGRATION_SHA256`; malformed, duplicate, MD5 or digest-mismatched input fails closed.
+- Phase 5 adds versioned offline/online backup, independent verification, authenticated NBEC encryption, fresh-target restore, fresh-generation cluster rebuild, interruption evidence and a real-process recovery path.
 - PostgreSQL 16 TPC-H Q1-Q22 reference comparison remains part of CI at a deterministic small scale.
 
 ## Replicated identity scope
@@ -42,7 +43,7 @@ It does **not** mean the checked-in Kubernetes/Helm manifests automatically reco
 - `production_ready: true` or production SQL HA;
 - linearizable reads from arbitrary followers;
 - automatic Kubernetes membership reconciliation or safe HPA scaling;
-- backup/restore, PITR or disaster recovery;
+- PITR or automatic disaster recovery beyond the documented manual fresh-cluster Phase-5 procedure;
 - complete PostgreSQL semantic compatibility;
 - production-grade authorization/audit policy;
 - broad upgrade/storage-chaos certification.

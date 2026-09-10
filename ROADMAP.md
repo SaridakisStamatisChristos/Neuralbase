@@ -1,6 +1,6 @@
 # NeuralBase roadmap
 
-NeuralBase is a pre-1.0 experimental SQL engine. The distributed correctness baseline now includes replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated Raft membership changes, and strongly consistent replicated SCRAM identity. The next major boundaries are operator-facing recovery and stronger read consistency.
+NeuralBase is a pre-1.0 experimental SQL engine. The distributed correctness baseline now includes replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated Raft membership changes, and strongly consistent replicated SCRAM identity. The next major boundary is explicit stronger read consistency; operator-facing backup/restore/fresh-cluster disaster recovery is now covered by the tested Phase-5 scope.
 
 This is an engineering roadmap, not a release-date commitment.
 
@@ -53,19 +53,25 @@ Phase 3 is a consensus capability, not an automatic Kubernetes scaling controlle
 
 Single-node mode deliberately keeps the historical local `users.json` behavior for backward compatibility. The replicated identity guarantee applies to configured clustered mode.
 
-## P0 — operational recovery
+## Completed Phase 5 — operational backup / restore / disaster recovery
 
-Build operator-facing recovery on top of the verified logical snapshot machinery:
+- [x] Explicit versioned NBBK logical backup envelope with bounded canonical metadata and integrity validation.
+- [x] Offline consistent backup with RocksDB lock enforcement, restrictive staged publication and independent verification.
+- [x] Leader-coordinated online consistent backup with exact committed/applied boundary and race/fail-closed evidence.
+- [x] Independent verification with corruption/truncation/unsupported-version classification.
+- [x] Fresh-target single-node restore preserving SQL/catalog/HLC/apply/replicated identity state.
+- [x] Fresh recovery membership generation with historical source-ID tombstones.
+- [x] Fresh-cluster rebuild through learner catch-up/promotion, new writes, leader loss and full restart.
+- [x] Authenticated NBEC v1 encryption, strict key-file handling, wrong-key/tamper rejection and restrictive permissions.
+- [x] Interrupted backup publication and stale restore-stage fail-closed evidence.
+- [x] Compatibility/key semantics and operator disaster-recovery runbook.
+- [x] Real OS-process backup/restore/auth/write/restart evidence.
 
-- offline and online consistent backup;
-- checksums and backup verification;
-- restore into a single node and controlled cluster bootstrap;
-- explicit version-compatibility rules;
-- interrupted/corrupt backup and restore tests;
-- disaster-recovery runbook;
-- point-in-time recovery and archived replicated-log/WAL-equivalent stream later.
+Internal Raft snapshot catch-up remains distinct from operator backup. The standalone backup CLI is offline; online backup is currently an in-process coordinator API.
 
-Internal Raft snapshot catch-up is **not** a backup product by itself.
+### Later recovery extension — PITR
+
+Archived replicated-log/WAL-equivalent streaming and point-in-time recovery remain separate future work. Phase 5 does not infer PITR from retained Raft logs.
 
 ## P1 — read consistency modes
 
@@ -104,7 +110,7 @@ Performance work must not weaken acknowledgement, snapshot, membership, identity
 
 - authorization policy beyond the current user registry;
 - certificate lifecycle/rotation;
-- backup encryption and secret management;
+- broader secret-management integration and backup key lifecycle automation;
 - broader network/storage chaos testing;
 - upgrade/rollback compatibility;
 - supply-chain/security automation with reviewed exceptions;
