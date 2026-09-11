@@ -120,17 +120,37 @@ fn wait_ready(node: &mut NodeProcess) {
     }
 }
 
-fn read_value(client: &mut Client) -> String {
-    let messages = client
-        .simple_query("SELECT value FROM p6_items")
-        .expect("strong SELECT");
-    messages
+fn is_transient_authority_error(error: &postgres::Error) -> bool {
+    error
+        .as_db_error()
+        .is_some_and(|db| matches!(db.code().code(), "25006" | "57P03"))
+}
+
+fn mutation_when_leader(node: &mut NodeProcess, sql: &str) {
+    wait_ready(node);
+    let deadline = Instant::now() + START_TIMEOUT;
+    loop {
+        assert!(node.running(), "phase6 process node exited before acquiring authority");
+        let result = connect(node.spec.sql_port).and_then(|mut client| client.simple_query(sql).map(|_| ()));
+        match result {
+            Ok(()) => return,
+            Err(error) if is_transient_authority_error(&error) => {}
+            Err(error) => panic!("mutation failed: {error}; SQL={sql}"),
+        }
+        assert!(Instant::now() < deadline, "phase6 process node never became Raft leader");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn read_value(client: &mut Client) -> Result<String, postgres::Error> {
+    let messages = client.simple_query("SELECT value FROM p6_items")?;
+    Ok(messages
         .into_iter()
         .find_map(|message| match message {
             SimpleQueryMessage::Row(row) => row.get(0).map(str::to_string),
             _ => None,
         })
-        .expect("row value")
+        .expect("row value"))
 }
 
 fn run_backup_cli(command: &mut Command) -> Output {
@@ -145,11 +165,27 @@ fn run_backup_cli(command: &mut Command) -> Output {
 
 fn assert_linearizable_value(node: &mut NodeProcess, expected: &str) {
     wait_ready(node);
-    let mut client = connect(node.spec.sql_port).expect("connect strong-read client");
-    client
-        .simple_query("SET neuralbase_read_consistency = linearizable")
-        .expect("set linearizable");
-    assert_eq!(read_value(&mut client), expected);
+    let deadline = Instant::now() + START_TIMEOUT;
+    loop {
+        assert!(node.running(), "phase6 process node exited before strong read authority");
+        let result = connect(node.spec.sql_port).and_then(|mut client| {
+            client.simple_query("SET neuralbase_read_consistency = linearizable")?;
+            read_value(&mut client)
+        });
+        match result {
+            Ok(value) => {
+                assert_eq!(value, expected);
+                return;
+            }
+            Err(error) if is_transient_authority_error(&error) => {}
+            Err(error) => panic!("linearizable read failed: {error}"),
+        }
+        assert!(
+            Instant::now() < deadline,
+            "phase6 process node never established strong-read authority"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[test]
@@ -162,12 +198,9 @@ fn process_session_modes_restart_and_phase5_restore_bootstrap() {
         child: None,
     };
     node.start();
-    wait_ready(&mut node);
+    mutation_when_leader(&mut node, "CREATE TABLE p6_items (value TEXT)");
 
     let mut writer = connect(node.spec.sql_port).expect("connect writer");
-    writer
-        .simple_query("CREATE TABLE p6_items (value TEXT)")
-        .expect("create table");
     writer
         .simple_query("INSERT INTO p6_items VALUES ('acknowledged')")
         .expect("acknowledged replicated write");
@@ -176,16 +209,16 @@ fn process_session_modes_restart_and_phase5_restore_bootstrap() {
     writer
         .simple_query("SET neuralbase_read_consistency = 'linearizable'")
         .expect("set linearizable");
-    assert_eq!(read_value(&mut writer), "acknowledged");
+    assert_eq!(read_value(&mut writer).expect("linearizable read-after-write"), "acknowledged");
 
     writer
         .simple_query("SET neuralbase.read_consistency TO leader")
         .expect("set leader authoritative");
-    assert_eq!(read_value(&mut writer), "acknowledged");
+    assert_eq!(read_value(&mut writer).expect("leader-authoritative read"), "acknowledged");
 
     // A different session retains the backward-compatible Local default.
     let mut independent = connect(node.spec.sql_port).expect("connect independent session");
-    assert_eq!(read_value(&mut independent), "acknowledged");
+    assert_eq!(read_value(&mut independent).expect("local default read"), "acknowledged");
     drop(independent);
     drop(writer);
 
