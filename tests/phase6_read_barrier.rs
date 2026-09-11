@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use neuralbase::consensus::{
-    ClientCommand, CommittedEntry, NodeId, RaftMessage, RaftNode, RaftRole, RaftShared,
-    RaftTaskHandle, Transport, APPLY_CHANNEL_CAPACITY,
+    encode_membership_change, ClientCommand, CommittedEntry, MembershipChange, NodeId, RaftMessage,
+    RaftNode, RaftRole, RaftShared, RaftTaskHandle, Transport, APPLY_CHANNEL_CAPACITY,
 };
 use neuralbase::hlc::HlcClock;
 use neuralbase::read_barrier::{prepare_read_with_timeout, ReadBarrierError};
@@ -211,8 +211,14 @@ async fn linearizable_barrier_follows_acknowledged_write_and_is_locally_applied(
     .unwrap();
 
     let state = nodes[leader].shared.lock().await.clone();
-    assert!(state.commit_index > write_index, "read barrier did not advance the committed frontier");
-    assert_eq!(state.last_applied, state.commit_index, "strong read returned before its barrier was applied");
+    assert!(
+        state.commit_index > write_index,
+        "read barrier did not advance the committed frontier"
+    );
+    assert_eq!(
+        state.last_applied, state.commit_index,
+        "strong read returned before its barrier was applied"
+    );
     assert!(state.last_applied > write_index);
     stop_all(&mut nodes).await;
 }
@@ -277,5 +283,99 @@ async fn isolated_former_leader_cannot_manufacture_authoritative_or_linearizable
     .unwrap();
     let new_state = nodes[new_leader].shared.lock().await.clone();
     assert_eq!(new_state.last_applied, new_state.commit_index);
+    stop_all(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn membership_changes_do_not_count_learners_and_strong_reads_survive_reconfiguration() {
+    let (mut nodes, _) = cluster().await;
+    let leader_idx = leader(&nodes, None).await;
+
+    let learner_id = "p6-nonvoting-learner".to_string();
+    let add = encode_membership_change(&MembershipChange::AddLearner(learner_id.clone()));
+    submit(&nodes[leader_idx].client_tx, &add).await;
+    assert!(nodes[leader_idx]
+        .shared
+        .lock()
+        .await
+        .membership
+        .learners
+        .contains(&learner_id));
+
+    // The absent learner cannot contribute to quorum; the voter quorum alone
+    // must establish the strong-read barrier.
+    prepare_read_with_timeout(
+        Some(&nodes[leader_idx].gateway()),
+        ReadConsistency::Linearizable,
+        WAIT,
+    )
+    .await
+    .unwrap();
+
+    let remove_learner = encode_membership_change(&MembershipChange::RemoveNode(learner_id));
+    submit(&nodes[leader_idx].client_tx, &remove_learner).await;
+
+    let removed_voter = (0..IDS.len()).find(|idx| *idx != leader_idx).unwrap();
+    let remove_voter = encode_membership_change(&MembershipChange::RemoveNode(
+        IDS[removed_voter].to_string(),
+    ));
+    submit(&nodes[leader_idx].client_tx, &remove_voter).await;
+
+    // The implementation auto-finalizes a committed joint transition. A read
+    // submitted immediately after the joint change must either commit under
+    // the joint quorum or after the final configuration; it may never use the
+    // removed member as a fabricated quorum shortcut.
+    prepare_read_with_timeout(
+        Some(&nodes[leader_idx].gateway()),
+        ReadConsistency::Linearizable,
+        WAIT,
+    )
+    .await
+    .unwrap();
+
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let membership = nodes[leader_idx].shared.lock().await.membership.clone();
+        if membership.joint.is_none() && membership.removed.contains(IDS[removed_voter]) {
+            assert!(!membership.voters.contains(IDS[removed_voter]));
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "membership did not finalize");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    stop_all(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn leader_transfer_reestablishes_authority_before_strong_reads_succeed() {
+    let (mut nodes, _) = cluster().await;
+    let old_leader = leader(&nodes, None).await;
+    prepare_read_with_timeout(
+        Some(&nodes[old_leader].gateway()),
+        ReadConsistency::Leader,
+        WAIT,
+    )
+    .await
+    .unwrap();
+
+    nodes[old_leader]
+        .handle
+        .as_ref()
+        .unwrap()
+        .request_leader_transfer()
+        .await
+        .expect("leader transfer");
+    let new_leader = leader(&nodes, Some(old_leader)).await;
+    assert_ne!(new_leader, old_leader);
+
+    prepare_read_with_timeout(
+        Some(&nodes[new_leader].gateway()),
+        ReadConsistency::Linearizable,
+        WAIT,
+    )
+    .await
+    .unwrap();
+    let state = nodes[new_leader].shared.lock().await.clone();
+    assert_eq!(state.last_applied, state.commit_index);
     stop_all(&mut nodes).await;
 }
