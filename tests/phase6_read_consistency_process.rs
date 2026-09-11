@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::net::TcpListener;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -15,6 +15,7 @@ const START_TIMEOUT: Duration = Duration::from_secs(12);
 
 #[derive(Clone)]
 struct NodeSpec {
+    id: String,
     sql_port: u16,
     raft_port: u16,
     metrics_port: u16,
@@ -32,7 +33,7 @@ impl NodeProcess {
         assert!(self.child.is_none());
         self.child = Some(
             Command::new(env!("CARGO_BIN_EXE_neuralbase"))
-                .env("NEURALBASE_NODE_ID", "p6-process-node")
+                .env("NEURALBASE_NODE_ID", &self.spec.id)
                 .env(
                     "NEURALBASE_LISTEN_ADDR",
                     format!("127.0.0.1:{}", self.spec.sql_port),
@@ -89,6 +90,17 @@ fn reserve_port(used: &mut HashSet<u16>) -> u16 {
     }
 }
 
+fn spec(root: &TempDir, used: &mut HashSet<u16>, id: &str, db_name: &str) -> NodeSpec {
+    NodeSpec {
+        id: id.to_string(),
+        sql_port: reserve_port(used),
+        raft_port: reserve_port(used),
+        metrics_port: reserve_port(used),
+        db_path: root.path().join(db_name),
+        users_file: root.path().join(format!("{db_name}-users.json")),
+    }
+}
+
 fn connect(port: u16) -> Result<Client, postgres::Error> {
     Client::connect(
         &format!("host=127.0.0.1 port={port} user=postgres dbname=postgres connect_timeout=1"),
@@ -121,19 +133,32 @@ fn read_value(client: &mut Client) -> String {
         .expect("row value")
 }
 
+fn run_backup_cli(command: &mut Command) -> Output {
+    let output = command.output().expect("run neuralbase-backup");
+    assert!(
+        output.status.success(),
+        "neuralbase-backup failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
+fn assert_linearizable_value(node: &mut NodeProcess, expected: &str) {
+    wait_ready(node);
+    let mut client = connect(node.spec.sql_port).expect("connect strong-read client");
+    client
+        .simple_query("SET neuralbase_read_consistency = linearizable")
+        .expect("set linearizable");
+    assert_eq!(read_value(&mut client), expected);
+}
+
 #[test]
-fn process_session_modes_immediate_read_and_restart() {
+fn process_session_modes_restart_and_phase5_restore_bootstrap() {
     let root = TempDir::new().expect("phase6 tempdir");
     let mut used = HashSet::new();
-    let spec = NodeSpec {
-        sql_port: reserve_port(&mut used),
-        raft_port: reserve_port(&mut used),
-        metrics_port: reserve_port(&mut used),
-        db_path: root.path().join("db"),
-        users_file: root.path().join("users.json"),
-    };
+    let source_spec = spec(&root, &mut used, "p6-process-source", "source-db");
     let mut node = NodeProcess {
-        spec,
+        spec: source_spec.clone(),
         child: None,
     };
     node.start();
@@ -147,8 +172,7 @@ fn process_session_modes_immediate_read_and_restart() {
         .simple_query("INSERT INTO p6_items VALUES ('acknowledged')")
         .expect("acknowledged replicated write");
 
-    // The same real TCP session switches modes explicitly. A linearizable read
-    // immediately after the acknowledged write must observe it.
+    // Immediate real-TCP read-after-write in the strongest mode.
     writer
         .simple_query("SET neuralbase_read_consistency = 'linearizable'")
         .expect("set linearizable");
@@ -159,8 +183,7 @@ fn process_session_modes_immediate_read_and_restart() {
         .expect("set leader authoritative");
     assert_eq!(read_value(&mut writer), "acknowledged");
 
-    // A different session starts with the backward-compatible Local default;
-    // changing one session does not mutate server-global state.
+    // A different session retains the backward-compatible Local default.
     let mut independent = connect(node.spec.sql_port).expect("connect independent session");
     assert_eq!(read_value(&mut independent), "acknowledged");
     drop(independent);
@@ -168,11 +191,45 @@ fn process_session_modes_immediate_read_and_restart() {
 
     node.kill();
     node.start();
-    wait_ready(&mut node);
-    let mut restarted = connect(node.spec.sql_port).expect("connect after restart");
-    restarted
-        .simple_query("SET neuralbase_read_consistency = linearizable")
-        .expect("set linearizable after restart");
-    assert_eq!(read_value(&mut restarted), "acknowledged");
+    assert_linearizable_value(&mut node, "acknowledged");
     node.kill();
+
+    // Phase-5 recovery establishes a fresh consensus generation. Phase 6 must
+    // acquire authority in that generation rather than inheriting stale source
+    // authority from the backup.
+    let backup = root.path().join("phase6-restored.nbbk");
+    run_backup_cli(
+        Command::new(env!("CARGO_BIN_EXE_neuralbase-backup"))
+            .arg("create")
+            .arg("--db")
+            .arg(&source_spec.db_path)
+            .arg("--output")
+            .arg(&backup),
+    );
+    run_backup_cli(
+        Command::new(env!("CARGO_BIN_EXE_neuralbase-backup"))
+            .arg("verify")
+            .arg("--backup")
+            .arg(&backup),
+    );
+
+    let recovery_spec = spec(&root, &mut used, "p6-process-recovery", "recovery-db");
+    run_backup_cli(
+        Command::new(env!("CARGO_BIN_EXE_neuralbase-backup"))
+            .arg("restore")
+            .arg("--backup")
+            .arg(&backup)
+            .arg("--target")
+            .arg(&recovery_spec.db_path)
+            .arg("--node-id")
+            .arg(&recovery_spec.id),
+    );
+
+    let mut recovered = NodeProcess {
+        spec: recovery_spec,
+        child: None,
+    };
+    recovered.start();
+    assert_linearizable_value(&mut recovered, "acknowledged");
+    recovered.kill();
 }
