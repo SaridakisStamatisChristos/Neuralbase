@@ -50,7 +50,7 @@ async fn spawn_learner(id: &str, voters: &[&str], bus: &ChannelBus) -> Node {
     spawn_with_storage(raft).await
 }
 
-async fn spawn_with_storage(raft: RaftNode) -> Node {
+async fn spawn_with_storage(raft: RaftNode<ChannelTransport>) -> Node {
     let dir = TempDir::new().unwrap();
     let engine = Arc::new(StorageEngine::open(dir.path()).unwrap());
     let clock = Arc::new(HlcClock::new(500));
