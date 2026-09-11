@@ -20,6 +20,7 @@ pub mod optimizer;
 pub mod protocol;
 pub mod query_executor;
 pub mod raft_persistence;
+pub mod read_consistency;
 pub mod replicated_gateway;
 pub mod replicated_identity;
 pub mod replicated_identity_migration;
