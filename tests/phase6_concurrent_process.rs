@@ -65,7 +65,10 @@ fn mutation_when_leader(port: u16, sql: &str) {
                     .is_some_and(|db| matches!(db.code().code(), "25006" | "57P03")) => {}
             Err(error) => panic!("mutation failed: {error}; SQL={sql}"),
         }
-        assert!(Instant::now() < deadline, "node never became mutation leader");
+        assert!(
+            Instant::now() < deadline,
+            "node never became mutation leader"
+        );
         thread::sleep(Duration::from_millis(20));
     }
 }

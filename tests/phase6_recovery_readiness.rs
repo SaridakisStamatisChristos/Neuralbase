@@ -42,8 +42,8 @@ async fn recovering_node_allows_local_but_rejects_strong_reads_before_serving_re
         .expect("seed persisted recovery state");
     let persistence: Arc<dyn RaftPersistenceStore> = store;
 
-    let mut node = RaftNode::new(id.to_string(), Vec::new(), transport)
-        .with_persistence(persistence);
+    let mut node =
+        RaftNode::new(id.to_string(), Vec::new(), transport).with_persistence(persistence);
     node.set_election_timeout_ms(5_000);
     let readiness = node.serving_readiness();
     assert!(

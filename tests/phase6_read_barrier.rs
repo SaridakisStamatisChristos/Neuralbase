@@ -101,9 +101,7 @@ async fn spawn_node(id: &str, bus: Bus, blocked: Blocks, election_ms: u64) -> Te
     let db = TempDir::new().unwrap();
     let engine = Arc::new(StorageEngine::open(db.path()).unwrap());
     let clock = Arc::new(HlcClock::new(500));
-    let transport = Arc::new(
-        PartitionTransport::register(id.to_string(), bus, blocked).await,
-    );
+    let transport = Arc::new(PartitionTransport::register(id.to_string(), bus, blocked).await);
     let peers = IDS
         .iter()
         .copied()
@@ -118,7 +116,8 @@ async fn spawn_node(id: &str, bus: Bus, blocked: Blocks, election_ms: u64) -> Te
         }
     });
 
-    let mut raft = RaftNode::new(id.to_string(), peers, transport).with_confirmed_apply_tx(apply_tx);
+    let mut raft =
+        RaftNode::new(id.to_string(), peers, transport).with_confirmed_apply_tx(apply_tx);
     raft.set_election_timeout_ms(election_ms);
     let (client_tx, shared, handle) = raft.spawn();
     TestNode {
@@ -161,7 +160,10 @@ async fn leader(nodes: &[TestNode], excluded: Option<usize>) -> usize {
                 return idx;
             }
         }
-        assert!(tokio::time::Instant::now() < deadline, "leader election timed out");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "leader election timed out"
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
@@ -340,7 +342,10 @@ async fn membership_changes_do_not_count_learners_and_strong_reads_survive_recon
             assert!(!membership.voters.contains(IDS[removed_voter]));
             break;
         }
-        assert!(tokio::time::Instant::now() < deadline, "membership did not finalize");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "membership did not finalize"
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     stop_all(&mut nodes).await;

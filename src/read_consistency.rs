@@ -228,9 +228,7 @@ mod tests {
     #[test]
     fn session_set_surface_is_explicit_and_strict() {
         assert_eq!(
-            parse_read_consistency_setting(
-                "SET neuralbase_read_consistency = 'linearizable';"
-            ),
+            parse_read_consistency_setting("SET neuralbase_read_consistency = 'linearizable';"),
             ReadConsistencySetting::Set(ReadConsistency::Linearizable)
         );
         assert_eq!(

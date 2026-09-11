@@ -45,7 +45,10 @@ impl NodeProcess {
                 .env("NEURALBASE_PEERS", "")
                 .env("NEURALBASE_DB_PATH", &self.spec.db_path)
                 .env("NEURALBASE_USERS_FILE", &self.spec.users_file)
-                .env("NEURALBASE_METRICS_PORT", self.spec.metrics_port.to_string())
+                .env(
+                    "NEURALBASE_METRICS_PORT",
+                    self.spec.metrics_port.to_string(),
+                )
                 .env("NEURALBASE_RAFT_ELECTION_TIMEOUT_MS", "80")
                 .env("NEURALBASE_AUTH_REQUIRED", "0")
                 .env("NEURALBASE_RAFT_TLS", "0")
@@ -115,7 +118,10 @@ fn wait_ready(node: &mut NodeProcess) {
         if connect(node.spec.sql_port).is_ok() {
             return;
         }
-        assert!(Instant::now() < deadline, "phase6 process node did not become ready");
+        assert!(
+            Instant::now() < deadline,
+            "phase6 process node did not become ready"
+        );
         thread::sleep(Duration::from_millis(30));
     }
 }
@@ -130,14 +136,21 @@ fn mutation_when_leader(node: &mut NodeProcess, sql: &str) {
     wait_ready(node);
     let deadline = Instant::now() + START_TIMEOUT;
     loop {
-        assert!(node.running(), "phase6 process node exited before acquiring authority");
-        let result = connect(node.spec.sql_port).and_then(|mut client| client.simple_query(sql).map(|_| ()));
+        assert!(
+            node.running(),
+            "phase6 process node exited before acquiring authority"
+        );
+        let result =
+            connect(node.spec.sql_port).and_then(|mut client| client.simple_query(sql).map(|_| ()));
         match result {
             Ok(()) => return,
             Err(error) if is_transient_authority_error(&error) => {}
             Err(error) => panic!("mutation failed: {error}; SQL={sql}"),
         }
-        assert!(Instant::now() < deadline, "phase6 process node never became Raft leader");
+        assert!(
+            Instant::now() < deadline,
+            "phase6 process node never became Raft leader"
+        );
         thread::sleep(Duration::from_millis(20));
     }
 }
@@ -167,7 +180,10 @@ fn assert_linearizable_value(node: &mut NodeProcess, expected: &str) {
     wait_ready(node);
     let deadline = Instant::now() + START_TIMEOUT;
     loop {
-        assert!(node.running(), "phase6 process node exited before strong read authority");
+        assert!(
+            node.running(),
+            "phase6 process node exited before strong read authority"
+        );
         let result = connect(node.spec.sql_port).and_then(|mut client| {
             client.simple_query("SET neuralbase_read_consistency = linearizable")?;
             read_value(&mut client)
@@ -209,16 +225,25 @@ fn process_session_modes_restart_and_phase5_restore_bootstrap() {
     writer
         .simple_query("SET neuralbase_read_consistency = 'linearizable'")
         .expect("set linearizable");
-    assert_eq!(read_value(&mut writer).expect("linearizable read-after-write"), "acknowledged");
+    assert_eq!(
+        read_value(&mut writer).expect("linearizable read-after-write"),
+        "acknowledged"
+    );
 
     writer
         .simple_query("SET neuralbase.read_consistency TO leader")
         .expect("set leader authoritative");
-    assert_eq!(read_value(&mut writer).expect("leader-authoritative read"), "acknowledged");
+    assert_eq!(
+        read_value(&mut writer).expect("leader-authoritative read"),
+        "acknowledged"
+    );
 
     // A different session retains the backward-compatible Local default.
     let mut independent = connect(node.spec.sql_port).expect("connect independent session");
-    assert_eq!(read_value(&mut independent).expect("local default read"), "acknowledged");
+    assert_eq!(
+        read_value(&mut independent).expect("local default read"),
+        "acknowledged"
+    );
     drop(independent);
     drop(writer);
 

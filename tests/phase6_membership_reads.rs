@@ -79,7 +79,10 @@ async fn leader(nodes: &[Node]) -> usize {
                 return index;
             }
         }
-        assert!(tokio::time::Instant::now() < deadline, "leader election timed out");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "leader election timed out"
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
@@ -105,7 +108,10 @@ where
         if predicate(&*shared.lock().await) {
             return;
         }
-        assert!(tokio::time::Instant::now() < deadline, "membership did not converge");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "membership did not converge"
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
@@ -164,7 +170,10 @@ async fn strong_reads_survive_learner_catchup_promotion_and_finalized_four_voter
         {
             Ok(_) => break,
             Err(error) if error.contains("caught up") => {
-                assert!(tokio::time::Instant::now() < deadline, "learner never caught up");
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "learner never caught up"
+                );
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
             Err(error) => panic!("unexpected promotion failure: {error}"),

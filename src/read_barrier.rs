@@ -109,7 +109,9 @@ mod tests {
         ));
         assert!(matches!(
             prepare_read(None, ReadConsistency::Linearizable).await,
-            Err(ReadBarrierError::ClusterRequired(ReadConsistency::Linearizable))
+            Err(ReadBarrierError::ClusterRequired(
+                ReadConsistency::Linearizable
+            ))
         ));
     }
 }
