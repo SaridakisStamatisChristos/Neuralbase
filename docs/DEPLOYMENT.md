@@ -110,7 +110,7 @@ After migration has committed and the replicated registry is present on the clus
 
 ### Raw Kubernetes examples
 
-`k8s/deployment.yaml` defines a three-node **StatefulSet**, despite its filename. The raw example now uses a non-mounted migration-source path and does not copy a credential registry onto each PVC. On fresh storage it starts auth-disabled so the first user can be created on the leader. The example Secrets are not usable credentials. Prefer Helm's paired Secret/digest configuration for migration; merely creating `neuralbase-users` does not mount or authorize it in the raw StatefulSet.
+`k8s/deployment.yaml` defines a three-node **StatefulSet**, despite its filename. The raw example does not mount a migration Secret or copy a credential registry onto each PVC. It retains `/data/neuralbase/users.json` solely as a legacy migration input: an existing file blocks implicit empty-user bootstrap until explicitly authorized, while fresh storage has no such file and can create its first user on the leader with auth disabled. The example Secrets are not usable credentials. Prefer Helm's paired Secret/digest configuration for migration; merely creating `neuralbase-users` does not mount or authorize it in the raw StatefulSet.
 
 Existing PVCs from the old per-node-file example are not automatically migrated. Select and authorize the intended legacy SCRAM file explicitly; do not assume discarded mounts initialize replicated identity.
 

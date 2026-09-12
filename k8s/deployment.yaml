@@ -3,6 +3,7 @@
 # Persistent table mutations and SCRAM identity replicate through Raft.
 # This auth-disabled example does not mount a legacy registry; use Helm for
 # paired read-only migration Secret + digest configuration (docs/DEPLOYMENT.md).
+# Retain the legacy path so old PVC files block implicit empty-user bootstrap.
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -51,7 +52,7 @@ spec:
             - name: NEURALBASE_PEERS
               value: "neuralbase-0=neuralbase-0.neuralbase-headless:7001,neuralbase-1=neuralbase-1.neuralbase-headless:7001,neuralbase-2=neuralbase-2.neuralbase-headless:7001"
             - name: NEURALBASE_USERS_FILE
-              value: "/identity-migration/users.json"
+              value: "/data/neuralbase/users.json"
           volumeMounts:
             - name: data
               mountPath: /data/neuralbase
