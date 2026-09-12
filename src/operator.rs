@@ -180,7 +180,7 @@ pub fn reconcile(d: &DesiredTopology, o: &Observation) -> Result<Plan, String> {
             return Ok(make(Action::RestartMember(id.clone())));
         }
     }
-    for id in d.voters.difference(&m.voters) {
+    if let Some(id) = d.voters.difference(&m.voters).next() {
         let Some(p) = o.processes.get(id) else {
             return Ok(make(if m.learners.contains(id) {
                 Action::RestartMember(id.clone())
@@ -204,7 +204,7 @@ pub fn reconcile(d: &DesiredTopology, o: &Observation) -> Result<Plan, String> {
         }
         return Ok(make(Action::PromoteLearner(id.clone())));
     }
-    for id in m.replication_targets().difference(&d.voters) {
+    if let Some(id) = m.replication_targets().difference(&d.voters).next() {
         if m.voters.contains(id) {
             let next: BTreeSet<_> = m.voters.iter().filter(|v| *v != id).cloned().collect();
             if next.len() < d.minimum_voters

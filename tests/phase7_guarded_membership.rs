@@ -156,12 +156,12 @@ async fn guarded_admission_learner_restart_leader_loss_promotion_transfer_remova
 }
 struct PartitionTransport {
     inner: ChannelTransport,
-    isolated: Arc<tokio::sync::Mutex<Option<String>>>,
+    isolated: Arc<std::sync::Mutex<Option<String>>>,
 }
 #[async_trait::async_trait]
 impl neuralbase::consensus::Transport for PartitionTransport {
     async fn send(&self, to: &String, message: neuralbase::consensus::RaftMessage) {
-        let isolated = self.isolated.lock().await.clone();
+        let isolated = self.isolated.lock().unwrap().clone();
         if isolated
             .as_ref()
             .is_some_and(|id| (id == &self.inner.id) != (id == to))
@@ -177,7 +177,7 @@ impl neuralbase::consensus::Transport for PartitionTransport {
 #[tokio::test]
 async fn isolated_former_leader_cannot_supply_authority_while_majority_progresses() {
     let bus = ChannelTransport::new_bus();
-    let isolated = Arc::new(tokio::sync::Mutex::new(None));
+    let isolated = Arc::new(std::sync::Mutex::new(None));
     let mut tasks = Vec::new();
     let mut handles = Vec::new();
     for id in ["x", "y", "z"] {
@@ -200,7 +200,7 @@ async fn isolated_former_leader_cannot_supply_authority_while_majority_progresse
         tasks.push(task);
     }
     let (i, before) = authority(&handles).await;
-    *isolated.lock().await = Some(before.id.clone());
+    *isolated.lock().unwrap() = Some(before.id.clone());
     let majority: Vec<_> = handles
         .iter()
         .enumerate()
@@ -216,4 +216,134 @@ async fn isolated_former_leader_cannot_supply_authority_while_majority_progresse
         handles[i].status().await.unwrap().is_leader,
         "isolated process remains a stale former leader"
     );
+}
+
+// Inject a real partition at the durable committed-joint boundary, before
+// the isolated leader can finish the second consensus round.
+struct BoundaryStore {
+    inner: MemPersistenceStore,
+    id: String,
+    trigger: Arc<std::sync::Mutex<Option<String>>>,
+    isolated: Arc<std::sync::Mutex<Option<String>>>,
+}
+impl neuralbase::consensus::RaftPersistenceStore for BoundaryStore {
+    fn save(
+        &self,
+        state: &neuralbase::consensus::PersistentState,
+        snapshot: &[u8],
+    ) -> Result<(), String> {
+        self.inner.save(state, snapshot)?;
+        let mut trigger = self.trigger.lock().unwrap();
+        if trigger.as_ref() == Some(&self.id)
+            && state.membership.as_ref().is_some_and(|m| m.is_joint())
+        {
+            *self.isolated.lock().unwrap() = Some(self.id.clone());
+            *trigger = None;
+        }
+        Ok(())
+    }
+    fn load(&self) -> Result<Option<(neuralbase::consensus::PersistentState, Vec<u8>)>, String> {
+        self.inner.load()
+    }
+}
+async fn finalized(handles: &[OperatorHandle], voters: usize) -> OperatorStatus {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(12);
+    loop {
+        let (_, s) = authority(handles).await;
+        if !s.transition_pending && !s.committed.is_joint() && s.committed.voters.len() == voters {
+            return s;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "joint transition did not finalize"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+#[tokio::test]
+async fn leader_loss_at_durable_joint_promotion_and_removal_boundaries() {
+    let bus = ChannelTransport::new_bus();
+    let isolated = Arc::new(std::sync::Mutex::new(None));
+    let trigger = Arc::new(std::sync::Mutex::new(None));
+    let ids = ["j1", "j2", "j3", "j4"];
+    let mut tasks = Vec::new();
+    let mut handles = Vec::new();
+    for (i, id) in ids.iter().enumerate() {
+        let transport = Arc::new(PartitionTransport {
+            inner: ChannelTransport::register(id.to_string(), bus.clone()).await,
+            isolated: isolated.clone(),
+        });
+        let seeds = ids[..3]
+            .iter()
+            .filter(|p| *p != id)
+            .map(|p| p.to_string())
+            .collect();
+        let mut node = if i == 3 {
+            RaftNode::new_learner(id.to_string(), seeds, transport).unwrap()
+        } else {
+            RaftNode::new(id.to_string(), seeds, transport)
+        }
+        .with_persistence(Arc::new(BoundaryStore {
+            inner: MemPersistenceStore::new(),
+            id: id.to_string(),
+            trigger: trigger.clone(),
+            isolated: isolated.clone(),
+        }));
+        node.set_election_timeout_ms(80);
+        let (_, _, task) = node.spawn();
+        handles.push(task.operator_handle());
+        tasks.push(task);
+    }
+    let (i, s) = authority(&handles[..3]).await;
+    handles[i]
+        .change_membership(GuardedMembership {
+            guard: guard(&s),
+            change: MembershipChange::AddLearner("j4".into()),
+        })
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (i, s) = authority(&handles).await;
+    *trigger.lock().unwrap() = Some(s.id.clone());
+    let survivors: Vec<_> = handles
+        .iter()
+        .enumerate()
+        .filter(|(n, _)| *n != i)
+        .map(|(_, h)| h.clone())
+        .collect();
+    let (old, promoted) = tokio::join!(
+        handles[i].change_membership(GuardedMembership {
+            guard: guard(&s),
+            change: MembershipChange::PromoteLearner("j4".into()),
+        }),
+        finalized(&survivors, 4)
+    );
+    assert!(
+        old.is_err(),
+        "isolated leader cannot acknowledge finalization"
+    );
+    assert_eq!(promoted.committed.voters.len(), 4);
+    *isolated.lock().unwrap() = None;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (i, s) = authority(&handles).await;
+    let removed = ids.iter().find(|id| **id != s.id).unwrap().to_string();
+    *trigger.lock().unwrap() = Some(s.id.clone());
+    let survivors: Vec<_> = handles
+        .iter()
+        .enumerate()
+        .filter(|(n, _)| *n != i)
+        .map(|(_, h)| h.clone())
+        .collect();
+    let (old, final_state) = tokio::join!(
+        handles[i].change_membership(GuardedMembership {
+            guard: guard(&s),
+            change: MembershipChange::RemoveNode(removed.clone()),
+        }),
+        finalized(&survivors, 3)
+    );
+    assert!(
+        old.is_err(),
+        "isolated leader cannot acknowledge finalization"
+    );
+    assert!(final_state.committed.removed.contains(&removed));
 }

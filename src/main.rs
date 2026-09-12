@@ -363,6 +363,13 @@ async fn main() -> io::Result<()> {
     let catalog: Arc<InMemoryCatalog> = Arc::new(InMemoryCatalog::with_tpch_all_tables());
 
     let managed = managed_node_config()?;
+    if managed.is_some()
+        && (!clustered || env_with_legacy("NEURALBASE_DB_PATH", "DB_PATH").is_none())
+    {
+        return Err(io::Error::other(
+            "managed startup requires node identity and durable storage",
+        ));
+    }
     let storage_engine = if let Some(db_path) = env_with_legacy("NEURALBASE_DB_PATH", "DB_PATH") {
         if clustered {
             ensure_clustered_startup_restore_safe(Path::new(&db_path)).map_err(|error| {
@@ -382,6 +389,11 @@ async fn main() -> io::Result<()> {
             Ok(engine) => {
                 tracing::info!(db_path, "RocksDB storage engine opened");
                 Some(Arc::new(engine))
+            }
+            Err(e) if managed.is_some() => {
+                return Err(io::Error::other(format!(
+                    "managed storage open failed: {e}"
+                )));
             }
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to open RocksDB; using in-memory mode");

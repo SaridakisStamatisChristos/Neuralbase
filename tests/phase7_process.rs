@@ -45,14 +45,17 @@ impl Deployment {
     }
     fn command(&self, verb: &str) -> Command {
         let mut c = Command::new("python3");
-        c.arg(concat!(env!("CARGO_MANIFEST_DIR"), "/ops/operator.py"))
-            .arg(verb)
-            .arg("--config")
-            .arg(&self.path)
-            .arg("--server")
-            .arg(env!("CARGO_BIN_EXE_neuralbase"))
-            .arg("--planner")
-            .arg(env!("CARGO_BIN_EXE_neuralbase-operator"));
+        c.arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/ops/neuralbase_operator.py"
+        ))
+        .arg(verb)
+        .arg("--config")
+        .arg(&self.path)
+        .arg("--server")
+        .arg(env!("CARGO_BIN_EXE_neuralbase"))
+        .arg("--planner")
+        .arg(env!("CARGO_BIN_EXE_neuralbase-operator"));
         c
     }
     fn invoke(&self, verb: &str) -> Value {
@@ -269,7 +272,24 @@ fn process_controller_scale_replace_restart_and_identity_convergence() {
         generation,
         "duplicate reconciliation must not mutate membership"
     );
-    d.desired(vec!["g1.a".into(), "g1.b".into(), "g1.c".into(), old]);
+    desired.push(old);
+    d.desired(desired);
     let rejected = d.invoke("plan");
     assert_ne!(rejected["plan"]["action"], "Converged");
+}
+
+#[test]
+fn supervisor_process_identity_and_document_boundaries() {
+    let result = Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/phase7_supervisor.py"
+        ))
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
 }

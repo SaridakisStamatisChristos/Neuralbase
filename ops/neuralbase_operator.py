@@ -55,31 +55,39 @@ def receive(sock, size):
     return bytes(data)
 
 
-def admin(node, command):
+def admin(node, command, terminate=False):
     data = json.dumps({"cluster": node["topology"]["cluster"], "command": command}).encode()
     if len(data) > 8192:
         raise ValueError("management request too large")
     with socket.socket(socket.AF_UNIX) as sock:
         sock.settimeout(13)
         sock.connect(node["socket"])
-        sock.sendall(struct.pack("!I", len(data)) + data)
-        size = struct.unpack("!I", receive(sock, 4))[0]
-        if size > MAX_BYTES:
-            raise ValueError("management response too large")
-        result = json.loads(receive(sock, size))
-    if result["node"] != node:
+        peer_pid, peer_uid, _ = struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+        if peer_uid != os.getuid() or peer_pid <= 0:
+            raise ValueError("management peer identity mismatch")
+        # Pin the process before requesting its configuration. If it exited
+        # before pidfd_open, this fresh exchange must fail, even after PID reuse.
+        pidfd = os.pidfd_open(peer_pid) if terminate else None
+        try:
+            return exchange(sock, data, node, peer_pid, pidfd)
+        finally:
+            if pidfd is not None:
+                os.close(pidfd)
+
+
+def exchange(sock, data, node, peer_pid, pidfd):
+    sock.sendall(struct.pack("!I", len(data)) + data)
+    size = struct.unpack("!I", receive(sock, 4))[0]
+    if size > MAX_BYTES:
+        raise ValueError("management response too large")
+    result = json.loads(receive(sock, size))
+    if result["node"] != node or result["pid"] != peer_pid:
         raise ValueError("management incarnation/configuration mismatch")
     if result["error"]:
         raise RuntimeError(result["error"])
+    if pidfd is not None:
+        signal.pidfd_send_signal(pidfd, signal.SIGTERM)
     return result
-
-
-def process_birth(pid):
-    try:
-        fields = Path(f"/proc/{int(pid)}/stat").read_text().rsplit(")", 1)[1].split()
-        return None if fields[0] == "Z" else fields[19]
-    except (FileNotFoundError, ProcessLookupError):
-        return None
 
 
 class Controller:
@@ -97,7 +105,10 @@ class Controller:
         self.lock = open(self.root / "controller.lock", "a+b")
         fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         self.path = self.root / "state.json"
-        self.desired = config["desired"]
+        self.desired = json.loads(json.dumps(config["desired"]))
+        if len(set(self.desired["voters"])) != len(self.desired["voters"]):
+            raise ValueError("duplicate desired voter identities")
+        self.desired["voters"] = sorted(self.desired["voters"])
         self.specs = config["processes"]
         self.children = []
         if set(self.specs) != set(self.desired["endpoints"]) or len(self.specs) > 128:
@@ -156,10 +167,8 @@ class Controller:
         return json.loads(result.stdout)
 
     def record_pid(self, node_id, pid):
-        birth = process_birth(pid)
-        if birth is None:
-            raise RuntimeError("managed process exited")
-        self.state["pids"][node_id] = {"pid": pid, "birth": birth}
+        # Diagnostic only. Never use a remembered numeric PID to signal a process.
+        self.state["pids"][node_id] = {"pid": pid}
         self.persist()
 
     def create(self, node_id, learner, seeds):
@@ -176,9 +185,6 @@ class Controller:
             return
         except (OSError, RuntimeError):
             pass
-        old = self.state["pids"].get(node_id)
-        if old and process_birth(old["pid"]) == old["birth"]:
-            return
         # A crash after spawn but before PID publication is recovered via the
         # socket. Overlapping startup still cannot obtain two RocksDB locks.
         path = self.root / (node_id + ".json")
@@ -199,6 +205,16 @@ class Controller:
         self.children = [c for c in self.children if c.poll() is None]
         self.children.append(child)
         self.record_pid(node_id, child.pid)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                self.record_pid(node_id, admin(node, "Status")["pid"])
+                return
+            except (OSError, RuntimeError):
+                if child.poll() is not None:
+                    raise RuntimeError("managed process failed to start; inspect its retained log")
+                time.sleep(0.05)
+        raise RuntimeError("managed process startup not yet observable; reobserve before retry")
 
     def bootstrap(self):
         if self.state["bootstrapped"]:
@@ -298,10 +314,7 @@ class Controller:
             response = statuses.get(node_id)
             if response is not None:
                 self.record_pid(node_id, response["pid"])
-                record = self.state["pids"][node_id]
-                if process_birth(record["pid"]) != record["birth"]:
-                    raise RuntimeError("process incarnation changed before retirement")
-                os.kill(record["pid"], signal.SIGTERM)
+                admin(self.state["nodes"][node_id], "Status", terminate=True)
         else:
             raise RuntimeError("unsupported planner action")
         self.state["last_success"] = plan
