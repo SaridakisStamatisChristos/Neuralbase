@@ -236,6 +236,14 @@ class Controller:
             raise RuntimeError("no serving leader can establish quorum authority")
         time.sleep(0.08)
         statuses = self.statuses()
+        fresh = statuses.get(authority["id"], {}).get("status")
+        if fresh is None or not fresh["is_leader"] or fresh["term"] != authority["term"]:
+            raise RuntimeError("leader changed while observing process catch-up")
+        # Refresh match indexes after follower catch-up, retaining the original
+        # proven barrier frontier. Do not append a new barrier while waiting.
+        authority["matched"] = fresh["matched"]
+        authority["committed"] = fresh["committed"]
+        authority["transition_pending"] = fresh["transition_pending"]
         processes = {node_id: {"cluster": r["node"]["topology"]["cluster"],
                                "endpoint": r["node"]["topology"]["endpoints"][node_id],
                                "learner_bootstrap": r["node"]["learner"], "ready": r["status"]["ready"],

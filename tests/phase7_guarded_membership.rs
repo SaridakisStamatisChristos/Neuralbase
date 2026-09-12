@@ -154,13 +154,37 @@ async fn guarded_admission_learner_restart_leader_loss_promotion_transfer_remova
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
 }
+struct PartitionTransport {
+    inner: ChannelTransport,
+    isolated: Arc<tokio::sync::Mutex<Option<String>>>,
+}
+#[async_trait::async_trait]
+impl neuralbase::consensus::Transport for PartitionTransport {
+    async fn send(&self, to: &String, message: neuralbase::consensus::RaftMessage) {
+        let isolated = self.isolated.lock().await.clone();
+        if isolated
+            .as_ref()
+            .is_some_and(|id| (id == &self.inner.id) != (id == to))
+        {
+            return;
+        }
+        neuralbase::consensus::Transport::send(&self.inner, to, message).await;
+    }
+    async fn recv(&self) -> Option<(String, neuralbase::consensus::RaftMessage)> {
+        neuralbase::consensus::Transport::recv(&self.inner).await
+    }
+}
 #[tokio::test]
-async fn isolated_former_leader_cannot_supply_authority() {
+async fn isolated_former_leader_cannot_supply_authority_while_majority_progresses() {
     let bus = ChannelTransport::new_bus();
+    let isolated = Arc::new(tokio::sync::Mutex::new(None));
     let mut tasks = Vec::new();
     let mut handles = Vec::new();
     for id in ["x", "y", "z"] {
-        let t = Arc::new(ChannelTransport::register(id.into(), bus.clone()).await);
+        let transport = Arc::new(PartitionTransport {
+            inner: ChannelTransport::register(id.into(), bus.clone()).await,
+            isolated: isolated.clone(),
+        });
         let mut node = RaftNode::new(
             id.into(),
             ["x", "y", "z"]
@@ -168,14 +192,28 @@ async fn isolated_former_leader_cannot_supply_authority() {
                 .filter(|p| *p != id)
                 .map(str::to_string)
                 .collect(),
-            t,
+            transport,
         );
         node.set_election_timeout_ms(80);
         let (_, _, task) = node.spawn();
         handles.push(task.operator_handle());
         tasks.push(task);
     }
-    let (i, _) = authority(&handles).await;
-    bus.lock().await.clear();
-    assert!(handles[i].observe_authoritative().await.is_err());
+    let (i, before) = authority(&handles).await;
+    *isolated.lock().await = Some(before.id.clone());
+    let majority: Vec<_> = handles
+        .iter()
+        .enumerate()
+        .filter(|(n, _)| *n != i)
+        .map(|(_, h)| h.clone())
+        .collect();
+    let (old_result, (_, new_leader)) =
+        tokio::join!(handles[i].observe_authoritative(), authority(&majority));
+    assert!(old_result.is_err());
+    assert_ne!(new_leader.id, before.id);
+    assert!(new_leader.term > before.term);
+    assert!(
+        handles[i].status().await.unwrap().is_leader,
+        "isolated process remains a stale former leader"
+    );
 }
