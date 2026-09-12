@@ -19,6 +19,10 @@ use crate::consensus::log::{
     PersistentState, RaftPersistenceStore, StagedSnapshot, StagedSnapshotKind,
 };
 use crate::consensus::membership::ClusterMembership;
+use crate::consensus::operator_control::{
+    ControlRequest, GuardedMembership, MembershipGuard, OperatorHandle, OperatorStatus,
+    GUARDED_MEMBERSHIP_TAG,
+};
 use crate::consensus::rpc::{
     AppendEntriesArgs, AppendEntriesReply, InstallSnapshotArgs, InstallSnapshotReply, LogEntry,
     MembershipChange, NodeId, RaftMessage, RequestVoteArgs, RequestVoteReply,
@@ -85,12 +89,17 @@ pub struct CommittedEntry {
 }
 
 pub struct RaftTaskHandle {
+    operator: OperatorHandle,
     shutdown_tx: Option<oneshot::Sender<()>>,
     join_handle: tokio::task::JoinHandle<()>,
     transfer_tx: mpsc::Sender<oneshot::Sender<Result<String, String>>>,
 }
 
 impl RaftTaskHandle {
+    pub fn operator_handle(&self) -> OperatorHandle {
+        self.operator.clone()
+    }
+
     pub async fn shutdown(mut self) {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
@@ -684,6 +693,11 @@ impl<T: Transport> RaftNode<T> {
 
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<ClientCommand>(64);
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+        let (control_tx, mut control_rx) = mpsc::channel::<ControlRequest>(16);
+        let operator = OperatorHandle {
+            control_tx,
+            client_tx: cmd_tx.clone(),
+        };
         let (transfer_tx, mut transfer_rx) =
             mpsc::channel::<oneshot::Sender<Result<String, String>>>(1);
         let shared = Arc::new(Mutex::new(RaftShared {
@@ -746,6 +760,16 @@ impl<T: Transport> RaftNode<T> {
                             }
                             Err(error) => {
                                 let _ = cmd.reply.send(Err(error));
+                            }
+                        }
+                    }
+                    Some(control) = control_rx.recv() => {
+                        match control {
+                            ControlRequest::Status(reply) => { let _ = reply.send(self.operator_status()); }
+                            ControlRequest::Transfer(guard, target, reply) => {
+                                let result = self.validate_operator_guard(&guard).and_then(|()| self.initiate_leader_transfer(target.clone()));
+                                if result.is_ok() { self.transport.send(&target, RaftMessage::TimeoutNow { term: self.ps.current_term }).await; }
+                                let _ = reply.send(result);
                             }
                         }
                     }
@@ -970,6 +994,7 @@ impl<T: Transport> RaftNode<T> {
             cmd_tx,
             shared,
             RaftTaskHandle {
+                operator,
                 shutdown_tx: Some(shutdown_tx),
                 join_handle,
                 transfer_tx,
@@ -1433,12 +1458,54 @@ impl<T: Transport> RaftNode<T> {
         }
     }
 
-    fn handle_client_command(&mut self, payload: Vec<u8>) -> Result<u64, String> {
+    fn operator_status(&self) -> OperatorStatus {
+        OperatorStatus {
+            id: self.id.clone(),
+            leader: self.leader_id.clone(),
+            is_leader: self.role == RaftRole::Leader,
+            term: self.ps.current_term,
+            committed: self.committed_membership().clone(),
+            transition_pending: self.membership_transition_active(),
+            applied: self.last_applied,
+            commit_index: self.commit_index,
+            ready: self.serving_ready.load(Ordering::Acquire),
+            matched: self
+                .leader
+                .as_ref()
+                .map(|s| s.match_index.iter().map(|(k, v)| (k.clone(), *v)).collect())
+                .unwrap_or_default(),
+            authority_index: 0,
+        }
+    }
+    fn validate_operator_guard(&self, guard: &MembershipGuard) -> Result<(), String> {
+        if self.role != RaftRole::Leader
+            || guard.leader != self.id
+            || guard.term != self.ps.current_term
+            || guard.generation != self.committed_membership().generation
+            || self.membership_transition_active()
+            || !self.serving_ready.load(Ordering::Acquire)
+        {
+            return Err("stale operator leadership/membership guard or node not ready".into());
+        }
+        Ok(())
+    }
+    fn handle_client_command(&mut self, mut payload: Vec<u8>) -> Result<u64, String> {
         if self.role != RaftRole::Leader {
             return Err(format!("not leader; redirect to {:?}", self.leader_id));
         }
         if self.transfer_in_progress.is_some() {
             return Err("leadership transfer in progress; retry later".to_string());
+        }
+        if payload.starts_with(GUARDED_MEMBERSHIP_TAG) {
+            if payload.len() > 4096 {
+                return Err("guarded membership request too large".into());
+            }
+            let request: GuardedMembership =
+                serde_json::from_slice(&payload[GUARDED_MEMBERSHIP_TAG.len()..])
+                    .map_err(|e| format!("invalid guarded membership request: {e}"))?;
+            self.validate_operator_guard(&request.guard)?;
+            // Persist only the existing Phase-3 command format; no new recovery codec.
+            payload = encode_membership_change(&request.change);
         }
         if payload.starts_with(COMPACT_LOG_TAG) {
             return self.handle_compact_log_cmd(payload);

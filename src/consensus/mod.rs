@@ -21,6 +21,7 @@
 pub mod fail_closed;
 pub mod log;
 pub mod membership;
+pub mod operator_control;
 pub mod raft;
 pub mod rpc;
 pub mod snapshot;
