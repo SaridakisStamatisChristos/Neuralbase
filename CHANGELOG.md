@@ -64,6 +64,13 @@ NeuralBase is currently a **pre-1.0 experimental project**. The crate version is
 
 ### Documentation and deployment
 
+- Audited runtime configuration and SQL/client limits against current implementation; added a complete environment/default/alias/TLS reference.
+- Corrected two-binary startup and one-statement-per-request recovery examples.
+- Documented standalone durability, backup source prerequisites, follower authentication freshness, ONNX/exchange integration limits, and actual metrics.
+- Removed obsolete raw Kubernetes per-node credential-file seeding; migration remains explicit and digest-authorized through Helm.
+- Updated package/chart descriptions and Compose comments to reflect replicated tables and identity.
+- Corrected release Helm migration rendering to supply the required digest and aligned auth/TLS/negative cases with CI.
+
 - Synchronized architecture, distributed semantics, SQL support, threat model, testing, roadmap, runbook and confidence claims through Phase 6.
 - Helm no longer copies a `users.json` file into each pod PVC as live identity state. An optional legacy source is mounted read-only and paired with an explicit SHA-256 migration authorization.
 - Added CI rendering coverage for the identity-migration Helm path and rejection of incomplete migration configuration.

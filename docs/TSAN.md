@@ -1,16 +1,17 @@
 # ThreadSanitizer / Data Race Detection
 
-## Linux CI (recommended)
+## Optional local Linux experiment
 
-Run the full integration test suite under ThreadSanitizer:
+The checked-in CI does not run ThreadSanitizer. The following is an optional nightly experiment, not a verified release gate. Native RocksDB/C++ dependencies and Rust standard-library instrumentation need separate consideration; successful Rust instrumentation alone does not establish whole-process race freedom.
 
 ```bash
 RUSTFLAGS="-Z sanitizer=thread" \
   cargo +nightly test --target x86_64-unknown-linux-gnu \
-    --features tls --tests -- --test-threads=1
+    --features tls --tests --locked -- --test-threads=1
 ```
 
 Requirements:
+
 - Rust nightly (`rustup install nightly`)
 - Linux x86_64 (`x86_64-unknown-linux-gnu` target)
 - ThreadSanitizer libraries (included with nightly toolchain)
@@ -33,8 +34,8 @@ assertion failures, incorrect results).
 
 | Module | Concurrency mechanism | Test coverage |
 |---|---|---|
-| MVCC (`mvcc.rs`) | `RwLock<BTreeMap>` for active txns | `snapshot_isolation_concurrent_insert_not_visible` |
-| GC (`gc.rs`) | Relaxed atomics, background thread | `adversarial_mvcc::gc_*` tests |
+| MVCC (`mvcc.rs`) | `Mutex<BTreeSet<u64>>` for active snapshots; serialized commits | `tests/mvcc_correctness.rs`, `tests/adversarial_mvcc.rs` |
+| GC (`gc.rs`) | Snapshot-set mutex, relaxed stop flag, background thread | `adversarial_mvcc::gc_*` tests |
 | Raft (`consensus/raft.rs`) | `mpsc` channels, `Arc<Mutex>` | `raft_correctness::*`, `adversarial_raft::*` |
 | Server (`server.rs`) | `Semaphore`, `AtomicBool`, `Arc<Mutex>` | `per_user_connection_limit_rejects_excess` |
-| HLC (`hlc.rs`) | `AtomicU64` with `Ordering::SeqCst` | unit tests in `hlc.rs` |
+| HLC (`hlc.rs`) | `Mutex<HlcTimestamp>` | unit tests in `hlc.rs` |

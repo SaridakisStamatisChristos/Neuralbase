@@ -4,7 +4,7 @@ NeuralBase welcomes focused contributions that improve correctness, evidence, cl
 
 ## Development prerequisites
 
-The crate declares Rust `1.88.0` as its minimum supported toolchain for the current repository gate.
+The crate declares Rust `1.88.0` as its minimum supported version, and `rust-toolchain.toml` pins that exact version for repository gates.
 
 On Ubuntu 24.04, CI installs native dependencies equivalent to:
 
@@ -16,16 +16,24 @@ sudo apt-get install -y \
   clang-18 \
   librocksdb-dev \
   nasm
+export LIBCLANG_PATH=/usr/lib/llvm-18/lib
+export ROCKSDB_INCLUDE_DIR=/usr/include
 ```
 
 Docker is required for the PostgreSQL 16 TPC-H reference suite and for Compose-based integration work.
+
+`.cargo/config.toml` supplies a Windows LLVM path and two build jobs. On Linux, export `LIBCLANG_PATH` as above so the real environment overrides that fallback; on other platforms set it to the installed libclang directory.
 
 ## Build
 
 ```bash
 cargo build --locked
 cargo build --locked --features tls
+cargo run --locked --bin neuralbase
+cargo run --locked --bin neuralbase-backup -- --help
 ```
+
+The project has two binaries, so `cargo run` requires `--bin`. The server uses environment configuration; the backup binary has explicit create/verify/restore subcommands. Build C/C++ tooling and libclang are required by native dependencies; the Dockerfile provides a separate Debian build environment.
 
 ## Required gates
 
@@ -58,7 +66,7 @@ Do not commit generated build/lint logs.
 
 ### Preserve explicit distributed semantics
 
-Do not describe NeuralBase as replicated SQL HA unless the SQL mutation path is actually committed/applied through Raft and the claim is supported by process-level failover evidence.
+Persistent table and SCRAM identity mutations already use quorum commit plus confirmed durable local apply. Preserve those guarantees, the Phase-5 recovery model, and Phase-6 leader-path read barriers. Process tests support those scopes; they do not establish general production SQL HA, arbitrary-follower strong reads or automatic deployment membership reconciliation.
 
 ### Prefer correctness over feature count
 
@@ -110,13 +118,15 @@ Prefer separate-process tests for claims that depend on process isolation.
 
 ## Deployment changes
 
-Helm changes should lint and render default, auth, and TLS configurations. Do not reintroduce automatic HPA semantics until coordinated Raft membership changes exist.
+Helm changes should lint and render default, existing-identity auth, paired migration Secret/digest, and SQL TLS configurations, and reject incomplete migration and automatic HPA configuration. Coordinated membership already exists; HPA must remain disabled until a deployment reconciler safely invokes that protocol. Keep CI and release render examples synchronized. Raw Kubernetes examples must not reintroduce per-node credential-file authorities.
 
 Update `docs/DEPLOYMENT.md` when configuration or topology changes.
 
 ## Documentation standard
 
 Documentation should distinguish implementation, executable evidence, deployment assumptions, and future plans. Avoid language such as "production-ready", "fully PostgreSQL compatible", or "HA" unless the repository contains evidence for that exact claim.
+
+Check [CONFIGURATION.md](docs/CONFIGURATION.md) against runtime readers when adding variables. Verify snippets use the correct binary and send one SQL statement per request. For documentation/deployment edits, inspect relative links and manifest rendering; do not report Rust gates as passed when the toolchain was unavailable. Historical ADRs and benchmark baselines should retain their original scope rather than acquire unmeasured current claims.
 
 ## Commit hygiene
 

@@ -39,6 +39,9 @@ Run the narrowest relevant tests during iteration and the complete affected gate
 - SQL surface: `docs/SQL_SUPPORT.md`
 - Raft/distributed semantics: `docs/DISTRIBUTED.md`
 - Deployment/configuration: `docs/DEPLOYMENT.md`
+- Runtime defaults and aliases: `docs/CONFIGURATION.md`
+- Operator recovery: `ops/RUNBOOK.md`
+- Metrics/tracing: `observability/README.md`
 - Tests/evidence: `docs/TESTING.md`
 - Roadmap: `ROADMAP.md`
 - Security: `SECURITY.md`

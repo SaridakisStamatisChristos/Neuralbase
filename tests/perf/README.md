@@ -21,6 +21,8 @@ make bench-full
 
 The optimizer percentage is a **repository cost-model comparison**, not a wall-clock claim that NeuralBase is faster than PostgreSQL, DuckDB, or another database.
 
+The optimizer benchmark invokes `optimizer::RlOptimizer` directly using `optimizer/model/neuralbase_optimizer.onnx`. The model uses the eight TPC-H table identities and falls back to naive order for unknown tables, invalid graphs or inference failure/timeout. The server query planner does not invoke this optimizer, and the Docker runtime does not include the model file. Benchmark improvements therefore do not imply live SQL endpoint speedups.
+
 ## Reproducibility rule
 
 A benchmark result is only meaningful with:

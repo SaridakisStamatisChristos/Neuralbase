@@ -20,7 +20,7 @@ Summarize the implementation without hiding important behavioral boundaries.
 - [ ] `make confidence`
 - [ ] `make adversarial` when relevant
 - [ ] `make tpch-correctness` for SQL semantic changes when relevant
-- [ ] Helm/default/auth/TLS rendering checked for deployment changes
+- [ ] Helm/default/existing-identity/migration/TLS rendering and negative migration/HPA cases checked for deployment changes
 
 ## Documentation
 
@@ -28,8 +28,9 @@ Summarize the implementation without hiding important behavioral boundaries.
 - [ ] `docs/SQL_SUPPORT.md` updated for SQL surface changes
 - [ ] `docs/DISTRIBUTED.md` updated for Raft/replication semantics
 - [ ] `docs/DEPLOYMENT.md` updated for topology/config changes
+- [ ] `docs/CONFIGURATION.md` matches runtime defaults and aliases
 - [ ] `ROADMAP.md` updated if a release boundary changed
 
 ## Claim check
 
-- [ ] This PR does not imply replicated SQL HA unless SQL mutations are actually quorum-committed/applied and supported by failover evidence.
+- [ ] Claims preserve the tested replicated table/identity, backup/recovery and leader-path read boundaries without implying production HA, arbitrary-follower strong reads or automatic membership reconciliation.

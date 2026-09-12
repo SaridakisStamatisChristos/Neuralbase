@@ -43,6 +43,14 @@ flowchart TD
     Raft --> Membership[learner / joint consensus]
 ```
 
+## SQL runtime and research components
+
+The server uses the binder/physical executor for simple plans and the row-oriented `query_executor` for general queries. It initializes TPC-H demo schemas/data and adds persisted application tables to the general query catalog. [`SQL_SUPPORT.md`](SQL_SUPPORT.md#client-and-sql-limitations) details transaction, parameter, constraint, DML and type limitations.
+
+`optimizer::RlOptimizer` loads the repository ONNX model for library/benchmark use with a naive-order fallback; it is not invoked by `server_parts/query.rs`. Likewise, distributed exchange/backpressure modules exist as library components, but `main.rs` starts no exchange listener or distributed SQL query scheduler. The reserved deployment port `8001` is not evidence of an active service.
+
+The session index advisor records simple-query patterns and periodically applies local RocksDB index-column-family decisions. It is not replicated SQL index DDL, and general query execution does not thereby become an index-scan planner.
+
 ## Standalone versus clustered identity
 
 Without `NEURALBASE_NODE_ID`, table and user DDL retain the historical local behavior, including the writable local `users.json` registry.
@@ -50,6 +58,8 @@ Without `NEURALBASE_NODE_ID`, table and user DDL retain the historical local beh
 With clustered mode enabled, `CREATE USER`, `ALTER USER`, and `DROP USER` route through the replicated gateway. The leader derives SCRAM keys before proposal. `src/replicated_identity.rs` defines a versioned command format that cannot encode plaintext passwords or PostgreSQL MD5 verifier material.
 
 Cluster authentication reads `ReplicatedIdentityState` from RocksDB rather than the process-local registry. Identity mutations and the replicated apply cursor are written atomically in one RocksDB batch.
+
+The handshake reads the selected node's locally applied identity without a fresh consensus barrier. Clustered identity mutation ordering does not imply instantaneous credential revocation across lagging followers or existing sessions. SQL user/table privilege enforcement remains unimplemented.
 
 ## Legacy identity migration
 
@@ -127,5 +137,7 @@ The log barrier is intentionally stronger/more expensive than a pure authority c
 - `src/restore.rs` — fresh-generation staged restore and atomic target publication.
 
 ## Current acceptance boundary
+
+Standalone mode can fall back to in-memory/demo operation on a RocksDB open failure; its local DDL error handling is weaker than the fail-closed clustered path. SQL-level multi-statement transactions are not implemented despite the MVCC library. These limits are separate from the tested replicated commit/apply guarantees.
 
 Executable evidence supports replicated persistent tables, SQL-aware snapshot/recovery, coordinated membership changes, replicated SCRAM identity, the documented Phase-5 backup/restore/fresh-cluster DR model, and explicit Phase-6 `Local`/`Leader`/`Linearizable` read semantics on the leader path. Stronger production claims still require automatic deployment membership reconciliation, arbitrary-follower strong-read routing if desired, PITR/automatic DR if desired, broader security/authorization, chaos/upgrade validation and production performance characterization.

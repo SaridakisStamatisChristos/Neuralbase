@@ -92,7 +92,7 @@ The consensus membership protocol exists, but deployment reconciliation remains 
 
 ## P1 — SQL semantic depth
 
-Expand SQL without weakening replicated-state safety: richer PostgreSQL type/cast semantics, window functions, DDL/catalog features, transaction protocol behavior, extended wire protocol, NULL/collation/date/time fidelity and differential tests.
+Expand SQL without weakening replicated-state safety. Current concrete gaps include SQL transaction blocks, Bind parameter substitution/result formats, constraint enforcement, exact numeric/boolean types, complete statement handling, and fail-closed unsupported DML predicates. Also improve window/frame semantics, DDL/catalog features, NULL/collation/date/time fidelity and differential tests. See [SQL support](docs/SQL_SUPPORT.md#client-and-sql-limitations).
 
 ## P2 — optimizer and execution performance
 
@@ -102,6 +102,7 @@ Only after lifecycle safety remains intact:
 - group commit/apply batching;
 - snapshot streaming/compression;
 - optional ReadIndex/lease optimization for the strong-read contract;
+- integrate the library ONNX optimizer with the live SQL planner only with end-to-end correctness/performance evidence;
 - index access/predicate pushdown;
 - cost model calibration, spills and memory accounting;
 - reproducible write/read/failover/snapshot throughput/latency measurement.
@@ -111,6 +112,7 @@ Performance work must not weaken acknowledgement, read-consistency, snapshot, me
 ## P2 — production hardening
 
 - authorization policy beyond the current user registry;
+- credential freshness on follower authentication and an explicit existing-session revocation policy;
 - certificate lifecycle/rotation;
 - broader secret-management integration and backup key lifecycle automation;
 - broader network/storage chaos testing;

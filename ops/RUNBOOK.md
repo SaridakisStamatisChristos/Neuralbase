@@ -20,7 +20,7 @@ This runbook documents the **tested pre-1.0 operator recovery model** plus the P
 cargo build --release --locked --bin neuralbase-backup
 ```
 
-The examples below assume `target/release/neuralbase-backup`.
+The examples below assume `target/release/neuralbase-backup`, existing backup/key parent directories, and a source captured from this implementation. The server binary is built separately with `cargo build --release --locked --bin neuralbase`; the current Docker runtime image includes only the server.
 
 ## Backup formats
 
@@ -57,7 +57,7 @@ There is no in-place re-key command in Phase 5. Re-encryption, if required opera
 
 ## Offline backup
 
-Offline backup is the strongest external CLI path. The source RocksDB must not be open by a NeuralBase process; RocksDB's exclusive lock enforces that boundary.
+Offline backup is the external CLI capture path. The source RocksDB must not be open by a NeuralBase process; RocksDB's exclusive lock enforces that boundary. It must contain persisted Raft state and committed Phase-3 membership. A database written only in standalone mode does not meet that requirement and is rejected. Stopping a lagging follower captures its validated local recovery boundary, not necessarily the latest acknowledged state on the cluster; choose the source and recovery point accordingly.
 
 Stop the selected source member cleanly, then create a plaintext backup:
 
@@ -113,12 +113,7 @@ Plaintext and encrypted online creation share the same capture path. Encrypted o
 
 **Current invocation boundary:** `OnlineBackupCoordinator` is an in-process API. The standalone `neuralbase-backup create` command is offline-only and cannot open a RocksDB database already owned by the running server. NeuralBase does not currently expose an authenticated live-server backup management socket/SQL command. Do not describe online backup as a standalone live-server CLI feature.
 
-Programmatic integrations use the coordinator methods corresponding to:
-
-```text
-create_online_backup(...)
-create_encrypted_online_backup(...)
-```
+Programmatic integrations construct [`OnlineBackupCoordinator`](../src/online_backup.rs) with the runtime's client channel, shared Raft state, storage, clock and serving-readiness flag. `create_online_backup` takes an output path; `create_encrypted_online_backup` additionally takes an out-of-band key.
 
 An integration must invoke them on the running clustered leader/runtime and must surface failure rather than silently falling back to a follower or offline copy.
 
@@ -214,10 +209,13 @@ At minimum validate:
 Example SQL smoke checks:
 
 ```bash
-psql -h 127.0.0.1 -p 5432 -U <restored-user> -d postgres -c 'SELECT 1'
-psql -h 127.0.0.1 -p 5432 -U <restored-user> -d postgres -c 'SELECT COUNT(*) FROM <critical-table>'
-psql -h 127.0.0.1 -p 5432 -U <restored-user> -d postgres -c "SET neuralbase_read_consistency = linearizable; SELECT COUNT(*) FROM <critical-table>"
+psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 -U restored_user -d postgres \
+  -c 'SELECT 1' \
+  -c 'SET neuralbase_read_consistency = linearizable' \
+  -c 'SELECT COUNT(*) FROM critical_table'
 ```
+
+Replace `restored_user` and `critical_table` with the actual restored names. Repeated `-c` options send separate requests on the **same connection**, preserving the session mode. Do not combine `SET` and `SELECT` into one `-c` string: the read-consistency parser deliberately rejects multiple statements. Separate `psql` invocations also do not preserve the setting.
 
 The strong-read smoke check must target the current leader. A `25006` not-leader or `57P03` catching-up response is an explicit failure to establish the requested strong-read contract, not a signal to use a stale local fallback.
 

@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # 3-node NeuralBase development topology.
 #
-# This starts three independent SQL/RocksDB nodes plus a real Raft TCP cluster.
-# SQL data is not yet replicated through Raft; see README.md.
+# This starts three independent RocksDB nodes with Raft-replicated persistent
+# table mutations and SCRAM identity. Writes and strong reads require the leader.
+# Authentication is disabled; TCP health checks do not prove SQL/leader readiness.
 #
 # Usage:
 #   docker compose up -d --wait
