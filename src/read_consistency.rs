@@ -179,7 +179,10 @@ fn starts_with_setting_name(sql: &str) -> bool {
 
 fn strip_setting_name(input: &str) -> (&str, bool) {
     for name in ["neuralbase_read_consistency", "neuralbase.read_consistency"] {
-        if input.len() >= name.len() && input[..name.len()].eq_ignore_ascii_case(name) {
+        let Some(prefix) = input.get(..name.len()) else {
+            continue;
+        };
+        if prefix.eq_ignore_ascii_case(name) {
             let rest = &input[name.len()..];
             if rest
                 .chars()
@@ -194,7 +197,8 @@ fn strip_setting_name(input: &str) -> (&str, bool) {
 }
 
 fn strip_keyword<'a>(input: &'a str, keyword: &str) -> Option<&'a str> {
-    if input.len() < keyword.len() || !input[..keyword.len()].eq_ignore_ascii_case(keyword) {
+    let prefix = input.get(..keyword.len())?;
+    if !prefix.eq_ignore_ascii_case(keyword) {
         return None;
     }
     let rest = &input[keyword.len()..];
@@ -261,6 +265,22 @@ mod tests {
                     ReadConsistencySetting::Invalid(_)
                 ),
                 "expected targeted setting to fail closed: {sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_unicode_input_never_panics_or_matches_ascii_keywords() {
+        for sql in [
+            "💥SET neuralbase_read_consistency = local",
+            "SET 💥💥💥💥💥💥💥💥 = local",
+            "SET neuralbase_read_consistency💥 = local",
+            "💥💥💥💥💥💥💥💥💥💥",
+        ] {
+            assert_eq!(
+                parse_read_consistency_setting(sql),
+                ReadConsistencySetting::NotSetting,
+                "unexpected setting match for malformed Unicode input: {sql}"
             );
         }
     }
