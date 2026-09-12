@@ -48,3 +48,4 @@ pub mod tpch;
 pub mod vectorized;
 
 pub mod operator;
+pub mod operator_admin;
