@@ -46,3 +46,5 @@ pub mod telemetry;
 pub mod tls;
 pub mod tpch;
 pub mod vectorized;
+
+pub mod operator;
