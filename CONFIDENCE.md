@@ -1,8 +1,8 @@
 # Confidence Report
 
-**Updated:** 2026-09-08
+**Updated:** 2026-09-12
 
-NeuralBase remains pre-1.0 research/development software. The evidence boundary now includes replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated Raft membership changes, strongly consistent replicated SCRAM identity, and the documented Phase-5 operator backup/restore/fresh-cluster DR model. It remains deliberately narrower than a production-HA database claim.
+NeuralBase remains pre-1.0 research/development software. The evidence boundary now includes replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated Raft membership changes, strongly consistent replicated SCRAM identity, the documented Phase-5 operator backup/restore/fresh-cluster DR model, and explicit Phase-6 read-consistency modes on the leader path. It remains deliberately narrower than a production-HA database claim.
 
 ## Strongest evidence
 
@@ -16,7 +16,24 @@ NeuralBase remains pre-1.0 research/development software. The evidence boundary 
 - Phase 4 tests cover three-node identity convergence, leader-loss password rotation/drop, crash/replay, snapshot reconstruction, learner promotion/removal, and real-process PostgreSQL authentication across restart/failover/rejoin.
 - Strict legacy migration requires an exact `NEURALBASE_IDENTITY_MIGRATION_SHA256`; malformed, duplicate, MD5 or digest-mismatched input fails closed.
 - Phase 5 adds versioned offline/online backup, independent verification, authenticated NBEC encryption, fresh-target restore, fresh-generation cluster rebuild, interruption evidence and a real-process recovery path.
+- Phase 6 adds explicit `Local`, `Leader`, and `Linearizable` session modes. Strong modes require the current serving leader, use a current-term replicated barrier, and proceed only after quorum commit plus confirmed durable local apply through that barrier.
+- Phase 6 tests cover follower rejection, stale former leader partitions, leader transfer, learner/promotion/finalization, recovery readiness, restart, Phase-5 restore bootstrap, concurrent real-process reads/writes and immediate linearizable read-after-write.
 - PostgreSQL 16 TPC-H Q1-Q22 reference comparison remains part of CI at a deterministic small scale.
+
+## Read-consistency scope
+
+In configured clustered mode:
+
+- every new session defaults to `Local` for backward compatibility;
+- `Local` reads locally applied state without consensus coordination and may be stale on a follower;
+- `Leader` requires the current serving leader and a successful current-term replicated barrier;
+- `Linearizable` uses the same barrier and relies on the tested client-command invariant that success occurs only after quorum commit and confirmed durable local apply;
+- followers reject strong reads explicitly rather than proxying or silently downgrading them;
+- recovering/non-serving nodes fail strong reads with the catching-up boundary;
+- an isolated former leader cannot complete the quorum barrier and cannot successfully serve a strong read;
+- the current implementation spends one Raft control/log entry per strong read.
+
+This scope does **not** include arbitrary-follower linearizable reads, automatic follower-to-leader read routing, ReadIndex, or lease-read optimization.
 
 ## Replicated identity scope
 
@@ -41,7 +58,7 @@ It does **not** mean the checked-in Kubernetes/Helm manifests automatically reco
 ## What the confidence claim still excludes
 
 - `production_ready: true` or production SQL HA;
-- linearizable reads from arbitrary followers;
+- linearizable reads from arbitrary followers or automatic strong-read routing;
 - automatic Kubernetes membership reconciliation or safe HPA scaling;
 - PITR or automatic disaster recovery beyond the documented manual fresh-cluster Phase-5 procedure;
 - complete PostgreSQL semantic compatibility;

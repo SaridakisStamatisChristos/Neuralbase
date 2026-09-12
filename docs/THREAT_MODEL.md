@@ -1,6 +1,6 @@
 # NeuralBase threat model
 
-**Updated:** 2026-09-08  
+**Updated:** 2026-09-12  
 **Scope:** pre-1.0 standalone and clustered development/research deployments
 
 This is a risk inventory, not a security certification.
@@ -8,7 +8,7 @@ This is a risk inventory, not a security certification.
 ## Sensitive assets
 
 - SQL query text and application data in RocksDB;
-- Raft log entries carrying deterministic table effects and SCRAM verifier identity commands;
+- Raft log entries carrying deterministic table effects, strong-read control barriers and SCRAM verifier identity commands;
 - logical snapshots/staged snapshot metadata containing table and identity state;
 - Raft term/vote/log/membership metadata;
 - standalone credential files and clustered legacy migration files;
@@ -38,7 +38,7 @@ After migration, remove the migration source from deployment mounts where practi
 
 ## Replicated-log and snapshot confidentiality
 
-Table commands, identity verifiers and logical snapshots contain sensitive application/security state. Raft TLS protects transport only when enabled. NeuralBase does not claim encryption at rest for RocksDB, Raft logs or snapshots.
+Table commands, strong-read barrier entries, identity verifiers and logical snapshots can reveal sensitive operational/application state. Raft TLS protects transport only when enabled. NeuralBase does not claim encryption at rest for RocksDB, Raft logs or snapshots.
 
 ## Consensus and membership risks
 
@@ -64,7 +64,11 @@ NBEC v1 does not carry a key identifier. External key inventory/rotation is ther
 
 ## Read-consistency risk
 
-Follower reads are local and may lag. Do not rely on arbitrary follower reads where linearizable visibility is a security requirement.
+The default `Local` mode intentionally performs no consensus coordination and may lag on a follower. Applications requiring the Phase-6 strong-read contract must select `Leader` or `Linearizable` and connect to the current serving Raft leader.
+
+Strong reads fail closed rather than silently downgrading: followers return not-leader, recovering/non-serving nodes return catching-up, and an isolated former leader cannot successfully complete the quorum barrier. The current implementation uses a replicated control/log entry for every strong read, so heavy strong-read workloads can add consensus latency and log churn.
+
+NeuralBase does not automatically route strong reads from followers to the leader and does not claim arbitrary-follower linearizable reads. A client that sends a security-sensitive linearizable read to an arbitrary node must treat explicit not-leader/catching-up failure as failure and retry only through an application/operator-controlled leader-discovery strategy.
 
 ## Transport/security posture
 
@@ -72,10 +76,12 @@ SQL TLS and Raft mTLS are configuration-dependent rather than secure-by-default 
 
 ## Current production blockers
 
-Stronger production claims require secure-by-default deployment profiles, certificate/secret lifecycle, richer authorization/auditability, automatic membership reconciliation, defined stronger read modes, broader partition/storage/upgrade chaos testing, and production resource/performance characterization. PITR and automatic DR remain unimplemented; Phase-5 backup encryption does not imply general database-at-rest encryption.
+Stronger production claims require secure-by-default deployment profiles, certificate/secret lifecycle, richer authorization/auditability, automatic membership reconciliation, broader partition/storage/upgrade chaos testing, and production resource/performance characterization. Arbitrary-follower strong-read routing and lower-overhead ReadIndex/lease optimization remain unimplemented. PITR and automatic DR remain unimplemented; Phase-5 backup encryption does not imply general database-at-rest encryption.
 
 ## Evidence references
 
+- `src/read_consistency.rs` / `src/read_barrier.rs` — Phase-6 session contract and strong-read barrier.
+- `tests/phase6_*` — partition, membership, recovery, restart/restore and real-process read evidence.
 - `src/replicated_identity*.rs` — verifier-only identity, storage and strict migration.
 - `src/replicated_state_machine.rs` — atomic replicated apply boundary.
 - `src/replicated_snapshot*.rs` — logical snapshot lifecycle.

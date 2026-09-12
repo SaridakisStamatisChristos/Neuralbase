@@ -6,21 +6,21 @@ This directory contains the technical documentation for NeuralBase. The root `RE
 
 | Document | Scope |
 |---|---|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Major components, replicated tables/identity, snapshot lifecycle and membership boundaries |
-| [SQL_SUPPORT.md](SQL_SUPPORT.md) | SQL feature matrix and standalone versus clustered mutation semantics |
-| [DISTRIBUTED.md](DISTRIBUTED.md) | Raft acknowledgement/apply, snapshots, membership changes and identity consistency |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Major components, replicated tables/identity, read consistency, snapshot lifecycle and membership boundaries |
+| [SQL_SUPPORT.md](SQL_SUPPORT.md) | SQL feature matrix, session read modes and standalone versus clustered mutation semantics |
+| [DISTRIBUTED.md](DISTRIBUTED.md) | Raft acknowledgement/apply, read barriers, snapshots, membership changes and identity consistency |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Single-node, Kubernetes/Helm, migration, TLS and scaling constraints |
 | [TESTING.md](TESTING.md) | CI gates and executable evidence limits |
 | [THREAT_MODEL.md](THREAT_MODEL.md) | Threats, trust boundaries and residual risks |
-| [`../ops/RUNBOOK.md`](../ops/RUNBOOK.md) | Tested backup/restore and disaster-recovery operator procedure |
+| [`../ops/RUNBOOK.md`](../ops/RUNBOOK.md) | Tested backup/restore, strong-read validation and disaster-recovery operator procedure |
 | [TSAN.md](TSAN.md) | ThreadSanitizer workflow and caveats |
 
 Repository-level material includes [`../ROADMAP.md`](../ROADMAP.md), [`../CONFIDENCE.md`](../CONFIDENCE.md), [`../CONFIDENCE.yaml`](../CONFIDENCE.yaml), [`../CHANGELOG.md`](../CHANGELOG.md), [`../CONTRIBUTING.md`](../CONTRIBUTING.md), and [`../SECURITY.md`](../SECURITY.md).
 
 ## Current distributed claim in one sentence
 
-Configured clusters replicate persistent table mutations and SCRAM identity through Raft with quorum commit + confirmed durable local apply before success; SQL-aware snapshots preserve both table and identity state; learner/joint-consensus membership transitions and Phase-5 operator backup/restore/fresh-cluster DR are implemented and tested; this still excludes PITR, automatic DR, linearizable arbitrary-follower reads, automatic deployment membership reconciliation/HPA, and production-HA claims.
+Configured clusters replicate persistent table mutations and SCRAM identity through Raft with quorum commit + confirmed durable local apply before success; SQL-aware snapshots preserve both table and identity state; learner/joint-consensus membership transitions and Phase-5 operator backup/restore/fresh-cluster DR are implemented and tested; Phase 6 adds session-scoped `Local`, leader-authoritative and linearizable leader-path reads through a current-term quorum/apply barrier; this still excludes linearizable reads from arbitrary followers, automatic strong-read routing, PITR/automatic DR, automatic deployment membership reconciliation/HPA, and production-HA claims.
 
 ## Documentation rule
 
-Changes to public behavior, configuration, persistence, consensus, identity, deployment topology or executable evidence should update the relevant document in the same pull request. Documentation must distinguish code that exists, behavior verified by tests, deployment behavior exercised in CI, and future design intent.
+Changes to public behavior, configuration, persistence, consensus, identity, read consistency, deployment topology or executable evidence should update the relevant document in the same pull request. Documentation must distinguish code that exists, behavior verified by tests, deployment behavior exercised in CI, and future design intent.

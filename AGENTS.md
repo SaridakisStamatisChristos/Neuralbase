@@ -4,9 +4,9 @@ Repository-specific guidance for coding agents and automated contributors.
 
 ## Project identity
 
-NeuralBase is an experimental Rust SQL engine. Configured clusters replicate persistent table mutations and SCRAM identity through deterministic Raft-backed state machines, use SQL-aware snapshots, support learner/joint-consensus membership changes, and provide the tested Phase-5 NBBK/NBEC backup/restore/fresh-cluster recovery lifecycle.
+NeuralBase is an experimental Rust SQL engine. Configured clusters replicate persistent table mutations and SCRAM identity through deterministic Raft-backed state machines, use SQL-aware snapshots, support learner/joint-consensus membership changes, provide the tested Phase-5 NBBK/NBEC backup/restore/fresh-cluster recovery lifecycle, and expose tested Phase-6 session read-consistency modes.
 
-Do not turn those scoped guarantees into a claim of general or production SQL HA. Reads are still local and may lag, deployment membership reconciliation and automatic node replacement are not implemented, PITR/automatic DR remain open, and the online backup coordinator is currently an in-process API rather than a standalone live-server CLI.
+Do not turn those scoped guarantees into a claim of general or production SQL HA. Reads default to `Local` and may lag on followers. `Leader` and `Linearizable` strong reads require the current serving leader and the Phase-6 consensus barrier; arbitrary-follower linearizable routing is not implemented. Deployment membership reconciliation and automatic node replacement are not implemented, PITR/automatic DR remain open, and the online backup coordinator is currently an in-process API rather than a standalone live-server CLI.
 
 ## Toolchain and gates
 
@@ -22,14 +22,16 @@ Run the narrowest relevant tests during iteration and the complete affected gate
 ## Engineering rules
 
 1. Preserve existing scalar/public APIs unless a breaking change is necessary and documented.
-2. Prefer explicit errors over silent fallback where persistence, consensus, identity, or correctness is involved.
+2. Prefer explicit errors over silent fallback where persistence, consensus, identity, read consistency, or correctness is involved.
 3. Keep queues, waits, joins, and materialized intermediates intentionally bounded.
 4. Do not hide deterministic hangs behind timeouts; timeouts are diagnostics/safety guards.
 5. Keep local durability distinct from replicated durability in code comments and docs.
 6. Snapshot creation must be durable before Raft prefix truncation; snapshot installation must restore durable SQL state before success acknowledgement.
 7. Do not enable HPA until deployment reconciliation sequences replica changes through the existing coordinated membership protocol.
-8. Update relevant docs with behavioral/configuration changes.
-9. Do not commit build logs, Clippy output, temporary databases, secrets, or private keys.
+8. Preserve the Phase-6 read contract: `Local` is the no-consensus default; strong modes require current-leader authority, quorum barrier and confirmed local apply, and must never silently downgrade.
+9. Do not claim arbitrary-follower linearizability unless routing/ReadIndex/lease semantics and corresponding failure tests are actually implemented.
+10. Update relevant docs with behavioral/configuration changes.
+11. Do not commit build logs, Clippy output, temporary databases, secrets, or private keys.
 
 ## Documentation map
 

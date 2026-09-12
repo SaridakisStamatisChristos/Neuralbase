@@ -51,15 +51,26 @@ NeuralBase is currently a **pre-1.0 experimental project**. The crate version is
 - Added interruption evidence, real-process recovery evidence, compatibility/key semantics and an operator DR runbook.
 - PITR, automatic DR and a standalone live-server online-backup CLI remain out of scope.
 
+### Explicit read consistency — Phase 6
+
+- Added session-scoped `Local`, `Leader`, and `Linearizable` read modes; new sessions default to backward-compatible `Local`.
+- Added strict `SET neuralbase_read_consistency ...` / `SET neuralbase.read_consistency ...` parsing and malformed-input fail-closed behavior, including Unicode boundary hardening.
+- Added a strong-read barrier that requires clustered mode, serving readiness and the current Raft leader.
+- `Leader` and `Linearizable` currently use a current-term Raft control/log entry and proceed only after the existing client-command path confirms quorum commit plus durable local state-machine apply.
+- Followers and recovering nodes reject strong reads explicitly; no strong mode silently downgrades to `Local`.
+- Added stale-former-leader partition, follower rejection, leader-transfer, learner/promotion/finalization, recovery readiness, restart and Phase-5 restore-bootstrap coverage.
+- Added real OS-process/TCP immediate linearizable read-after-write plus concurrent write/linearizable-read evidence.
+- Arbitrary-follower linearizable routing, automatic follower-to-leader forwarding and ReadIndex/lease optimization remain unimplemented.
+
 ### Documentation and deployment
 
-- Synchronized architecture, distributed semantics, SQL support, threat model, testing, roadmap and confidence claims through Phases 3 and 4.
+- Synchronized architecture, distributed semantics, SQL support, threat model, testing, roadmap, runbook and confidence claims through Phase 6.
 - Helm no longer copies a `users.json` file into each pod PVC as live identity state. An optional legacy source is mounted read-only and paired with an explicit SHA-256 migration authorization.
 - Added CI rendering coverage for the identity-migration Helm path and rejection of incomplete migration configuration.
 
 ### Important remaining boundaries
 
-- Reads remain local; arbitrary follower reads are not claimed linearizable.
+- `Local` reads may be stale on followers; `Leader`/`Linearizable` require the current serving leader. Linearizable reads from arbitrary followers and automatic strong-read routing are not claimed.
 - Membership operations are not automatically reconciled by the checked-in Kubernetes/Helm deployment; HPA remains rejected.
 - Manual Phase-5 backup/restore/fresh-cluster DR is implemented and tested; PITR and automatic disaster recovery remain unimplemented.
 - Authorization remains intentionally limited compared with a production database security model.

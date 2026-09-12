@@ -7,7 +7,7 @@
 **NeuralBase is an experimental SQL engine in Rust** with a PostgreSQL-compatible wire endpoint, MVCC/RocksDB storage, vectorized/general execution, an ONNX join-order optimizer, and a multi-process Raft subsystem over TCP/TLS.
 
 > [!IMPORTANT]
-> NeuralBase is **pre-1.0 research/development software**. Configured clusters replicate persistent table mutations and SCRAM identity through Raft, support SQL-aware snapshot/recovery, and implement learner/joint-consensus membership changes. Successful replicated mutations wait for quorum commit plus confirmed durable local apply. This is still not a production-HA claim: follower reads are local and may lag, Kubernetes membership reconciliation is not automatic, operator backup/restore and fresh-cluster disaster recovery are implemented and tested to the documented Phase-5 scope; PITR, automatic disaster recovery, and broader authorization/security hardening remain open.
+> NeuralBase is **pre-1.0 research/development software**. Configured clusters replicate persistent table mutations and SCRAM identity through Raft, support SQL-aware snapshot/recovery, implement learner/joint-consensus membership changes, provide the tested Phase-5 backup/restore/fresh-cluster recovery lifecycle, and expose explicit session-scoped read-consistency modes. Successful replicated mutations and strong read barriers wait for quorum commit plus confirmed durable local apply. This is still not a production-HA claim: strong reads must be sent to the current leader, arbitrary-follower linearizable routing is not implemented, Kubernetes membership reconciliation is not automatic, PITR/automatic disaster recovery remain open, and broader authorization/security hardening is still required.
 
 ## Current highlights
 
@@ -26,6 +26,7 @@
 - Real multi-process failover/restart coverage for SQL state and replicated authentication.
 - Versioned NBBK offline/online backup, independent verification, crash-safe fresh-cluster restore, and authenticated NBEC backup encryption.
 - Fresh-generation cluster recovery through one restored authority plus learner catch-up/promotion, failover and restart evidence.
+- Explicit `Local`, `Leader`, and `Linearizable` read modes; strong modes use a current-term replicated barrier and confirmed local apply before query execution, with explicit follower rejection and no silent downgrade.
 - PostgreSQL 16 row-for-row TPC-H Q1-Q22 reference checks at a small deterministic scale.
 - Docker Compose, Kubernetes StatefulSet and Helm development deployments.
 
@@ -57,6 +58,20 @@ Persistent table mutations and clustered user DDL are leader-routed. Followers r
 A client-observed replicated success means the entry reached quorum commit and the local state machine confirmed durable apply. A timeout or disconnect after submission is still outcome-uncertain.
 
 For user creation/rotation, the plaintext password exists only at the SQL/leader boundary needed to derive SCRAM material. The replicated identity command contains verifier material, not plaintext. Legacy PostgreSQL MD5 hashes are not accepted into replicated identity because possession of that material is sufficient for MD5 challenge responses.
+
+## Read consistency
+
+Read consistency is session-scoped and defaults to the historical local behavior:
+
+```sql
+SET neuralbase_read_consistency = local;
+SET neuralbase_read_consistency = leader;
+SET neuralbase_read_consistency = linearizable;
+```
+
+`Local` performs no consensus coordination and may observe only the selected node's locally applied state. `Leader` and `Linearizable` require clustered mode and the current Raft leader. Both currently establish a current-term replicated control barrier and return to SQL execution only after the existing client-command acknowledgement path confirms quorum commit and local durable apply. Followers and recovering/non-serving nodes reject strong reads explicitly; NeuralBase does not silently downgrade them to `Local`.
+
+The current implementation intentionally uses one Raft log barrier per strong read. It does not yet provide automatic follower-to-leader read routing, arbitrary-follower linearizable reads, or a lower-overhead ReadIndex/lease optimization.
 
 ## Snapshot and membership semantics
 
@@ -92,7 +107,8 @@ A fresh cluster with authentication disabled and no legacy file may initialize r
 | Learner/joint-consensus membership changes | **Implemented and lifecycle-tested** |
 | Replicated SCRAM user/auth DDL | **Implemented and process-tested** |
 | Legacy identity migration | **Explicit digest-selected SCRAM migration implemented** |
-| Linearizable arbitrary-follower reads | **Not implemented** |
+| Session `Local` / `Leader` / `Linearizable` reads | **Implemented and Phase-6 tested** |
+| Linearizable arbitrary-follower reads / automatic strong-read routing | **Not implemented** |
 | Automatic Kubernetes membership reconciliation / HPA | **Not implemented** |
 | Backup / restore / fresh-cluster DR | **Implemented and tested to Phase-5 scope** |
 | Point-in-time recovery / automatic DR | **Not implemented** |
@@ -139,7 +155,7 @@ Green CI is evidence for the exact checked commit and tested scopes, not a produ
 
 ## Project maturity
 
-Phases 1–5 close replicated table mutations, SQL-aware snapshot/recovery, coordinated membership, replicated identity, and the documented operator backup/restore/fresh-cluster DR model under the repository's tested failure model. The next high-value correctness work is explicit stronger read-consistency semantics, followed by automatic membership orchestration and broader production hardening. PITR remains a later recovery extension.
+Phases 1–6 close replicated table mutations, SQL-aware snapshot/recovery, coordinated membership, replicated identity, the documented operator backup/restore/fresh-cluster DR model, and explicit tested read-consistency modes under the repository's failure model. The next high-value correctness work is operator/deployment membership orchestration and deeper SQL/security/upgrade hardening. PITR remains a later recovery extension, and arbitrary-follower strong-read routing/ReadIndex optimization remains optional future read-path work rather than a claimed capability.
 
 ## License
 
