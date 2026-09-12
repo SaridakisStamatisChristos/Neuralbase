@@ -56,7 +56,8 @@ fn critical_local_execution_artifacts_stay_above_floor() {
 }
 
 #[test]
-fn distributed_claim_tracks_membership_and_identity_without_overclaiming_production() {
+fn distributed_claim_tracks_membership_identity_recovery_and_reads_without_overclaiming_production()
+{
     let parsed = load_confidence();
     let system = &parsed["system"];
 
@@ -65,7 +66,24 @@ fn distributed_claim_tracks_membership_and_identity_without_overclaiming_product
 
     let scope = &system["replication_scope"];
     assert_eq!(scope["follower_writes"].as_str(), Some("reject"));
+    assert_eq!(
+        scope["strong_reads_require_current_leader"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        scope["strong_read_barrier"].as_str(),
+        Some("raft_log_quorum_confirmed_apply")
+    );
+    assert_eq!(scope["strong_read_silent_downgrade"].as_bool(), Some(false));
     assert_eq!(scope["follower_reads_linearizable"].as_bool(), Some(false));
+    assert_eq!(
+        scope["automatic_strong_read_routing"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        scope["readindex_or_lease_optimization"].as_bool(),
+        Some(false)
+    );
     assert_eq!(scope["sql_snapshots"].as_bool(), Some(true));
     assert_eq!(
         scope["fixed_member_empty_storage_bootstrap"].as_bool(),
@@ -92,6 +110,14 @@ fn distributed_claim_tracks_membership_and_identity_without_overclaiming_product
     );
     assert_eq!(scope["hpa_safe"].as_bool(), Some(false));
     assert_eq!(scope["production_ha"].as_bool(), Some(false));
+
+    let modes = scope["read_consistency_modes"]
+        .as_sequence()
+        .expect("replication_scope.read_consistency_modes must be a list");
+    assert_eq!(modes.len(), 3);
+    assert_eq!(modes[0].as_str(), Some("local"));
+    assert_eq!(modes[1].as_str(), Some("leader"));
+    assert_eq!(modes[2].as_str(), Some("linearizable"));
 
     let ddl = scope["table_ddl"]
         .as_sequence()
@@ -137,5 +163,14 @@ fn distributed_claim_tracks_membership_and_identity_without_overclaiming_product
     assert_eq!(
         recovery["status"].as_str(),
         Some("offline_online_encrypted_fresh_cluster_dr_tested")
+    );
+
+    let reads = artifacts
+        .iter()
+        .find(|item| item["artifact"].as_str() == Some("read_consistency"))
+        .expect("read_consistency boundary must be explicit");
+    assert_eq!(
+        reads["status"].as_str(),
+        Some("local_leader_linearizable_barrier_tested")
     );
 }

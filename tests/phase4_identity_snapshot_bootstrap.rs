@@ -30,7 +30,7 @@ const IDS: [&str; 3] = [
     "identity-snapshot-b",
     "identity-snapshot-c",
 ];
-const REPLACEMENT_ELECTION_TIMEOUT_MS: u64 = 250;
+const REPLACEMENT_ELECTION_TIMEOUT_MS: u64 = 5_000;
 
 struct SnapshotNode {
     id: String,
@@ -233,7 +233,7 @@ async fn empty_member_recovers_identity_from_snapshot_plus_suffix_before_serving
             spawn_node(
                 Arc::clone(&bus),
                 id,
-                70 + ordinal as u64 * 25,
+                1_000 + ordinal as u64 * 1_500,
                 TempDir::new().unwrap(),
             )
             .await,

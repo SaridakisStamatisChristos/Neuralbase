@@ -1,6 +1,6 @@
 # NeuralBase roadmap
 
-NeuralBase is a pre-1.0 experimental SQL engine. The distributed correctness baseline now includes replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated Raft membership changes, and strongly consistent replicated SCRAM identity. The next major boundary is explicit stronger read consistency; operator-facing backup/restore/fresh-cluster disaster recovery is now covered by the tested Phase-5 scope.
+NeuralBase is a pre-1.0 experimental SQL engine. The distributed correctness baseline now includes replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated Raft membership changes, strongly consistent replicated SCRAM identity, the tested Phase-5 operator backup/restore/fresh-cluster recovery model, and explicit Phase-6 read-consistency modes. The next major boundary is operator/deployment membership orchestration plus deeper SQL/security/upgrade hardening.
 
 This is an engineering roadmap, not a release-date commitment.
 
@@ -73,17 +73,18 @@ Internal Raft snapshot catch-up remains distinct from operator backup. The stand
 
 Archived replicated-log/WAL-equivalent streaming and point-in-time recovery remain separate future work. Phase 5 does not infer PITR from retained Raft logs.
 
-## P1 — read consistency modes
+## Completed Phase 6 — explicit read consistency modes
 
-Current reads are local; arbitrary follower reads can lag committed state.
+- [x] Backward-compatible session `Local`/stale read mode with no consensus coordination.
+- [x] Leader-authoritative mode with explicit current-leader/serving-readiness validation.
+- [x] Linearizable leader-path mode implemented through a current-term Raft quorum barrier.
+- [x] Strong reads proceed only after the existing client-command path confirms quorum commit and durable local apply through the barrier.
+- [x] Strong reads fail closed on followers/recovering nodes and never silently downgrade to `Local`.
+- [x] Stale former leader under partition cannot manufacture a successful strong read.
+- [x] Tests across immediate post-write reads, concurrent reads/writes, leader loss/transfer, learners and promotion/finalization, recovery readiness, restart, snapshot/backup bootstrap, and real OS-process/TCP execution.
+- [x] Strict session setting parser hardened against malformed Unicode boundaries.
 
-Candidate acceptance criteria:
-
-- explicit local/stale mode;
-- leader read with authority validation;
-- Raft ReadIndex/quorum-barrier or otherwise justified linearizable mode;
-- wait for local `last_applied >= read_index` before query execution;
-- tests across immediate post-write reads, lag, leader loss, partitions and stale former leaders.
+The initial implementation deliberately uses one replicated control/log entry per `Leader` or `Linearizable` read. Arbitrary-follower linearizable routing, automatic follower-to-leader forwarding, and lower-overhead ReadIndex/lease optimization are not implemented and are not part of the Phase-6 claim.
 
 ## P1 — operator membership orchestration
 
@@ -100,11 +101,12 @@ Only after lifecycle safety remains intact:
 - Raft batching/pipelining and persistent peer connections;
 - group commit/apply batching;
 - snapshot streaming/compression;
+- optional ReadIndex/lease optimization for the strong-read contract;
 - index access/predicate pushdown;
 - cost model calibration, spills and memory accounting;
 - reproducible write/read/failover/snapshot throughput/latency measurement.
 
-Performance work must not weaken acknowledgement, snapshot, membership, identity or recovery semantics.
+Performance work must not weaken acknowledgement, read-consistency, snapshot, membership, identity or recovery semantics.
 
 ## P2 — production hardening
 
@@ -118,7 +120,7 @@ Performance work must not weaken acknowledgement, snapshot, membership, identity
 
 ## Explicit non-goals for the current stage
 
-The project should not optimize for claims of production SQL HA, automatic HPA-driven scaling, official benchmark certification, or broad PostgreSQL compatibility unsupported by executable evidence.
+The project should not optimize for claims of production SQL HA, arbitrary-follower linearizable reads, automatic HPA-driven scaling, official benchmark certification, or broad PostgreSQL compatibility unsupported by executable evidence.
 
 ## Definition of a stronger pre-1.0 distributed milestone
 
@@ -128,6 +130,6 @@ A future milestone suitable for stronger HA/database claims should demonstrate a
 2. the current SQL-aware snapshot/recovery guarantees;
 3. the current coordinated membership protocol;
 4. the current replicated SCRAM identity model;
-5. documented stronger read-consistency modes;
+5. the current explicit leader-path `Local`/`Leader`/`Linearizable` read-consistency contract;
 6. tested backup/restore and disaster-recovery procedures;
 7. deployment/security assumptions matching an operator-tested topology.

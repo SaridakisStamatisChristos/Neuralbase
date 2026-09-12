@@ -1,6 +1,6 @@
 # Distributed semantics
 
-NeuralBase has tested Raft paths for persistent table replication, SQL-aware snapshot/recovery, coordinated membership changes and strongly consistent clustered identity. This document defines those guarantees and the remaining boundaries.
+NeuralBase has tested Raft paths for persistent table replication, SQL-aware snapshot/recovery, coordinated membership changes, strongly consistent clustered identity, and explicit Phase-6 read-consistency modes. This document defines those guarantees and the remaining boundaries.
 
 ## Clustered startup
 
@@ -73,7 +73,25 @@ The checked-in Compose/Kubernetes/Helm assets still describe a static process to
 
 ## Read consistency
 
-Reads are local. There is no Raft ReadIndex/lease protocol for arbitrary follower queries, so follower reads may lag committed state. Serving-readiness gates prevent a fresh empty member from serving partial reconstruction; they do not make normal follower reads linearizable.
+Phase 6 exposes a per-session contract with three modes:
+
+- `Local` — the backward-compatible default. The query reads locally applied state and performs no consensus coordination. A follower may therefore return state behind the latest committed cluster state.
+- `Leader` — requires clustered mode, a serving-ready current leader and a successful current-term replicated barrier before query execution.
+- `Linearizable` — requires the same current-leader barrier and relies on the Raft client-command invariant that success is emitted only after quorum commit and confirmed durable local apply. The SQL read executes only after that applied frontier is established.
+
+The session surface is:
+
+```sql
+SET neuralbase_read_consistency = local;
+SET neuralbase_read_consistency = leader;
+SET neuralbase_read_consistency = linearizable;
+```
+
+Strong modes never silently fall back to `Local`. A follower returns an explicit not-leader error, and a reconstructing/recovering member whose serving-readiness gate is closed returns a catching-up error. An isolated former leader cannot complete a new quorum barrier and therefore cannot manufacture a successful authoritative/linearizable read.
+
+The current Phase-6 implementation deliberately uses a Raft log/control entry as the barrier rather than a separate ReadIndex/lease RPC. This is more expensive—one consensus log entry per strong read—but it reuses the already-tested quorum-commit + confirmed-apply acknowledgement boundary. A future ReadIndex optimization may reduce that cost without changing the public consistency contract.
+
+Arbitrary-follower linearizable reads and automatic follower-to-leader strong-read routing are **not** implemented. Clients requesting `Leader` or `Linearizable` must reach the current leader.
 
 ## What green distributed evidence supports
 
@@ -85,6 +103,7 @@ Reads are local. There is no Raft ReadIndex/lease protocol for arbitrary followe
 - learner admission/catch-up, joint-consensus promotion/removal and durable finalized membership;
 - stale removed-node protection;
 - replicated SCRAM identity, strict migration, failover rotation/drop and process-level authentication convergence;
-- versioned offline/online backup, independent verification, authenticated encrypted backup, fresh-target restore and fresh-generation cluster recovery.
+- versioned offline/online backup, independent verification, authenticated encrypted backup, fresh-target restore and fresh-generation cluster recovery;
+- explicit `Local`/`Leader`/`Linearizable` read modes, including immediate read-after-write, stale-former-leader partition rejection, follower rejection, leadership transfer, learner/promotion membership transitions, recovery readiness, restart, restored-cluster bootstrap and real-process concurrent read/write evidence.
 
-Still open before stronger production claims: automatic operator membership reconciliation, linearizable/defined stronger reads, PITR and automatic DR, broader authorization/security, upgrade/storage-chaos evidence and production performance characterization.
+Still open before stronger production claims: automatic operator membership reconciliation, arbitrary-follower strong-read routing/optimization, PITR and automatic DR, broader authorization/security, upgrade/storage-chaos evidence and production performance characterization.

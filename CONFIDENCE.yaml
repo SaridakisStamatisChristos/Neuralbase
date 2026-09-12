@@ -1,8 +1,8 @@
-version: 3
-updated: 2026-09-08
+version: 4
+updated: 2026-09-12
 
 system:
-  scope: local_sql_engine_plus_replicated_tables_snapshots_membership_and_identity
+  scope: local_sql_engine_plus_replicated_tables_snapshots_membership_identity_backup_and_read_consistency
   effective_confidence: 0.78
   production_ready: false
   distributed_sql_replication: true
@@ -15,7 +15,16 @@ system:
       - update
       - delete
     follower_writes: reject
+    read_consistency_modes:
+      - local
+      - leader
+      - linearizable
+    strong_reads_require_current_leader: true
+    strong_read_barrier: raft_log_quorum_confirmed_apply
+    strong_read_silent_downgrade: false
     follower_reads_linearizable: false
+    automatic_strong_read_routing: false
+    readindex_or_lease_optimization: false
     sql_snapshots: true
     fixed_member_empty_storage_bootstrap: true
     dynamic_membership: true
@@ -36,10 +45,13 @@ system:
   summary: >-
     Confidence covers the tested local SQL/MVCC engine, replicated persistent-table
     mutations, SQL-aware snapshot/recovery, coordinated learner/joint-consensus
-    membership changes, and replicated SCRAM identity. Replicated mutation success
-    waits for Raft quorum commit and confirmed durable local state-machine apply.
-    This does not imply production HA, linearizable follower reads, automatic
-    Kubernetes membership reconciliation, PITR, or automatic disaster recovery.
+    membership changes, replicated SCRAM identity, Phase-5 operator recovery, and
+    Phase-6 Local/Leader/Linearizable leader-path read semantics. Replicated
+    mutation success and strong-read barriers wait for Raft quorum commit and
+    confirmed durable local state-machine apply. This does not imply production
+    HA, linearizable arbitrary-follower reads, automatic strong-read routing,
+    automatic Kubernetes membership reconciliation, PITR, or automatic disaster
+    recovery.
 
 artifacts:
   - artifact: wire_protocol_v3
@@ -124,7 +136,7 @@ artifacts:
 
   - artifact: raft_consensus
     effective: 0.78
-    status: snapshot_and_membership_lifecycle_tested
+    status: snapshot_membership_and_read_barrier_lifecycle_tested
     evidence:
       - tests/raft_correctness.rs
       - tests/adversarial_raft.rs
@@ -132,10 +144,13 @@ artifacts:
       - tests/raft_persistence_fail_closed.rs
       - tests/phase3_membership.rs
       - tests/phase4_identity_membership.rs
+      - tests/phase6_read_barrier.rs
+      - tests/phase6_membership_reads.rs
     limitation: >-
       No TLA+ proof or automatic deployment/operator reconciliation. Membership
       changes are exercised through explicit learner, joint-consensus and removal
-      operations; arbitrary HPA replica changes remain unsafe.
+      operations; arbitrary HPA replica changes remain unsafe. Strong reads use a
+      log-backed barrier rather than ReadIndex/lease optimization.
 
   - artifact: raft_persistence
     effective: 0.76
@@ -155,10 +170,12 @@ artifacts:
       - src/consensus/transport.rs
       - tests/replicated_sql_process.rs
       - tests/phase4_identity_process.rs
+      - tests/phase6_read_consistency_process.rs
+      - tests/phase6_concurrent_process.rs
 
   - artifact: sql_replication
     effective: 0.76
-    status: replicated_table_and_snapshot_path_tested
+    status: replicated_table_snapshot_and_read_consistency_path_tested
     criticality: release_boundary
     evidence:
       - src/replicated_sql.rs
@@ -173,10 +190,34 @@ artifacts:
       - tests/replicated_sql_snapshot_guard.rs
       - tests/replicated_sql_snapshot_bootstrap.rs
       - tests/replicated_sql_snapshot_cycles.rs
+      - tests/phase6_read_barrier.rs
     limitation: >-
       Persistent table CREATE/DROP/INSERT/UPDATE/DELETE and SQL-aware snapshot
-      recovery are tested. Reads remain local and may be stale; production HA and
-      stronger follower-read guarantees are not implemented.
+      recovery are tested. Reads default to Local, while explicit Leader and
+      Linearizable modes are tested on the current-leader path. Arbitrary-follower
+      linearizable reads and production HA are not claimed.
+
+  - artifact: read_consistency
+    effective: 0.76
+    status: local_leader_linearizable_barrier_tested
+    criticality: release_boundary
+    evidence:
+      - src/read_consistency.rs
+      - src/read_barrier.rs
+      - src/server_parts/session.rs
+      - src/server_parts/query.rs
+      - src/server_parts/tail.rs
+      - tests/phase6_read_barrier.rs
+      - tests/phase6_membership_reads.rs
+      - tests/phase6_recovery_readiness.rs
+      - tests/phase6_read_consistency_process.rs
+      - tests/phase6_concurrent_process.rs
+    limitation: >-
+      Leader and Linearizable currently share a current-term replicated log
+      barrier that succeeds only after quorum commit and confirmed durable local
+      apply. Strong reads require the current serving leader. There is no silent
+      downgrade, arbitrary-follower linearizable routing, ReadIndex or lease-read
+      optimization.
 
   - artifact: membership_changes
     effective: 0.74
@@ -186,6 +227,7 @@ artifacts:
       - src/consensus/raft.rs
       - tests/phase3_membership.rs
       - tests/phase4_identity_membership.rs
+      - tests/phase6_membership_reads.rs
     limitation: >-
       Consensus membership operations exist and are tested, but checked-in
       deployment manifests do not automatically orchestrate replica changes.
@@ -226,6 +268,7 @@ artifacts:
       - tests/phase5_cluster_recovery.rs
       - tests/phase5_recovery_process.rs
       - tests/phase5_encrypted_ops.rs
+      - tests/phase6_read_consistency_process.rs
     limitation: >-
       The external CLI provides offline create/verify/restore. Online backup is a
       tested in-process leader coordinator, not a standalone live-server CLI.
@@ -246,14 +289,15 @@ artifacts:
 verification_policy:
   - No performance claim without a reproducible benchmark and workload context.
   - distributed_sql_replication means only the machine-readable replication_scope above.
-  - production_ready and production_ha remain false despite membership and identity progress.
+  - production_ready and production_ha remain false despite membership, identity, recovery and read-consistency progress.
   - Keep SQL correctness claims synchronized with executable PostgreSQL reference tests.
   - Keep deployment examples free of automatic HPA scaling until membership reconciliation is implemented.
   - Replicated identity claims require verifier-only log material and explicit legacy migration semantics.
+  - Strong-read claims require explicit current-leader authority, quorum barrier, confirmed local apply, and no silent downgrade.
   - A release head must pass tests, lint, confidence checks, adversarial tests, TPC-H reference validation, and Helm rendering.
 
 next_high_value_work:
-  - Add operator-facing backup/restore and disaster-recovery workflows using verified snapshot machinery where appropriate.
-  - Add stronger read-consistency modes and deeper PostgreSQL compatibility without weakening lifecycle safety.
   - Build automatic deployment membership reconciliation on top of the tested learner/joint-consensus protocol.
-  - Expand authorization/security hardening beyond identity consistency.
+  - Deepen PostgreSQL compatibility without weakening distributed lifecycle or read-consistency safety.
+  - Expand authorization/security and upgrade/storage-chaos hardening.
+  - Optimize strong reads with ReadIndex/lease mechanics only if the Phase-6 public contract and failure semantics remain unchanged.

@@ -1,31 +1,35 @@
 # Architecture
 
-NeuralBase combines a local SQL engine with a Raft consensus subsystem and deterministic replicated state machines for persistent table mutations and clustered identity. SQL-aware snapshots preserve the same authoritative replicated state across compaction, recovery and learner bootstrap.
+NeuralBase combines a local SQL engine with a Raft consensus subsystem and deterministic replicated state machines for persistent table mutations and clustered identity. SQL-aware snapshots preserve the same authoritative replicated state across compaction, recovery and learner bootstrap. Phase 6 adds an explicit session-scoped read-consistency layer on top of the same tested Raft commit/apply boundary.
 
 ## Design principles
 
-- **Explicit semantics over fallback.** Invalid clustered durability, persistence, snapshot, membership or identity prerequisites fail closed.
+- **Explicit semantics over fallback.** Invalid clustered durability, persistence, snapshot, membership, identity or strong-read prerequisites fail closed.
 - **Append is not acknowledgement.** Replicated success waits for quorum commit plus confirmed durable local apply.
 - **Concrete replicated effects.** Followers do not re-plan `UPDATE`/`DELETE` predicates.
 - **No plaintext identity log commands.** Cluster user passwords are converted to SCRAM verifier material before proposal.
 - **One replicated durability lifecycle.** Identity shares the same apply cursor and snapshot lifecycle as replicated SQL.
 - **Snapshot before truncation; restore before ACK.** Compaction/recovery ordering is explicit.
 - **Membership is a consensus operation.** Learners do not vote; promotion/removal use coordinated configuration changes.
-- **Local reads remain local.** Arbitrary follower reads are not claimed linearizable.
+- **Read consistency is explicit.** `Local` preserves the historical local-read behavior; `Leader` and `Linearizable` require the current serving leader and a successful consensus barrier. Strong modes never silently downgrade.
 - **Operator recovery is a separate artifact lifecycle.** NBBK/NBEC backup verification and fresh-cluster restore do not reuse raw internal Raft snapshot bytes or copied consensus disks.
 
 ## High-level flow
 
 ```mermaid
 flowchart TD
-    PSQL[PostgreSQL client] --> Server[server.rs\nwire + session + auth]
-    Server --> Binder[parser + binder]
+    PSQL[PostgreSQL client] --> Server[server.rs / server_parts\nwire + session + auth]
+    Server --> Mode[read_consistency.rs\nper-session mode]
+    Mode -->|Local read| Binder[parser + binder]
+    Mode -->|Leader / Linearizable read| Barrier[read_barrier.rs]
+    Barrier -->|current-term control entry| Raft[consensus::RaftNode]
+    Barrier -->|after quorum commit + confirmed apply| Binder
     Binder -->|read| Query[query executor]
     Query --> Rocks[(RocksDB)]
 
     Binder -->|persistent table mutation| Gateway[replicated_gateway.rs]
     Binder -->|cluster user DDL| Gateway
-    Gateway -->|leader only| Raft[consensus::RaftNode]
+    Gateway -->|leader only| Raft
     Raft <--> Transport[TCP / optional TLS]
     Raft --> Apply[confirmed apply channel]
     Apply --> SM[replicated_state_machine.rs]
@@ -63,6 +67,8 @@ Before state-dependent mutation materialization, the leader commits a current-te
 
 Normal client success is not resolved at local append. The leader persists, replicates, quorum-commits, applies in order, confirms durable state-machine completion, then replies.
 
+Phase-6 strong reads deliberately reuse this boundary. The read barrier is a non-SQL Raft control entry submitted through the existing client-command path. A successful barrier therefore proves current leader authority under the active/current-or-joint voter quorum and proves the local state machine has confirmed apply through that barrier before SQL execution continues.
+
 ## SQL-aware snapshot architecture
 
 `src/replicated_snapshot.rs` owns a versioned logical snapshot envelope. `src/replicated_snapshot_manager.rs` exports/restores durable catalog/data/apply/HLC state and the replicated identity extension from a consistent storage point.
@@ -76,6 +82,8 @@ Identity therefore survives compaction, empty-storage reconstruction and learner
 `src/consensus/membership.rs` represents voter/learner/joint configurations. A new node starts as a learner with a seed view, acquires state via log/snapshot catch-up, and cannot vote or become leader until promoted. Promotion enters joint old/new voter configuration and finalizes after the required quorums. Removal uses the same safety model, and the current leader must transfer leadership before removal.
 
 Finalized membership is durable and overrides stale bootstrap peer configuration after restart. Removed identities are tombstoned so a stale disk cannot silently rejoin as a voter.
+
+Strong-read barriers use the same membership/quorum rules: learners do not contribute to quorum, joint configurations require the configured joint-majority rules, and removed nodes cannot be counted as a shortcut.
 
 This capability does not automatically reconcile Kubernetes replicas; deployment orchestration remains separate.
 
@@ -93,11 +101,19 @@ Cluster rebuilding deliberately starts from that single fresh authority. Additio
 
 ## Read-consistency boundary
 
-`SELECT` reads local applied state. Fresh/reconstructing members have a serving-readiness gate, but normal follower reads may still lag committed state because there is no ReadIndex/lease-based linearizable read mode.
+`src/read_consistency.rs` defines the public/internal contract and parses the session `SET` surface. Every new connection starts in `Local` mode for backward compatibility. `src/read_barrier.rs` implements the current strong-read prerequisite.
+
+`Local` reads locally applied state without consensus contact. `Leader` and `Linearizable` require clustered mode, an open serving-readiness gate and the current Raft leader. Both currently submit a current-term replicated control barrier and wait for its existing quorum-commit + confirmed-local-apply acknowledgement before the server binds/executes the SQL read. This makes catalog and row access occur after the same established frontier.
+
+Followers return an explicit not-leader error for strong modes; recovering nodes return catching-up while the serving gate is closed. There is no silent strong-to-local downgrade. An isolated former leader cannot complete the quorum barrier and therefore cannot successfully serve a strong read.
+
+The log barrier is intentionally stronger/more expensive than a pure authority check and costs one Raft entry per `Leader` or `Linearizable` read. NeuralBase does not currently implement arbitrary-follower linearizable routing, automatic follower-to-leader forwarding, ReadIndex, or lease reads. A future ReadIndex optimization may replace the internal mechanism without changing the session contract.
 
 ## Module map
 
-- `src/server.rs` — PostgreSQL protocol/session/auth and statement routing.
+- `src/server.rs` / `src/server_parts/*.rs` — PostgreSQL protocol/session/auth and statement routing.
+- `src/read_consistency.rs` — session consistency modes and strict `SET` parser.
+- `src/read_barrier.rs` — strong-read consensus barrier, timeout and explicit failure mapping.
 - `src/replicated_gateway.rs` — leader readiness, materialization, table/user proposal and confirmed acknowledgement.
 - `src/replicated_sql.rs` — deterministic table mutation codec.
 - `src/replicated_identity.rs` / `replicated_identity_store.rs` — deterministic verifier-only identity codec and authority.
@@ -112,4 +128,4 @@ Cluster rebuilding deliberately starts from that single fresh authority. Additio
 
 ## Current acceptance boundary
 
-Executable evidence supports replicated persistent tables, SQL-aware snapshot/recovery, coordinated membership changes, replicated SCRAM identity, and the documented Phase-5 backup/restore/fresh-cluster DR model. Stronger production claims still require defined stronger read consistency, automatic deployment membership reconciliation, PITR/automatic DR if desired, broader security/authorization, chaos/upgrade validation and production performance characterization.
+Executable evidence supports replicated persistent tables, SQL-aware snapshot/recovery, coordinated membership changes, replicated SCRAM identity, the documented Phase-5 backup/restore/fresh-cluster DR model, and explicit Phase-6 `Local`/`Leader`/`Linearizable` read semantics on the leader path. Stronger production claims still require automatic deployment membership reconciliation, arbitrary-follower strong-read routing if desired, PITR/automatic DR if desired, broader security/authorization, chaos/upgrade validation and production performance characterization.

@@ -49,7 +49,27 @@ The engine supports learner admission/catch-up, joint-consensus promotion/remova
 
 ## Read consistency
 
-`SELECT` reads local node state. Arbitrary follower reads are not claimed linearizable and may lag committed state.
+Phase 6 adds a session-scoped NeuralBase `SET` surface for read consistency:
+
+```sql
+SET neuralbase_read_consistency = local;
+SET neuralbase_read_consistency = leader;
+SET neuralbase_read_consistency = linearizable;
+```
+
+`SET neuralbase.read_consistency ...` is also accepted. The setting applies to the current connection and new sessions default to `Local`.
+
+| Mode | Semantics |
+|---|---|
+| `Local` | Read locally applied node state with no consensus coordination. This is the backward-compatible default and may be stale on a follower. |
+| `Leader` | Require clustered mode, serving readiness and the current Raft leader; establish a current-term replicated barrier before query execution. |
+| `Linearizable` | Require the current leader and the same replicated barrier; proceed only after quorum commit plus confirmed durable local apply through the barrier. |
+
+The current implementation uses one Raft control/log entry per `Leader` or `Linearizable` read. A follower does not proxy or downgrade a strong read: it returns an explicit not-leader error. A recovering node whose serving-readiness gate is closed returns catching-up. Standalone mode cannot satisfy the strong modes and reports them as unsupported.
+
+The strong-read barrier runs before binder/catalog/query execution for read statements, so the read does not bind against catalog state older than the established frontier. Both simple-query and extended-protocol execution paths carry the session mode.
+
+Arbitrary-follower linearizable reads, automatic follower-to-leader routing, ReadIndex and lease-read optimization are not currently implemented.
 
 ## TPC-H evidence
 

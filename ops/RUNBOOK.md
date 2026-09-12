@@ -1,6 +1,6 @@
 # NeuralBase development and disaster-recovery runbook
 
-This runbook documents the **tested pre-1.0 operator recovery model**. It is not a production-HA or automatic-disaster-recovery guarantee. Reads remain local and may lag, deployment membership reconciliation is not automatic, and PITR is not implemented.
+This runbook documents the **tested pre-1.0 operator recovery model** plus the Phase-6 read-consistency controls relevant to validation after failover/recovery. It is not a production-HA or automatic-disaster-recovery guarantee. `Local` reads may lag, strong reads require the current serving leader, deployment membership reconciliation is not automatic, and PITR is not implemented.
 
 ## Safety rules
 
@@ -11,7 +11,8 @@ This runbook documents the **tested pre-1.0 operator recovery model**. It is not
 - Never reuse a historical source node ID as the designated recovery node ID.
 - Never point restore at an existing directory. Restore is intentionally fresh-target-only.
 - Never manually rename a `.restore-partial-*` directory into service.
-- Do not infer PITR, automatic DR, production HA, or linearizable follower reads from this runbook.
+- Do not infer PITR, automatic DR, production HA, or linearizable arbitrary-follower reads from this runbook.
+- Do not treat a failed `Leader`/`Linearizable` read on a follower as permission to serve a local fallback; route/retry through an application/operator-controlled current-leader path.
 
 ## Build the operator tool
 
@@ -177,9 +178,10 @@ Use this workflow only when recovery from the healthy existing quorum is no long
 9. Promote learners through the tested joint-consensus path; do not copy the recovery node's RocksDB directory.
 10. Verify the final voter set and confirm historical source IDs remain removed/tombstoned.
 11. Perform a new acknowledged write, test leadership/failover as appropriate, and verify convergence.
-12. Only then return normal traffic according to the environment's own operational controls.
+12. Verify an explicit `Linearizable` read against the current leader after the write and after any failover/restart used in the recovery drill.
+13. Only then return normal traffic according to the environment's own operational controls.
 
-The repository's Phase-5 cluster-recovery integration test executes the core recovery lifecycle: source three-voter state, operator backup, one fresh restored authority, two fresh learners, catch-up/promotion, SQL and SCRAM convergence, new writes, leader loss/election, and full restart.
+The repository's Phase-5 cluster-recovery integration test executes the core recovery lifecycle: source three-voter state, operator backup, one fresh restored authority, two fresh learners, catch-up/promotion, SQL and SCRAM convergence, new writes, leader loss/election, and full restart. Phase-6 process evidence additionally restores a Phase-5 backup to a fresh recovery node and establishes linearizable read authority in the new generation.
 
 There is no automatic Kubernetes controller that performs steps 7–10. If the deployment does not expose the membership API operationally, stop at the verified single recovery node rather than inventing a multi-voter topology by disk copying.
 
@@ -205,7 +207,8 @@ At minimum validate:
 - the new recovery node ID and membership generation;
 - absence of historical source IDs from the active voter set;
 - successful acknowledged post-restore write;
-- restart persistence;
+- explicit linearizable read-after-write through the current leader;
+- restart persistence and a subsequent successful strong read;
 - HLC/apply progress indirectly through successful recovery checks/tests and diagnostics available to the integration.
 
 Example SQL smoke checks:
@@ -213,7 +216,10 @@ Example SQL smoke checks:
 ```bash
 psql -h 127.0.0.1 -p 5432 -U <restored-user> -d postgres -c 'SELECT 1'
 psql -h 127.0.0.1 -p 5432 -U <restored-user> -d postgres -c 'SELECT COUNT(*) FROM <critical-table>'
+psql -h 127.0.0.1 -p 5432 -U <restored-user> -d postgres -c "SET neuralbase_read_consistency = linearizable; SELECT COUNT(*) FROM <critical-table>"
 ```
+
+The strong-read smoke check must target the current leader. A `25006` not-leader or `57P03` catching-up response is an explicit failure to establish the requested strong-read contract, not a signal to use a stale local fallback.
 
 Use application-specific integrity checks as well. A successful command exit is not sufficient evidence that the chosen recovery point is semantically the one the application intended.
 
@@ -253,13 +259,15 @@ Do not retry restore against a new target until the cause is understood.
 
 ## Ordinary cluster operation
 
-The checked-in Compose/Kubernetes/Helm topology remains a development/research topology. Writes are leader-directed; followers reject persistent table/user mutations before proposal. Reads are local and may lag committed state.
+The checked-in Compose/Kubernetes/Helm topology remains a development/research topology. Writes are leader-directed; followers reject persistent table/user mutations before proposal.
+
+Reads default to `Local`, which performs no consensus coordination and may lag on a follower. For a leader-authoritative or linearizable leader-path read, set the session mode to `leader` or `linearizable` and connect to the current serving leader. Strong modes fail explicitly on followers/recovering nodes and never silently downgrade to local state.
 
 A healthy cluster can reconstruct a known member from empty storage through the tested snapshot + suffix path while keeping the reconstructing member non-serving until catch-up.
 
 ## Required repository gates
 
-Before calling a Phase-5 code/documentation head validated:
+Before calling a Phase-6 code/documentation head validated:
 
 ```bash
 make test
@@ -273,13 +281,14 @@ CI also validates deployment manifests. Exact-head green CI is evidence only for
 
 ## Explicit non-goals
 
-This Phase-5 runbook does **not** provide or claim:
+This runbook does **not** provide or claim:
 
 - point-in-time recovery or archived WAL/Raft-log replay;
 - automatic disaster detection/failover/recovery;
 - automatic operator-safe node replacement;
 - automatic Kubernetes membership reconciliation or HPA safety;
-- linearizable arbitrary-follower reads;
+- linearizable reads from arbitrary followers or automatic follower-to-leader read routing;
+- a low-overhead ReadIndex/lease-read implementation;
 - complete authorization/audit/security hardening;
 - production SQL HA or production readiness;
 - a measured RPO/RTO SLA.
