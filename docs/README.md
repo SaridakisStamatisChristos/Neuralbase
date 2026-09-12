@@ -10,10 +10,14 @@ This directory contains the technical documentation for NeuralBase. The root `RE
 | [SQL_SUPPORT.md](SQL_SUPPORT.md) | SQL feature matrix, session read modes and standalone versus clustered mutation semantics |
 | [DISTRIBUTED.md](DISTRIBUTED.md) | Raft acknowledgement/apply, read barriers, snapshots, membership changes and identity consistency |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Single-node, Kubernetes/Helm, migration, TLS and scaling constraints |
+| [CONFIGURATION.md](CONFIGURATION.md) | Runtime defaults, aliases, TLS precedence, admission controls and fixed limits |
 | [TESTING.md](TESTING.md) | CI gates and executable evidence limits |
 | [THREAT_MODEL.md](THREAT_MODEL.md) | Threats, trust boundaries and residual risks |
 | [`../ops/RUNBOOK.md`](../ops/RUNBOOK.md) | Tested backup/restore, strong-read validation and disaster-recovery operator procedure |
 | [TSAN.md](TSAN.md) | ThreadSanitizer workflow and caveats |
+| [`../observability/README.md`](../observability/README.md) | Metrics actually emitted, development services and tracing limitations |
+| [`../tests/perf/README.md`](../tests/perf/README.md) | Benchmark commands and historical measurement boundaries |
+| [`../fuzz/README.md`](../fuzz/README.md) | Optional fuzz targets and local campaign commands |
 
 Repository-level material includes [`../ROADMAP.md`](../ROADMAP.md), [`../CONFIDENCE.md`](../CONFIDENCE.md), [`../CONFIDENCE.yaml`](../CONFIDENCE.yaml), [`../CHANGELOG.md`](../CHANGELOG.md), [`../CONTRIBUTING.md`](../CONTRIBUTING.md), and [`../SECURITY.md`](../SECURITY.md).
 

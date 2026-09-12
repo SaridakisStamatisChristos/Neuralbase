@@ -42,7 +42,8 @@ Current architecture has several explicit boundaries:
 
 - Clustered SQL table state and SCRAM identity are replicated through Raft; standalone mode retains its local behavior. Operator backups therefore contain sensitive database and verifier material.
 - Deployment manifests are development/research topology examples, not a production security baseline.
-- TLS/authentication must be configured for the target environment.
+- TLS/authentication must be configured for the target environment. A configured SQL TLS acceptor requires client TLS; Helm does not also enable Raft mTLS. Builds without the `tls` feature do not construct the SQL TLS acceptor.
+- Authentication has no table-privilege or administrator-only user-DDL policy. Follower login checks read locally applied identity without a quorum barrier, and user rotation/drop does not terminate existing sessions.
 - Availability controls and resource budgets reduce some denial-of-service risks but do not constitute a complete hostile-tenant isolation model.
 
 Review [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) before deploying NeuralBase in any environment containing sensitive data or untrusted clients.

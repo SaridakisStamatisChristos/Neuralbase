@@ -13,6 +13,20 @@ make tpch-correctness
 make bench
 ```
 
+Install the [native prerequisites](../CONTRIBUTING.md#development-prerequisites) and use the pinned Rust `1.88.0`. Gate definitions live in [`Makefile`](../Makefile):
+
+| Command | Actual scope / prerequisite |
+|---|---|
+| `make test` | `cargo test --features tls --tests --locked`; includes library/binary unit tests and integration suites, including OS-process recovery/read tests |
+| `make lint` | rustfmt plus `cargo clippy --all-targets --locked -- -D warnings`; Clippy uses default features, not an all-features matrix |
+| `make confidence` | Machine-readable claim assertions in `tests/confidence_yaml.rs` |
+| `make adversarial` | Vectorized suite with `simd`, plus optimizer/MVCC/Raft adversarial suites |
+| `make tpch-correctness` | Separate `tls,tpch-reference-tests` gate; requires Docker for PostgreSQL 16, runs serially |
+| `make bench` / `make bench-full` | Optional release-profile benchmarks; historical numbers are not refreshed by CI |
+| `make cluster-test` | Starts Compose and runs Raft integration tests; the Rust suites create their own test nodes, so this is not a complete SQL test of the Compose deployment |
+
+The normal core gate excludes the Docker-backed reference test by Cargo's `required-features`. CI runs that reference suite in a separate job. Fuzzing, ThreadSanitizer, `cargo deny`, benchmarks and live Kubernetes deployment are not part of the normal CI workflow. Some cleanup/certificate Makefile helpers use Windows `cmd` syntax; they are not portable Linux deployment instructions.
+
 ## Core replicated SQL/snapshot evidence
 
 The core suite covers deterministic table command encoding, leader materialization, follower rejection, quorum+confirmed-apply acknowledgement, idempotent RocksDB replay, fail-closed Raft persistence, logical snapshot codec/restore, interrupted installation, repeated compaction cycles, empty-storage reconstruction and multi-process failover/restart.
@@ -78,7 +92,15 @@ The implementation uses a current-term Raft control/log entry rather than a sepa
 
 CI performs Helm lint/default render, auth-required render, explicit identity-migration render, TLS render, rejection of incomplete migration configuration, and rejection of unsafe HPA configuration.
 
+`auth.existingSecret` must be paired with an exact 64-hex `auth.migrationSha256`; auth-required startup from already initialized replicated state needs neither. TLS rendering configures SQL TLS only. Both CI and the release workflow exercise these render variants and an `autoscaling.enabled=true` failure case. The release validation job runs core/lint/confidence/adversarial gates; the PostgreSQL reference job belongs to normal CI, not the tag workflow.
+
 A successful render does not prove live Kubernetes membership orchestration, upgrade/failover, disaster recovery or production security.
+
+## Documentation validation
+
+For documentation changes, verify relative links, environment names/defaults against their runtime readers, explicit `--bin` in server `cargo run` commands, and one SQL statement per client request. Repeated `psql -c` options share a connection and can validate session read modes; a single compound `SET ...; SELECT ...` cannot. Keep raw manifests and chart/release examples aligned with the same identity model.
+
+Report which checks actually ran, including missing toolchains or Docker. A workflow that has started is not a passing gate, and a historical green commit does not validate a new documentation/configuration head.
 
 ## What green CI means
 

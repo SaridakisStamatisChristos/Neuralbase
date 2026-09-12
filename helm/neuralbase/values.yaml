@@ -30,6 +30,7 @@ config:
   dbPath: "/data/neuralbase"
 
 tls:
+  # SQL TLS only (requires client TLS); does not configure Raft mTLS.
   enabled: false
   existingSecret: ""
   certPath: "/tls/server.crt"
@@ -52,6 +53,7 @@ service:
 metrics:
   enabled: true
   serviceMonitor:
+    # Reserved value; no ServiceMonitor template is currently emitted.
     enabled: false
 
 podDisruptionBudget:

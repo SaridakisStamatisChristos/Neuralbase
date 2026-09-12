@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # NeuralBase StatefulSet — fixed 3-node development topology.
-# SQL state is local to each pod; Raft SQL replication is not implemented yet.
+# Persistent table mutations and SCRAM identity replicate through Raft.
+# This auth-disabled example does not mount a legacy registry; use Helm for
+# paired read-only migration Secret + digest configuration (docs/DEPLOYMENT.md).
+# Retain the legacy path so old PVC files block implicit empty-user bootstrap.
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -25,24 +28,6 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       terminationGracePeriodSeconds: 45
-      initContainers:
-        - name: seed-users
-          image: busybox:1.36.1
-          command:
-            - /bin/sh
-            - -c
-            - |
-              set -eu
-              if [ ! -f /data/neuralbase/users.json ] && [ -f /users-seed/users.json ]; then
-                cp /users-seed/users.json /data/neuralbase/users.json
-                chmod 600 /data/neuralbase/users.json
-              fi
-          volumeMounts:
-            - name: data
-              mountPath: /data/neuralbase
-            - name: users-seed
-              mountPath: /users-seed
-              readOnly: true
       containers:
         - name: neuralbase
           image: ghcr.io/saridakisstamatischristos/neuralbase:0.1.0
@@ -71,9 +56,6 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data/neuralbase
-            - name: users-seed
-              mountPath: /users-seed
-              readOnly: true
           resources:
             requests:
               cpu: "500m"
@@ -108,10 +90,6 @@ spec:
                   - "/bin/sh"
                   - "-c"
                   - "sleep 5"
-      volumes:
-        - name: users-seed
-          secret:
-            secretName: neuralbase-users
   volumeClaimTemplates:
     - metadata:
         name: data

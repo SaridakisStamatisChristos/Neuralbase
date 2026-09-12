@@ -24,6 +24,8 @@ The authoritative cluster registry is RocksDB-backed `ReplicatedIdentityState`. 
 
 Standalone mode intentionally keeps the legacy local registry behavior.
 
+Authentication reads each node's locally applied identity; it does not establish a new quorum barrier on every login. A lagging follower can therefore observe older credentials after a leader-acknowledged rotation/drop. Already authenticated sessions are not disconnected by user DDL. The strong-read session setting fences SQL reads, not authentication.
+
 ### Legacy migration
 
 A legacy `users.json` can initialize clustered identity only when the registry is uninitialized and the operator supplies `NEURALBASE_IDENTITY_MIGRATION_SHA256` matching the exact chosen file. The migration parser is strict and accepts SCRAM records only. Malformed files, duplicate users, MD5 records and digest mismatch fail closed.
@@ -60,6 +62,8 @@ The primary regression path exercises 3 → 4 → 3 while preserving writes. Pha
 ## Operator backup and fresh-cluster recovery
 
 Phase 5 adds a distinct operator recovery lifecycle. NBBK v1 contains a bounded/checksummed logical SQL+identity snapshot, explicit compatibility/boundary metadata and committed membership recovery semantics. Offline creation requires the source RocksDB lock to be free. Online creation is leader-coordinated around a confirmed barrier and stable durable frontier; concurrent activity must order around the recorded boundary or make the attempt retry/fail closed.
+
+Offline creation also requires persisted Raft state and committed membership; standalone-only storage is unsupported. A stopped follower's backup boundary may be behind the leader's latest acknowledged writes. The tool validates the captured boundary rather than claiming it is the globally newest recovery point.
 
 NBEC v1 provides authenticated ChaCha20-Poly1305 encryption around the logical backup. Wrong-key/tampered artifacts fail authentication before restore target creation. Keys are out-of-band and are never stored inside the backup.
 

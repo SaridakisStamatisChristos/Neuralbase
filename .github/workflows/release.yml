@@ -71,8 +71,29 @@ jobs:
       - run: >-
           helm template neuralbase helm/neuralbase
           --set config.authRequired=true
-          --set auth.existingSecret=neuralbase-users
           > /tmp/neuralbase-auth.yaml
+      - run: >-
+          helm template neuralbase helm/neuralbase
+          --set config.authRequired=true
+          --set auth.existingSecret=neuralbase-users
+          --set-string auth.migrationSha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          > /tmp/neuralbase-identity-migration.yaml
+      - name: Reject incomplete legacy identity migration
+        run: >-
+          ! helm template neuralbase helm/neuralbase
+          --set auth.existingSecret=neuralbase-users
+          > /tmp/neuralbase-invalid-identity.yaml 2>&1
+      - name: Render SQL TLS configuration
+        run: >-
+          helm template neuralbase helm/neuralbase
+          --set tls.enabled=true
+          --set tls.existingSecret=neuralbase-tls
+          > /tmp/neuralbase-tls.yaml
+      - name: Reject automatic scaling
+        run: >-
+          ! helm template neuralbase helm/neuralbase
+          --set autoscaling.enabled=true
+          > /tmp/neuralbase-invalid-hpa.yaml 2>&1
       - run: test ! -e k8s/hpa.yaml
 
   docker:

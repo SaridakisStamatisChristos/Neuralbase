@@ -152,3 +152,9 @@ jobs:
 
       - name: Reject unsafe HPA manifest
         run: test ! -e k8s/hpa.yaml
+
+      - name: Reject automatic Helm scaling
+        run: >-
+          ! helm template neuralbase helm/neuralbase
+          --set autoscaling.enabled=true
+          > /tmp/neuralbase-invalid-hpa-rendered.yaml 2>&1

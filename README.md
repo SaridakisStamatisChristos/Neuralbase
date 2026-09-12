@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](Cargo.toml)
 
-**NeuralBase is an experimental SQL engine in Rust** with a PostgreSQL-compatible wire endpoint, MVCC/RocksDB storage, vectorized/general execution, an ONNX join-order optimizer, and a multi-process Raft subsystem over TCP/TLS.
+**NeuralBase is an experimental SQL engine in Rust** with a PostgreSQL wire endpoint, MVCC/RocksDB storage, vectorized/general execution, and Raft-replicated table mutations and SCRAM identity over TCP/TLS. It also includes an ONNX join-order optimizer for library use and benchmarks; the live SQL planner does not currently invoke it.
 
 > [!IMPORTANT]
 > NeuralBase is **pre-1.0 research/development software**. Configured clusters replicate persistent table mutations and SCRAM identity through Raft, support SQL-aware snapshot/recovery, implement learner/joint-consensus membership changes, provide the tested Phase-5 backup/restore/fresh-cluster recovery lifecycle, and expose explicit session-scoped read-consistency modes. Successful replicated mutations and strong read barriers wait for quorum commit plus confirmed durable local apply. This is still not a production-HA claim: strong reads must be sent to the current leader, arbitrary-follower linearizable routing is not implemented, Kubernetes membership reconciliation is not automatic, PITR/automatic disaster recovery remain open, and broader authorization/security hardening is still required.
@@ -34,14 +34,26 @@
 
 ### Single node
 
+Install the [native build prerequisites](CONTRIBUTING.md#development-prerequisites) first. The repository pins Rust `1.88.0` and contains two binaries: the SQL server and the offline backup tool.
+
 ```bash
 git clone https://github.com/SaridakisStamatisChristos/Neuralbase.git
 cd Neuralbase
-cargo build --release --locked
-NEURALBASE_DB_PATH=/tmp/neuralbase-db cargo run --release --locked
+cargo build --release --locked --bins
+NEURALBASE_LISTEN_ADDR=127.0.0.1:5432 \
+NEURALBASE_DB_PATH=./data/neuralbase \
+cargo run --release --locked --bin neuralbase
 ```
 
-Without `NEURALBASE_NODE_ID`, persistent table and user mutations retain the standalone local-storage behavior.
+In another terminal, run a query with a PostgreSQL client:
+
+```bash
+psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 -U anon -d postgres -c 'SELECT 1'
+```
+
+Without `NEURALBASE_NODE_ID`, table and user mutations use standalone storage. An unset database path selects in-memory/demo operation; standalone RocksDB open failures also fall back to that mode. DML requires successfully opened storage. Clustered startup instead fails closed if durable storage is unavailable.
+
+See the [SQL compatibility limits](docs/SQL_SUPPORT.md#client-and-sql-limitations) before using application drivers: send one statement per request; SQL transactions and bound parameters are not implemented.
 
 ### Three-process topology
 
@@ -50,6 +62,8 @@ docker compose up --build -d --wait
 ```
 
 The SQL endpoints are exposed on ports `5432`, `5433`, and `5434`. Each node owns independent RocksDB storage. Clustered startup requires durable RocksDB; configuring `NEURALBASE_NODE_ID` without `NEURALBASE_DB_PATH`/`DB_PATH` fails closed.
+
+These are development defaults with authentication disabled. Writes and strong reads need the current leader; neither the first port nor a load-balanced Service is guaranteed to select it. TCP health checks establish listener reachability only. See [deployment](docs/DEPLOYMENT.md) for topology, TLS and recovery details.
 
 ## Distributed write and identity semantics
 
@@ -86,9 +100,8 @@ The checked-in deployment does **not** automatically translate StatefulSet repli
 Clustered deployments upgrading from per-node `users.json` must explicitly select one strict SCRAM registry as authoritative:
 
 ```bash
-sha256sum users.json
 export NEURALBASE_USERS_FILE=/path/to/users.json
-export NEURALBASE_IDENTITY_MIGRATION_SHA256=<exact-sha256>
+export NEURALBASE_IDENTITY_MIGRATION_SHA256="$(sha256sum "$NEURALBASE_USERS_FILE" | cut -d ' ' -f1)"
 ```
 
 The selected file is parsed strictly. Duplicate users, malformed fields, MD5 credentials, or a digest mismatch fail closed. Once migration is committed, every node authenticates from replicated RocksDB identity and the legacy file is no longer the live registry.
@@ -116,19 +129,9 @@ A fresh cluster with authentication disabled and no legacy file may initialize r
 
 ## Configuration
 
-Important canonical variables include:
+The [configuration reference](docs/CONFIGURATION.md) lists every runtime environment variable, default, alias and TLS precedence rule. [.env.example](.env.example) is a shell configuration example; the binary does not load it automatically.
 
-- `NEURALBASE_LISTEN_ADDR`
-- `NEURALBASE_DB_PATH`
-- `NEURALBASE_METRICS_PORT`
-- `NEURALBASE_NODE_ID`
-- `NEURALBASE_RAFT_ADDR`
-- `NEURALBASE_PEERS`
-- `NEURALBASE_RAFT_ELECTION_TIMEOUT_MS`
-- `NEURALBASE_RAFT_TLS`
-- `NEURALBASE_AUTH_REQUIRED`
-- `NEURALBASE_USERS_FILE` — standalone registry path or clustered legacy-migration source path
-- `NEURALBASE_IDENTITY_MIGRATION_SHA256` — exact digest authorizing clustered legacy identity import
+The [operator runbook](ops/RUNBOOK.md) covers NBBK/NBEC create, verify and restore commands. Backup requires a stopped source with durable Raft/membership state; a standalone-only database is not an accepted source. Online backup and membership administration are currently in-process APIs.
 
 ## Verification
 
@@ -148,6 +151,9 @@ Green CI is evidence for the exact checked commit and tested scopes, not a produ
 - [SQL support](docs/SQL_SUPPORT.md)
 - [Distributed semantics](docs/DISTRIBUTED.md)
 - [Deployment](docs/DEPLOYMENT.md)
+- [Configuration reference](docs/CONFIGURATION.md)
+- [Operator recovery runbook](ops/RUNBOOK.md)
+- [Observability](observability/README.md)
 - [Testing and evidence](docs/TESTING.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Roadmap](ROADMAP.md)

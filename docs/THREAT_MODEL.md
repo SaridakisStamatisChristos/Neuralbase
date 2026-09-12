@@ -13,6 +13,7 @@ This is a risk inventory, not a security certification.
 - Raft term/vote/log/membership metadata;
 - standalone credential files and clustered legacy migration files;
 - TLS private keys/CA material;
+- NBBK/NBEC operator backups and their separately managed encryption keys;
 - metrics and diagnostics.
 
 ## Trust boundaries
@@ -29,6 +30,8 @@ Clustered identity is replicated rather than per-node. `CREATE USER`, `ALTER USE
 The identity command codec carries SCRAM verifier material and cannot encode plaintext passwords. This reduces consensus-log exposure compared with replicating raw passwords, but SCRAM verifier material remains sensitive and must be protected at rest and in backups/snapshots.
 
 PostgreSQL MD5 password-hash material is intentionally rejected from clustered replication/migration because it is reusable authentication material. Standalone mode retains legacy local compatibility and therefore has a different risk boundary.
+
+Authentication reads the selected node's locally applied identity without a fresh quorum barrier. A lagging follower can temporarily accept credentials that were rotated or dropped on the leader. Existing authenticated sessions are not disconnected by user DDL. The server does not enforce table privileges or restrict user DDL to an administrator role; authentication alone is not an authorization policy.
 
 ### Legacy migration risk
 
@@ -72,7 +75,7 @@ NeuralBase does not automatically route strong reads from followers to the leade
 
 ## Transport/security posture
 
-SQL TLS and Raft mTLS are configuration-dependent rather than secure-by-default production profiles. Certificate provisioning/rotation/revocation remain operator responsibilities. A compromised node with valid cluster credentials remains inside the Raft trust boundary.
+SQL TLS and Raft mTLS are configuration-dependent rather than secure-by-default production profiles. In a TLS-enabled build, configuring the SQL acceptor requires SSLRequest/TLS and rejects plaintext startup. Helm TLS settings configure SQL only; Raft mTLS needs its separate enable switch, CA and certificate-name configuration. See [CONFIGURATION.md](CONFIGURATION.md#tls). Certificate provisioning/rotation/revocation remain operator responsibilities. A compromised node with valid cluster credentials remains inside the Raft trust boundary.
 
 ## Current production blockers
 

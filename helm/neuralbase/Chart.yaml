@@ -1,6 +1,6 @@
 apiVersion: v2
 name: neuralbase
-description: Experimental Rust SQL engine with MVCC/RocksDB and a separate Raft subsystem
+description: Experimental Rust SQL engine with Raft-replicated tables and SCRAM identity, RocksDB, backups, and explicit read consistency
 type: application
 version: 0.1.0
 appVersion: "0.1.0"

@@ -47,7 +47,7 @@ In configured clustered mode:
 - snapshots include identity so catch-up/recovery/membership transitions do not create a second authority;
 - authentication on every node reads the replicated state.
 
-Standalone mode keeps the historical local registry for backward compatibility.
+Identity mutation ordering is consensus-backed, but login on a follower reads its locally applied registry without a fresh quorum barrier. Credential changes need not be visible instantly on lagging followers and do not revoke existing sessions. Standalone mode keeps the historical local registry for backward compatibility.
 
 ## Membership scope
 
@@ -61,7 +61,8 @@ It does **not** mean the checked-in Kubernetes/Helm manifests automatically reco
 - linearizable reads from arbitrary followers or automatic strong-read routing;
 - automatic Kubernetes membership reconciliation or safe HPA scaling;
 - PITR or automatic disaster recovery beyond the documented manual fresh-cluster Phase-5 procedure;
-- complete PostgreSQL semantic compatibility;
+- complete PostgreSQL semantic compatibility, SQL transaction blocks, bound parameters or constraint enforcement;
+- live-server ONNX join-order planning or distributed query exchange;
 - production-grade authorization/audit policy;
 - broad upgrade/storage-chaos certification.
 

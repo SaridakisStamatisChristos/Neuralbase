@@ -60,6 +60,9 @@ artifacts:
     evidence:
       - tests/session1_foundation.rs
       - tests/session14_advanced_sql.rs
+    limitation: >-
+      Partial protocol surface; Bind does not substitute parameter values or
+      negotiate result formats. SQL transaction blocks are not implemented.
 
   - artifact: sql_parser
     effective: 0.78
@@ -273,7 +276,9 @@ artifacts:
       The external CLI provides offline create/verify/restore. Online backup is a
       tested in-process leader coordinator, not a standalone live-server CLI.
       Recovery creates a fresh cluster generation; it is not in-place restore into
-      an existing live cluster. PITR and automatic DR are not implemented.
+      an existing live cluster. Offline sources require persisted Raft state and
+      committed membership; standalone-only databases are not supported. PITR
+      and automatic DR are not implemented.
 
   - artifact: deployment_manifests
     effective: 0.70
@@ -284,7 +289,9 @@ artifacts:
       - helm/neuralbase
     limitation: >-
       The manifests deploy a static topology. Consensus membership changes exist,
-      but automatic StatefulSet/HPA reconciliation is not implemented.
+      but automatic StatefulSet/HPA reconciliation is not implemented. Probes
+      check TCP reachability only and SQL Services are not leader-aware. Helm
+      TLS configures SQL TLS, not Raft mTLS.
 
 verification_policy:
   - No performance claim without a reproducible benchmark and workload context.
@@ -293,6 +300,8 @@ verification_policy:
   - Keep SQL correctness claims synchronized with executable PostgreSQL reference tests.
   - Keep deployment examples free of automatic HPA scaling until membership reconciliation is implemented.
   - Replicated identity claims require verifier-only log material and explicit legacy migration semantics.
+  - Follower authentication reads locally applied identity without a quorum barrier; user DDL does not terminate existing sessions.
+  - Library optimizer/exchange components do not establish live SQL planner or distributed-query integration.
   - Strong-read claims require explicit current-leader authority, quorum barrier, confirmed local apply, and no silent downgrade.
   - A release head must pass tests, lint, confidence checks, adversarial tests, TPC-H reference validation, and Helm rendering.
 
