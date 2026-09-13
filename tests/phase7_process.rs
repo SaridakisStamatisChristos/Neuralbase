@@ -122,11 +122,50 @@ impl Deployment {
         }
         config.connect(NoTls)
     }
-    fn sql(&self, id: &str, sql: &str) {
-        self.connect(id, "postgres", Some("phase7-bootstrap-password"))
-            .unwrap()
-            .simple_query(sql)
-            .unwrap();
+    fn sql(&self, sql: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let observed = self.invoke("plan");
+            let Some(id) = observed["observed"]["leader"].as_str() else {
+                assert!(
+                    Instant::now() < deadline,
+                    "no current leader observed before SQL statement {sql:?}: {observed}"
+                );
+                thread::sleep(Duration::from_millis(50));
+                continue;
+            };
+            let mut client = self
+                .connect(id, "postgres", Some("phase7-bootstrap-password"))
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "connection to observed leader {id} failed before SQL statement {sql:?}: {err}"
+                    )
+                });
+            match client.simple_query(sql) {
+                Ok(_) => return id.to_string(),
+                Err(err) => {
+                    // The server emits this SQLSTATE/message before proposing a
+                    // leader-only mutation, so this one rejection is safe to
+                    // re-observe and retry. Never replay on ambiguous transport
+                    // failures or on any other database error.
+                    let stale_leader = err.as_db_error().is_some_and(|db| {
+                        db.code().code() == "25006"
+                            && db
+                                .message()
+                                .starts_with("not Raft leader; retry write on leader ")
+                    });
+                    assert!(
+                        stale_leader,
+                        "SQL statement {sql:?} on observed leader {id} failed after submission; refusing unsafe retry: {err}"
+                    );
+                    assert!(
+                        Instant::now() < deadline,
+                        "leader-aware SQL statement {sql:?} did not reach the current leader; last node {id}: {err}"
+                    );
+                    thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
     }
     fn verify(&self, ids: &[String], count: &str) {
         for id in ids {
@@ -204,14 +243,10 @@ fn process_controller_scale_replace_restart_and_identity_convergence() {
     assert!(!d.root.path().join("nodes/state.json").exists());
     fs::write(&d.path, serde_json::to_vec(&d.config).unwrap()).unwrap();
     d.invoke("bootstrap");
-    let initial = d.converge();
-    let leader = initial["observed"]["leader"].as_str().unwrap();
-    d.sql(leader, "CREATE TABLE p7_items (id INT, value TEXT)");
-    d.sql(leader, "INSERT INTO p7_items VALUES (1, 'before')");
-    d.sql(
-        leader,
-        "CREATE USER p7_user WITH PASSWORD 'phase-seven-password'",
-    );
+    d.converge();
+    d.sql("CREATE TABLE p7_items (id INT, value TEXT)");
+    d.sql("INSERT INTO p7_items VALUES (1, 'before')");
+    d.sql("CREATE USER p7_user WITH PASSWORD 'phase-seven-password'");
     let first = vec!["g1.a".to_string(), "g1.b".into(), "g1.c".into()];
     d.verify(&first, "1");
     d.desired(vec![
@@ -274,8 +309,7 @@ fn process_controller_scale_replace_restart_and_identity_convergence() {
         .unwrap()
         .contains(&json!(old)));
     d.verify(&desired, "1");
-    let leader = replacement["observed"]["leader"].as_str().unwrap();
-    d.sql(leader, "INSERT INTO p7_items VALUES (2, 'after')");
+    let leader = d.sql("INSERT INTO p7_items VALUES (2, 'after')");
     d.verify(&desired, "2");
     // 4 -> 3 follower contraction, with retained retired storage.
     let remove = desired
