@@ -12,6 +12,7 @@ pub mod consensus;
 pub mod cost_model;
 pub mod distributed;
 pub mod execution;
+pub mod extended_protocol;
 pub mod gc;
 pub mod hlc;
 pub mod index_advisor;
