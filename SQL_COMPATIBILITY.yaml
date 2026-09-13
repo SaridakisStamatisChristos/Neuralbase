@@ -59,9 +59,10 @@ features:
     family: types
     status: partial
     supported_syntax: INT INTEGER INT4 BIGINT INT8
-    semantic_scope: integer literals and stored integer columns in declared engine scope
+    semantic_scope: integer literals, selected explicit casts, and stored integer columns in declared engine scope
     postgres_reference_evidence:
       - tests/tpch_correctness.rs
+      - tests/sql_semantic_differential.rs
     neuralbase_divergence: PostgreSQL width/overflow/cast matrix is not fully implemented
     clustered_mode_restriction: persistent encodings must remain deterministic
     introduced: pre_phase8
@@ -79,21 +80,23 @@ features:
   - feature: type.boolean
     family: types
     status: partial
-    supported_syntax: BOOLEAN
-    semantic_scope: declarations currently map to integer representation
-    postgres_reference_evidence: []
-    neuralbase_divergence: PostgreSQL boolean storage/type fidelity is not implemented
-    clustered_mode_restriction: deterministic integer representation only within declared scope
+    supported_syntax: BOOLEAN and selected scalar casts
+    semantic_scope: scalar BOOLEAN semantics are reference-tested in the Phase-8 no-FROM evaluator; durable declarations still map through the historical integer representation
+    postgres_reference_evidence:
+      - tests/sql_semantic_differential.rs
+    neuralbase_divergence: complete PostgreSQL boolean storage/type-coercion fidelity is not implemented
+    clustered_mode_restriction: deterministic persistent representation only within declared scope
     introduced: pre_phase8
 
   - feature: type.date
     family: date_time
     status: partial
     supported_syntax: DATE and selected date functions/expressions
-    semantic_scope: stored DATE uses deterministic days-since-Unix-epoch representation
+    semantic_scope: stored DATE uses deterministic days-since-Unix-epoch representation; scalar DATE subtraction has PostgreSQL-reference evidence
     postgres_reference_evidence:
       - tests/tpch_correctness.rs
       - tests/dml_correctness.rs
+      - tests/sql_semantic_differential.rs
     neuralbase_divergence: complete PostgreSQL date/time/timestamp/timezone semantics are not implemented
     clustered_mode_restriction: no leader-local wall-clock evaluation may independently occur on followers
     introduced: pre_phase8
@@ -111,13 +114,13 @@ features:
   - feature: null.three_valued_logic
     family: null_semantics
     status: partial
-    supported_syntax: selected NULL-aware query expressions
-    semantic_scope: existing executor behavior only; full PostgreSQL three-valued-logic matrix is not yet claimed
+    supported_syntax: selected scalar comparisons, AND OR NOT, IN NOT IN, CASE, COALESCE and NULLIF
+    semantic_scope: Phase-8 no-FROM scalar expressions have PostgreSQL-16 differential evidence; broader table/join/aggregate NULL edge cases remain outside the promoted contract
     postgres_reference_evidence:
-      - tests/tpch_correctness.rs
-    neuralbase_divergence: IN/NOT IN/CASE/COALESCE/NULLIF and ordering edge cases require explicit differential coverage before promotion
+      - tests/sql_semantic_differential.rs
+    neuralbase_divergence: table executor ordering, aggregate and join NULL edge cases still require explicit differential coverage
     clustered_mode_restriction: none beyond deterministic persistent effects
-    introduced: pre_phase8
+    introduced: phase8
 
   - feature: text.collation
     family: text
@@ -154,18 +157,20 @@ features:
   - feature: ddl.constraints
     family: ddl
     status: unsupported
-    supported_syntax: declarations may parse but primary-key/unique/foreign-key/check/default enforcement is not a supported contract
-    semantic_scope: no constraint-enforcement claim
+    supported_syntax: none as an enforceable schema contract
+    semantic_scope: PRIMARY KEY UNIQUE FOREIGN KEY CHECK DEFAULT and table constraints are rejected fail closed rather than silently discarded
     postgres_reference_evidence: []
+    neuralbase_evidence:
+      - tests/phase8_ddl_safety.rs
     neuralbase_divergence: PostgreSQL constraint semantics are not implemented
     clustered_mode_restriction: none because feature is unsupported
-    introduced: pre_phase8
+    introduced: phase8
 
   - feature: transaction.sql_blocks
     family: transactions
     status: unsupported
     supported_syntax: none
-    semantic_scope: BEGIN COMMIT ROLLBACK savepoints and failed-transaction session state are not implemented
+    semantic_scope: BEGIN COMMIT ROLLBACK savepoints and failed-transaction session state are not implemented; ordinary statements are independent execution requests rather than a PostgreSQL transaction-block contract
     postgres_reference_evidence: []
     neuralbase_divergence: MVCC library transactions do not establish SQL multi-statement transaction semantics
     clustered_mode_restriction: no distributed-transaction or cross-Raft-mutation atomicity claim
@@ -174,43 +179,52 @@ features:
   - feature: wire.extended_parse_execute
     family: wire_protocol
     status: partial
-    supported_syntax: Parse Bind Execute Sync subset
-    semantic_scope: prepared SQL text can traverse the existing extended path
+    supported_syntax: Parse Bind Execute Describe Close Sync subset
+    semantic_scope: prepared SQL text and the declared Phase-8 typed-parameter subset traverse the live execution path; named statements and portals have bounded per-session lifecycle
     postgres_reference_evidence:
       - tests/session14_advanced_sql.rs
-    neuralbase_divergence: parameter substitution, result-format negotiation and Describe metadata are incomplete
-    clustered_mode_restriction: extended reads must preserve the same Phase-6 read barrier as simple-query reads
-    introduced: pre_phase8
+    neuralbase_evidence:
+      - tests/phase8_extended_protocol.rs
+    neuralbase_divergence: PostgreSQL extended-protocol error-recovery state, full metadata, all parameter OIDs and binary results are not implemented
+    clustered_mode_restriction: extended reads preserve the same Phase-6 read barrier as simple-query reads
+    introduced: phase8
 
   - feature: wire.bind_parameters
     family: wire_protocol
-    status: unsupported
-    supported_syntax: Bind message is accepted but parameter values are not substituted into SQL execution
-    semantic_scope: no prepared-parameter compatibility claim
+    status: partial
+    supported_syntax: Parse-declared BOOL INT2 INT4 INT8 FLOAT4 FLOAT8 TEXT VARCHAR BPCHAR DATE OIDs with bounded Bind values
+    semantic_scope: text parameters and selected PostgreSQL binary scalar encodings are deterministically materialized before the established parser/binder path; NULL is supported; OID 0 inference fails closed
     postgres_reference_evidence: []
-    neuralbase_divergence: PostgreSQL bound-parameter semantics are not implemented
-    clustered_mode_restriction: parameter decoding must be deterministic before any persistent write can be supported
-    introduced: pre_phase8
+    neuralbase_evidence:
+      - src/extended_protocol.rs
+      - tests/phase8_extended_protocol.rs
+    neuralbase_divergence: PostgreSQL context-sensitive type inference, arbitrary OIDs, arrays/composites and binary text parameters are not implemented
+    clustered_mode_restriction: decoding/materialization occurs deterministically before any persistent mutation proposal
+    introduced: phase8
 
   - feature: wire.result_formats
     family: wire_protocol
-    status: unsupported
-    supported_syntax: none
-    semantic_scope: result-format negotiation is not implemented
+    status: partial
+    supported_syntax: text result format code 0 only
+    semantic_scope: default/text results use the existing wire encoder; requested binary result formats fail closed
     postgres_reference_evidence: []
-    neuralbase_divergence: PostgreSQL text/binary per-column result format behavior is not implemented
+    neuralbase_evidence:
+      - src/extended_protocol.rs
+    neuralbase_divergence: PostgreSQL binary and per-column result-format negotiation are not implemented
     clustered_mode_restriction: none
-    introduced: pre_phase8
+    introduced: phase8
 
   - feature: wire.describe
     family: wire_protocol
     status: partial
-    supported_syntax: Describe is accepted
-    semantic_scope: current response is NoData rather than PostgreSQL-compatible parameter/row metadata
+    supported_syntax: Describe Statement and Describe Portal
+    semantic_scope: statements return ParameterDescription followed by NoData; portals return NoData
     postgres_reference_evidence: []
-    neuralbase_divergence: metadata fidelity is not implemented
+    neuralbase_evidence:
+      - tests/phase8_extended_protocol.rs
+    neuralbase_divergence: PostgreSQL-compatible RowDescription/result metadata is not yet implemented
     clustered_mode_restriction: none
-    introduced: pre_phase8
+    introduced: phase8
 
   - feature: explain.plan
     family: diagnostics
