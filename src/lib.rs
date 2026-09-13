@@ -21,6 +21,9 @@ pub mod offline_backup;
 pub mod online_backup;
 pub mod optimizer;
 pub mod protocol;
+#[path = "query_executor.rs"]
+mod query_executor_legacy;
+#[path = "query_executor_phase8.rs"]
 pub mod query_executor;
 pub mod raft_persistence;
 pub mod read_barrier;
