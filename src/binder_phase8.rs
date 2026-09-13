@@ -2,8 +2,8 @@
 // Phase 8 safety wrapper around the historical binder implementation.
 //
 // The legacy binder intentionally remains the implementation source for bound
-// plan/value types. This module adds fail-closed validation for persistent DML
-// predicates without duplicating or redesigning the established binder.
+// plan/value types. This module adds fail-closed validation at SQL boundaries
+// where the older binder could otherwise discard semantics before execution.
 
 use crate::catalog::Catalog;
 use crate::sql::NbStatement;
@@ -15,12 +15,13 @@ pub use crate::binder_legacy::{
 };
 
 /// Bind a standard SQL statement while preserving the historical binder's
-/// public behavior, except that a WHERE clause on UPDATE/DELETE may never be
-/// silently discarded.
+/// supported behavior. Phase 8 validates semantics that must never be silently
+/// discarded before delegating to the established binder.
 pub fn bind_statement(
     statement: &Statement,
     catalog: &dyn Catalog,
 ) -> Result<BoundPlan, BindError> {
+    validate_statement_semantics(statement)?;
     let plan = crate::binder_legacy::bind_statement(statement, catalog)?;
     validate_persistent_dml_predicate(statement, &plan)?;
     Ok(plan)
@@ -35,6 +36,24 @@ pub fn bind_nb_statement(
         NbStatement::Sql(statement) => bind_statement(statement.as_ref(), catalog),
         _ => crate::binder_legacy::bind_nb_statement(nb_stmt, catalog),
     }
+}
+
+/// Reject parsed CREATE TABLE features whose semantics NeuralBase does not yet
+/// enforce. Silently dropping a PRIMARY KEY, UNIQUE, CHECK, FOREIGN KEY or
+/// DEFAULT declaration would create a durable schema different from the SQL the
+/// client requested.
+fn validate_statement_semantics(statement: &Statement) -> Result<(), BindError> {
+    if let Statement::CreateTable {
+        columns,
+        constraints,
+        ..
+    } = statement
+    {
+        if columns.iter().any(|column| !column.options.is_empty()) || !constraints.is_empty() {
+            return Err(BindError::Unsupported);
+        }
+    }
+    Ok(())
 }
 
 /// The historical DML binder represents "no WHERE clause" and "WHERE clause
