@@ -1,7 +1,8 @@
 # Phase 7 operator membership orchestration
 
-Status: implementation in progress; no automatic deployment capability is yet claimed.
+Status: implementation and functional PR-head validation complete; synchronized final-head and post-merge closure gates pending.
 Baseline: `4c2b29681a75ce5ee683b2d95546ef8c4afbc2ab` (PR #12, post-merge CI #305 passed all jobs).
+Functional evidence checkpoint: CI #315 passed on `fb7d099c6248f18b324d8817fb2878885dbe38a8`, including authenticated real-process lifecycle and disposable-kind Kubernetes lifecycle.
 
 ## Audited boundary
 
@@ -43,7 +44,7 @@ nor voter membership. Phase-5 restore creates a deliberate new recovery topology
 9. Endpoint changes must preserve stable incarnation identity; replacements use
    fresh IDs and storage. Existing static deployment remains explicitly static.
 10. HPA remains disabled, `production_ready` remains false. Phase 7 is not closed
-    until process/failure evidence and exact PR/post-merge CI satisfy the handoff.
+    until the synchronized final PR head and post-merge `main` CI gates pass.
 
 ## Evidence checklist
 
@@ -52,7 +53,9 @@ revisions, impossible transitions, restart replay and desired changes mid-joint.
 Integration: guarded real Raft membership, catch-up, snapshot bootstrap, failed
 transfer, partitions, leader loss, replacement, SQL/identity convergence.
 Deployment: real independent processes driven through the orchestration surface;
-partial process/deployment failures and restart recovery.
+partial process/deployment failures and restart recovery; disposable kind lifecycle
+with partial PVC creation failure, drift, leader restart/replacement, retained PVCs
+and SQL/SCRAM convergence.
 
 ## Current implementation and supported profile
 
@@ -72,8 +75,8 @@ bootstrap a later replacement without replaying history against the wrong set.
 It manages independent server processes, TCP Raft, SQL listeners and RocksDB
 folders using the same planner. The controller is explicitly invoked; it is not
 an installed daemon. The managed profile is separate from the existing static
-Compose/Helm/Kubernetes examples. The opt-in Kubernetes adapter described below is separate from those static
-examples. HPA remains unsupported.
+Compose/Helm/Kubernetes examples. The opt-in Kubernetes adapter described below is
+separate from those static examples. HPA remains unsupported.
 
 Requirements: Linux with `pidfd_open`/`pidfd_send_signal`, Python 3.9 or later,
 Rust 1.88 builds of both server and planner, and one trusted local user. Raft and
@@ -191,9 +194,14 @@ action. Ordinary node logs need host retention management.
   failed listener allocation, scale-out/in, leader restart/replacement, retained
   storage, and replicated SQL/SCRAM convergence. Its supervisor checks validate
   process identity before retirement and document bounds.
+- `phase7_kubernetes.py`: disposable-kind PVC quota failure, managed-field drift,
+  3→4 expansion, leader pod loss, fresh-identity replacement, 4→3 contraction,
+  retained PVCs, and SQL/SCRAM convergence.
 
-The phase remains open until the final PR head and post-merge main gates pass;
-the Kubernetes gate is required in addition to local process evidence.
+CI #315 passed all repository jobs on the functional evidence head, including the
+real process and Kubernetes lifecycle gates. The phase remains open only for the
+synchronized final PR-head CI and post-merge `main` CI requirements recorded in
+`docs/PHASE7_CLOSURE.md`.
 
 ## Managed Kubernetes profile
 
@@ -245,7 +253,7 @@ command invalidates further actions; restart reconciliation with the new revisio
 
 The CI gate creates a disposable kind cluster and runs
 `tests/phase7_kubernetes.py`: 3→4 expansion, PVC-quota partial failure, external
-configuration drift, leader pod loss, fresh-identity leader replacement, 4→3
-contraction, retained PVCs and replicated SQL/SCRAM checks. Native process and
-consensus tests remain separate gates. HPA and the static Helm scaling contract
-remain disabled; only explicit desired-topology reconciliation is supported.
+configuration drift, leader restart/replacement, 4→3 contraction, retained PVCs
+and replicated SQL/SCRAM checks. Native process and consensus tests remain separate
+gates. HPA and the static Helm scaling contract remain disabled; only explicit
+desired-topology reconciliation through this managed profile is supported.
