@@ -41,6 +41,7 @@ where
     socket.write_all(&build_ready_for_query()).await?;
 
     let mut stmt_cache: HashMap<String, PreparedStatement> = HashMap::new();
+    let mut stmt_parameter_types: HashMap<String, Vec<i32>> = HashMap::new();
     let mut portal_cache: HashMap<String, Portal> = HashMap::new();
     // Phase 6 keeps the historical local/stale behavior as the per-connection
     // default. SET neuralbase_read_consistency changes only this connection.
@@ -189,80 +190,171 @@ where
                 let mut cursor = 0usize;
                 let name = read_cstring(&payload, &mut cursor);
                 let sql = read_cstring(&payload, &mut cursor);
-                let nparams = if cursor + 2 <= payload.len() {
-                    let n = i16::from_be_bytes([payload[cursor], payload[cursor + 1]]) as usize;
-                    cursor += 2;
-                    n
-                } else {
-                    0
-                };
-                let mut ptypes: Vec<i32> = Vec::with_capacity(nparams);
-                for _ in 0..nparams {
-                    if cursor + 4 <= payload.len() {
-                        let oid = i32::from_be_bytes([
-                            payload[cursor],
-                            payload[cursor + 1],
-                            payload[cursor + 2],
-                            payload[cursor + 3],
-                        ]);
-                        ptypes.push(oid);
-                        cursor += 4;
-                    }
+                let parameter_types =
+                    match crate::extended_protocol::parse_parse_parameter_types(&payload, &mut cursor)
+                    {
+                        Ok(types) => types,
+                        Err(error) => {
+                            write_error_and_ready(
+                                &mut socket,
+                                &error.to_string(),
+                                error.sqlstate(),
+                            )
+                            .await?;
+                            continue;
+                        }
+                    };
+                if parse_nb_statement(&sql).is_err() {
+                    write_error_and_ready(&mut socket, "invalid prepared SQL", "42601").await?;
+                    continue;
                 }
                 if stmt_cache.len() >= STMT_CACHE_MAX_SIZE {
                     stmt_cache.clear();
+                    stmt_parameter_types.clear();
                 }
-                let _ = ptypes;
+                stmt_parameter_types.insert(name.clone(), parameter_types);
                 stmt_cache.insert(name, PreparedStatement { sql });
                 socket.write_all(&build_parse_complete()).await?;
             }
             b'B' => {
-                let mut cursor = 0usize;
-                let portal_name = read_cstring(&payload, &mut cursor);
-                let stmt_name = read_cstring(&payload, &mut cursor);
-                let sql = stmt_cache
-                    .get(&stmt_name)
-                    .map(|s| s.sql.clone())
-                    .unwrap_or_default();
-                portal_cache.insert(portal_name, Portal { sql });
+                let bind = match crate::extended_protocol::parse_bind_message(&payload) {
+                    Ok(bind) => bind,
+                    Err(error) => {
+                        write_error_and_ready(&mut socket, &error.to_string(), error.sqlstate())
+                            .await?;
+                        continue;
+                    }
+                };
+                let Some(statement) = stmt_cache.get(&bind.statement_name) else {
+                    write_error_and_ready(
+                        &mut socket,
+                        "prepared statement does not exist",
+                        "26000",
+                    )
+                    .await?;
+                    continue;
+                };
+                let parameter_types = stmt_parameter_types
+                    .get(&bind.statement_name)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                let sql = match crate::extended_protocol::materialize_bound_sql(
+                    &statement.sql,
+                    parameter_types,
+                    &bind,
+                ) {
+                    Ok(sql) => sql,
+                    Err(error) => {
+                        write_error_and_ready(&mut socket, &error.to_string(), error.sqlstate())
+                            .await?;
+                        continue;
+                    }
+                };
+                portal_cache.insert(bind.portal_name, Portal { sql });
                 socket.write_all(&build_bind_complete()).await?;
             }
             b'D' => {
-                socket.write_all(&build_no_data()).await?;
+                if payload.is_empty() {
+                    write_error_and_ready(&mut socket, "missing Describe target", "08P01").await?;
+                    continue;
+                }
+                let target = payload[0];
+                let mut cursor = 1usize;
+                let name = read_cstring(&payload, &mut cursor);
+                if cursor != payload.len() {
+                    write_error_and_ready(&mut socket, "malformed Describe message", "08P01")
+                        .await?;
+                    continue;
+                }
+                match target {
+                    b'S' => {
+                        if !stmt_cache.contains_key(&name) {
+                            write_error_and_ready(
+                                &mut socket,
+                                "prepared statement does not exist",
+                                "26000",
+                            )
+                            .await?;
+                            continue;
+                        }
+                        let parameter_types = stmt_parameter_types
+                            .get(&name)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]);
+                        socket
+                            .write_all(&crate::extended_protocol::build_parameter_description(
+                                parameter_types,
+                            ))
+                            .await?;
+                        socket.write_all(&build_no_data()).await?;
+                    }
+                    b'P' => {
+                        if !portal_cache.contains_key(&name) {
+                            write_error_and_ready(&mut socket, "portal does not exist", "34000")
+                                .await?;
+                            continue;
+                        }
+                        socket.write_all(&build_no_data()).await?;
+                    }
+                    _ => {
+                        write_error_and_ready(&mut socket, "invalid Describe target", "08P01")
+                            .await?;
+                    }
+                }
             }
             b'E' => {
                 let mut cursor = 0usize;
                 let portal_name = read_cstring(&payload, &mut cursor);
-                let sql = portal_cache
-                    .get(&portal_name)
-                    .map(|p| p.sql.clone())
-                    .unwrap_or_default();
-                if !sql.is_empty() {
-                    let scanner: Option<&dyn TableScanner> =
-                        ctx.dml_exec.as_deref().map(|s| s as &dyn TableScanner);
-                    process_query(
-                        &mut socket,
-                        &sql,
-                        &ctx.catalog,
-                        scanner,
-                        ctx.dml_exec.as_deref(),
-                        ctx.storage_engine.as_ref(),
-                        &ctx.registry,
-                        &ctx.users_file,
-                        &ctx.plan_cache,
-                        &mut read_consistency,
-                    )
-                    .await?;
-                } else {
-                    socket
-                        .write_all(&build_command_complete("EXECUTE 0"))
-                        .await?;
-                }
+                let Some(sql) = portal_cache.get(&portal_name).map(|p| p.sql.clone()) else {
+                    write_error_and_ready(&mut socket, "portal does not exist", "34000").await?;
+                    continue;
+                };
+                let scanner: Option<&dyn TableScanner> =
+                    ctx.dml_exec.as_deref().map(|s| s as &dyn TableScanner);
+                process_query(
+                    &mut socket,
+                    &sql,
+                    &ctx.catalog,
+                    scanner,
+                    ctx.dml_exec.as_deref(),
+                    ctx.storage_engine.as_ref(),
+                    &ctx.registry,
+                    &ctx.users_file,
+                    &ctx.plan_cache,
+                    &mut read_consistency,
+                )
+                .await?;
             }
             b'S' => {
                 socket.write_all(&build_ready_for_query()).await?;
             }
             b'C' => {
+                if payload.is_empty() {
+                    write_error_and_ready(&mut socket, "missing Close target", "08P01").await?;
+                    continue;
+                }
+                let target = payload[0];
+                let mut cursor = 1usize;
+                let name = read_cstring(&payload, &mut cursor);
+                if cursor != payload.len() {
+                    write_error_and_ready(&mut socket, "malformed Close message", "08P01")
+                        .await?;
+                    continue;
+                }
+                match target {
+                    b'S' => {
+                        stmt_cache.remove(&name);
+                        stmt_parameter_types.remove(&name);
+                    }
+                    b'P' => {
+                        portal_cache.remove(&name);
+                    }
+                    _ => {
+                        write_error_and_ready(&mut socket, "invalid Close target", "08P01")
+                            .await?;
+                        continue;
+                    }
+                }
                 socket.write_all(&build_close_complete()).await?;
             }
             b'X' => return Ok(()),
