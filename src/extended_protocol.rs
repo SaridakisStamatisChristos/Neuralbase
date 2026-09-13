@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Phase 8: bounded PostgreSQL extended-protocol Bind parsing and parameter
 // materialization. This module is deliberately narrower than PostgreSQL: it
-// supports deterministic scalar parameter types and text results, and rejects
-// unsupported formats/types rather than silently ignoring them.
+// supports deterministic scalar parameter types and text row results. Binary
+// result-format requests are accepted only when the command produces no rows;
+// unsupported formats/types otherwise fail closed.
 
 use thiserror::Error;
 
@@ -198,11 +199,6 @@ pub fn materialize_bound_sql(
             parameter_types.len()
         )));
     }
-    if bind.result_formats.iter().any(|format| *format != 0) {
-        return Err(ExtendedProtocolError::Unsupported(
-            "binary result formats are not implemented".into(),
-        ));
-    }
 
     let rendered: Result<Vec<String>, ExtendedProtocolError> = bind
         .parameters
@@ -213,7 +209,32 @@ pub fn materialize_bound_sql(
             render_parameter(parameter_types[index], format, value.as_deref())
         })
         .collect();
-    substitute_placeholders(sql, &rendered?)
+    let materialized = substitute_placeholders(sql, &rendered?)?;
+    validate_result_formats(&materialized, &bind.result_formats)?;
+    Ok(materialized)
+}
+
+fn validate_result_formats(sql: &str, formats: &[i16]) -> Result<(), ExtendedProtocolError> {
+    if formats.iter().all(|format| *format == 0) {
+        return Ok(());
+    }
+
+    // PostgreSQL clients commonly request binary row results for every Bind,
+    // including commands that never emit RowDescription/DataRow messages. In
+    // that no-row case the requested result format is semantically irrelevant.
+    // Keep the exception deliberately narrow: Phase 8 still rejects binary
+    // formats for row-producing statements because binary result encoding is
+    // not implemented.
+    if matches!(
+        crate::read_consistency::parse_read_consistency_setting(sql),
+        crate::read_consistency::ReadConsistencySetting::Set(_)
+    ) {
+        return Ok(());
+    }
+
+    Err(ExtendedProtocolError::Unsupported(
+        "binary result formats are not implemented for row-producing statements".into(),
+    ))
 }
 
 pub fn build_parameter_description(parameter_types: &[i32]) -> Vec<u8> {
@@ -583,12 +604,27 @@ mod tests {
     }
 
     #[test]
-    fn binary_results_fail_closed() {
+    fn binary_results_fail_closed_for_row_producing_query() {
         let mut message = bind(vec![], vec![]);
         message.result_formats = vec![1];
         assert!(matches!(
             materialize_bound_sql("SELECT 1", &[], &message),
             Err(ExtendedProtocolError::Unsupported(_))
         ));
+    }
+
+    #[test]
+    fn binary_result_preference_is_irrelevant_for_no_row_read_consistency_set() {
+        let mut message = bind(vec![Some(b"local".to_vec())], vec![1]);
+        message.result_formats = vec![1];
+        assert_eq!(
+            materialize_bound_sql(
+                "SET neuralbase_read_consistency = $1",
+                &[TEXTOID],
+                &message,
+            )
+            .unwrap(),
+            "SET neuralbase_read_consistency = 'local'"
+        );
     }
 }
