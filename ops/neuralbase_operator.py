@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Linux local-process adapter for NeuralBase's guarded Rust planner.
+"""NeuralBase guarded membership controller for local processes or Kubernetes.
 
-Trusted same-user controller, immutable loopback endpoints, retained storage.
-No Kubernetes/HPA, automatic DR, remote administration or production HA claim.
+Explicit single-writer deployment profile, immutable inventory, retained storage.
+No HPA, automatic DR or production HA claim. See docs/PHASE7_OPERATOR.md.
 """
 import argparse
 import concurrent.futures
@@ -18,6 +18,10 @@ import subprocess
 import time
 
 MAX_BYTES = 256 * 1024
+
+
+class DesiredChanged(RuntimeError):
+    pass
 
 
 def read_json(path):
@@ -113,15 +117,7 @@ class Controller:
         self.children = []
         if set(self.specs) != set(self.desired["endpoints"]) or len(self.specs) > 128:
             raise ValueError("process inventory must equal endpoint inventory")
-        ports = set()
-        for node_id, spec in self.specs.items():
-            if not node_id.startswith(self.desired["cluster"] + ".") or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_." for c in node_id):
-                raise ValueError("invalid incarnation identity")
-            for address in (self.desired["endpoints"][node_id], spec["sql_addr"], spec["metrics_addr"]):
-                host, port = address.rsplit(":", 1)
-                if host != "127.0.0.1" or not 1024 <= int(port) <= 65535 or int(port) in ports:
-                    raise ValueError("adapter requires unique local unprivileged ports")
-                ports.add(int(port))
+        self.validate_inventory()
         if self.path.exists():
             self.state = read_json(self.path)
             if self.state["version"] != 1:
@@ -151,6 +147,27 @@ class Controller:
                    "processes": {}, "matched": {}})
         self.persist()
 
+    def validate_inventory(self):
+        ports = set()
+        for node_id, spec in self.specs.items():
+            if not node_id.startswith(self.desired["cluster"] + ".") or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_." for c in node_id):
+                raise ValueError("invalid incarnation identity")
+            for address in (self.desired["endpoints"][node_id], spec["sql_addr"], spec["metrics_addr"]):
+                host, port = address.rsplit(":", 1)
+                if host != "127.0.0.1" or not 1024 <= int(port) <= 65535 or int(port) in ports:
+                    raise ValueError("adapter requires unique local unprivileged ports")
+                ports.add(int(port))
+
+    def admin(self, node, command):
+        return admin(node, command)
+
+    def stop(self, node_id):
+        admin(self.state["nodes"][node_id], "Status", terminate=True)
+
+    def assert_current_input(self):
+        if hasattr(self, "config_path") and read_json(self.config_path) != self.expected_config:
+            raise DesiredChanged("desired deployment input changed; restart the controller")
+
     def persist(self):
         if not self.readonly:
             save_json(self.path, self.state)
@@ -175,13 +192,13 @@ class Controller:
         if node_id in self.state["retiring"]:
             raise RuntimeError("retired incarnation must not restart automatically")
         if node_id not in self.state["nodes"]:
-            node = {"topology": self.desired, "id": node_id, "seeds": sorted(seeds), "learner": learner,
+            node = {"topology": self.desired, "id": node_id, "seeds": sorted(seeds), "genesis": self.state["initial_voters"], "learner": learner,
                     "socket": str(self.root / (node_id + ".sock"))}
             self.state["nodes"][node_id] = node
             self.persist()  # Durable intent precedes process creation.
         node = self.state["nodes"][node_id]
         try:
-            self.record_pid(node_id, admin(node, "Status")["pid"])
+            self.record_pid(node_id, self.admin(node, "Status")["pid"])
             return
         except (OSError, RuntimeError):
             pass
@@ -208,7 +225,7 @@ class Controller:
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             try:
-                self.record_pid(node_id, admin(node, "Status")["pid"])
+                self.record_pid(node_id, self.admin(node, "Status")["pid"])
                 return
             except (OSError, RuntimeError):
                 if child.poll() is not None:
@@ -224,6 +241,7 @@ class Controller:
             raise ValueError("fresh bootstrap requires revision 1")
         self.state["initial_voters"] = sorted(self.desired["voters"])
         for node_id in self.state["initial_voters"]:
+            self.assert_current_input()
             self.create(node_id, False, self.state["initial_voters"])
         self.state["bootstrapped"] = True
         self.persist()
@@ -232,7 +250,7 @@ class Controller:
         def query(item):
             node_id, node = item
             try:
-                return node_id, admin(node, "Status")
+                return node_id, self.admin(node, "Status")
             except (OSError, RuntimeError):
                 return node_id, None
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
@@ -244,7 +262,7 @@ class Controller:
         for node_id, result in sorted(statuses.items()):
             if result["status"]["is_leader"]:
                 try:
-                    authority = admin(self.state["nodes"][node_id], "Observe")["status"]
+                    authority = self.admin(self.state["nodes"][node_id], "Observe")["status"]
                     break
                 except (OSError, RuntimeError):
                     continue
@@ -270,6 +288,7 @@ class Controller:
                 "processes": processes, "matched": authority["matched"]}, statuses
 
     def step(self, dry_run=False):
+        self.assert_current_input()
         if not self.state["bootstrapped"]:
             raise RuntimeError("explicit bootstrap required")
         self.state["metrics"]["attempts"] += 1
@@ -291,6 +310,7 @@ class Controller:
         current, statuses = self.observe()
         if self.plan(current) != plan:
             raise RuntimeError("action became stale; reobserve")
+        self.assert_current_input()
         guard = {"leader": plan["leader"], "term": plan["term"], "generation": plan["membership_generation"]}
         leader = self.state["nodes"][plan["leader"]]
         if name == "CreateLearner":
@@ -302,9 +322,9 @@ class Controller:
             self.create(node_id, node["learner"], node["seeds"])
         elif name in ("AddLearner", "PromoteLearner", "RemoveMember"):
             change = "RemoveNode" if name == "RemoveMember" else name
-            admin(leader, {"Membership": {"guard": guard, "change": {change: node_id}}})
+            self.admin(leader, {"Membership": {"guard": guard, "change": {change: node_id}}})
         elif name == "TransferLeadership":
-            admin(leader, {"Transfer": {"guard": guard, "target": node_id}})
+            self.admin(leader, {"Transfer": {"guard": guard, "target": node_id}})
         elif name == "StopRemoved":
             if node_id not in current["committed"]["removed"] or current["committed"]["joint"]:
                 raise RuntimeError("retirement requires finalized committed tombstone")
@@ -314,7 +334,7 @@ class Controller:
             response = statuses.get(node_id)
             if response is not None:
                 self.record_pid(node_id, response["pid"])
-                admin(self.state["nodes"][node_id], "Status", terminate=True)
+                self.stop(node_id)
         else:
             raise RuntimeError("unsupported planner action")
         self.state["last_success"] = plan
@@ -342,7 +362,14 @@ def main():
     if not 1 <= args.steps <= 1000:
         p.error("steps must be 1..=1000")
     readonly = args.command in ("plan", "status")
-    c = Controller(read_json(Path(args.config)), args.server, args.planner, readonly)
+    config = read_json(Path(args.config))
+    controller = Controller
+    if "kubernetes" in config:
+        from neuralbase_kubernetes import KubernetesController
+        controller = KubernetesController
+    c = controller(config, args.server, args.planner, readonly)
+    c.config_path = Path(args.config)
+    c.expected_config = config
     if args.command == "bootstrap":
         c.bootstrap()
         print(json.dumps({"bootstrapped": True}))
@@ -358,6 +385,9 @@ def main():
             print(json.dumps(result), flush=True)
             if result["plan"]["action"] == "Converged":
                 return
+        except DesiredChanged as error:
+            print(json.dumps({"blocked": str(error)}), flush=True)
+            raise SystemExit(2) from error
         except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
             c.failed()
             print(json.dumps({"blocked": str(error)}), flush=True)

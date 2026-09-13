@@ -18,6 +18,7 @@ fn node() -> ManagedNode {
         },
         id: "g1.b".into(),
         seeds: vec!["g1.a".into()],
+        genesis: vec!["g1.a".into()],
         learner: true,
         socket: "/tmp/g1.b.sock".into(),
     }

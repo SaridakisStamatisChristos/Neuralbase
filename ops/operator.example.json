@@ -1,0 +1,43 @@
+{
+  "root": "/tmp/neuralbase-operator-demo",
+  "desired": {
+    "version": 1,
+    "cluster": "demo1",
+    "revision": 1,
+    "minimum_voters": 3,
+    "endpoints": {
+      "demo1.a": "127.0.0.1:7101",
+      "demo1.b": "127.0.0.1:7102",
+      "demo1.c": "127.0.0.1:7103",
+      "demo1.d": "127.0.0.1:7104",
+      "demo1.e": "127.0.0.1:7105"
+    },
+    "voters": [
+      "demo1.a",
+      "demo1.b",
+      "demo1.c"
+    ]
+  },
+  "processes": {
+    "demo1.a": {
+      "sql_addr": "127.0.0.1:5501",
+      "metrics_addr": "127.0.0.1:9201"
+    },
+    "demo1.b": {
+      "sql_addr": "127.0.0.1:5502",
+      "metrics_addr": "127.0.0.1:9202"
+    },
+    "demo1.c": {
+      "sql_addr": "127.0.0.1:5503",
+      "metrics_addr": "127.0.0.1:9203"
+    },
+    "demo1.d": {
+      "sql_addr": "127.0.0.1:5504",
+      "metrics_addr": "127.0.0.1:9204"
+    },
+    "demo1.e": {
+      "sql_addr": "127.0.0.1:5505",
+      "metrics_addr": "127.0.0.1:9205"
+    }
+  }
+}

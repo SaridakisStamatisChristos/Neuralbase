@@ -224,7 +224,8 @@ fn spawn_raft<T: Transport>(
     let managed = managed_node_config()?;
     let node = match managed.as_ref() {
         Some(config) if config.learner => {
-            RaftNode::new_learner(node_id, peers, transport).map_err(io::Error::other)?
+            RaftNode::new_learner_from_genesis(node_id, config.genesis.clone(), peers, transport)
+                .map_err(io::Error::other)?
         }
         _ => RaftNode::new(node_id, peers, transport),
     };

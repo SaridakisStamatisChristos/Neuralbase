@@ -9,6 +9,7 @@ pub struct ManagedNode {
     pub topology: DesiredTopology,
     pub id: String,
     pub seeds: Vec<String>,
+    pub genesis: Vec<String>,
     pub learner: bool,
     pub socket: String,
 }
@@ -22,6 +23,20 @@ impl ManagedNode {
                 .endpoints
                 .keys()
                 .any(|id| !id.starts_with(&prefix))
+            || self.genesis.is_empty()
+            || self.genesis.len() > 128
+            || self
+                .genesis
+                .iter()
+                .any(|id| !self.topology.endpoints.contains_key(id))
+            || self
+                .genesis
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != self.genesis.len()
+            || (self.learner && self.genesis.contains(&self.id))
+            || (!self.learner && self.genesis != self.seeds)
             || self.seeds.is_empty()
             || self.seeds.len() > 128
             || self

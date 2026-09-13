@@ -243,6 +243,9 @@ pub fn reconcile(d: &DesiredTopology, o: &Observation) -> Result<Plan, String> {
             return Ok(make(Action::AddLearner(id.clone())));
         }
     }
+    if !d.voters.is_subset(&ready) {
+        return blocked("desired voters have not all confirmed readiness and apply");
+    }
     Ok(make(Action::Converged))
 }
 pub fn validate_plan(plan: &Plan, d: &DesiredTopology, o: &Observation) -> Result<(), String> {

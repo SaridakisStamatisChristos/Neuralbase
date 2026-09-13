@@ -152,6 +152,19 @@ impl Deployment {
 }
 impl Drop for Deployment {
     fn drop(&mut self) {
+        if thread::panicking() {
+            for id in ["g1.a", "g1.b", "g1.c", "g1.d", "g1.e"] {
+                if let Ok(log) =
+                    fs::read_to_string(self.root.path().join(format!("nodes/{id}.log")))
+                {
+                    let tail: Vec<_> = log.lines().rev().take(30).collect();
+                    eprintln!(
+                        "{id} retained log tail:\n{}",
+                        tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+                    );
+                }
+            }
+        }
         if let Ok(data) = fs::read(self.root.path().join("nodes/state.json")) {
             if let Ok(state) = serde_json::from_slice::<Value>(&data) {
                 if let Some(pids) = state["pids"].as_object() {
@@ -284,6 +297,22 @@ fn supervisor_process_identity_and_document_boundaries() {
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/phase7_supervisor.py"
+        ))
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
+fn kubernetes_object_and_desired_revision_guards() {
+    let result = Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/phase7_kubernetes_guards.py"
         ))
         .output()
         .unwrap();

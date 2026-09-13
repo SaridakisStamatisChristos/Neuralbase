@@ -15,7 +15,7 @@ concurrency:
 jobs:
   checks:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 60
     env:
       LIBCLANG_PATH: /usr/lib/llvm-18/lib
       ROCKSDB_INCLUDE_DIR: /usr/include
@@ -59,6 +59,33 @@ jobs:
 
       - name: Run adversarial tests
         run: make adversarial
+
+      - name: Create operator test Kubernetes cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: neuralbase-phase7
+          version: v0.29.0
+          node_image: kindest/node:v1.33.1
+          wait: 120s
+
+      - name: Run guarded Kubernetes membership lifecycle
+        run: |
+          mkdir -p /tmp/neuralbase-phase7-image
+          cp target/debug/neuralbase target/debug/neuralbase-operator /tmp/neuralbase-phase7-image/
+          docker build -f ops/Dockerfile.operator-test -t neuralbase:phase7 /tmp/neuralbase-phase7-image
+          kind load docker-image neuralbase:phase7 --name neuralbase-phase7
+          kubectl --context kind-neuralbase-phase7 create namespace neuralbase-phase7
+          timeout --signal=TERM --kill-after=30s 15m python3 tests/phase7_kubernetes.py
+
+      - name: Dump operator deployment diagnostics
+        if: failure()
+        run: |
+          kubectl --context kind-neuralbase-phase7 -n neuralbase-phase7 get pods,statefulsets,pvc -o wide || true
+          kubectl --context kind-neuralbase-phase7 -n neuralbase-phase7 get events --sort-by=.lastTimestamp || true
+
+      - name: Clean operator test cluster
+        if: always()
+        run: kind delete cluster --name neuralbase-phase7 || true
 
   tpch-reference:
     runs-on: ubuntu-24.04

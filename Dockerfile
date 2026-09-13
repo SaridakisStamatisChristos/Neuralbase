@@ -44,6 +44,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY --from=builder /app/target/release/neuralbase /app/neuralbase
+COPY --from=builder /app/target/release/neuralbase-operator /app/neuralbase-operator
 
 ENV NEURALBASE_LISTEN_ADDR="0.0.0.0:5432" \
     NEURALBASE_RAFT_ADDR="0.0.0.0:7001" \

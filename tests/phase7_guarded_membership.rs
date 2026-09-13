@@ -347,3 +347,90 @@ async fn leader_loss_at_durable_joint_promotion_and_removal_boundaries() {
     );
     assert!(final_state.committed.removed.contains(&removed));
 }
+
+#[tokio::test]
+async fn new_learner_replays_genesis_after_prior_promotion_and_new_leader() {
+    let bus = ChannelTransport::new_bus();
+    let genesis: Vec<String> = ["r1", "r2", "r3"].into_iter().map(str::to_string).collect();
+    let mut tasks = Vec::new();
+    let mut handles = Vec::new();
+    for id in ["r1", "r2", "r3", "r4"] {
+        let transport = Arc::new(ChannelTransport::register(id.into(), bus.clone()).await);
+        let mut node = if id == "r4" {
+            RaftNode::new_learner(id.into(), genesis.clone(), transport).unwrap()
+        } else {
+            RaftNode::new(
+                id.into(),
+                genesis.iter().filter(|p| *p != id).cloned().collect(),
+                transport,
+            )
+        };
+        node.set_election_timeout_ms(80);
+        let (_, _, task) = node.spawn();
+        handles.push(task.operator_handle());
+        tasks.push(task);
+    }
+    let (i, s) = authority(&handles).await;
+    handles[i]
+        .change_membership(GuardedMembership {
+            guard: guard(&s),
+            change: MembershipChange::AddLearner("r4".into()),
+        })
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (i, s) = authority(&handles).await;
+    handles[i]
+        .change_membership(GuardedMembership {
+            guard: guard(&s),
+            change: MembershipChange::PromoteLearner("r4".into()),
+        })
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    let current = loop {
+        let (i, s) = authority(&handles).await;
+        if s.id == "r4" {
+            break s;
+        }
+        let _ = handles[i].transfer(guard(&s), "r4".into()).await;
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+    };
+    let transport = Arc::new(ChannelTransport::register("r5".into(), bus.clone()).await);
+    let node = RaftNode::new_learner_from_genesis(
+        "r5".into(),
+        genesis,
+        current.committed.voters.iter().cloned().collect(),
+        transport,
+    )
+    .unwrap();
+    let (_, _, task) = node.spawn();
+    handles.push(task.operator_handle());
+    tasks.push(task);
+    handles[3]
+        .change_membership(GuardedMembership {
+            guard: guard(&current),
+            change: MembershipChange::AddLearner("r5".into()),
+        })
+        .await
+        .unwrap();
+    loop {
+        let s = handles[3].observe_authoritative().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let learner = handles[4].status().await.unwrap();
+        assert!(!learner.committed.voters.contains("r5"));
+        if learner.ready
+            && learner.committed.learners.contains("r5")
+            && learner.applied >= s.authority_index
+        {
+            assert_eq!(learner.committed.voters, s.committed.voters);
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "replacement learner failed history replay: {learner:?}; leader: {s:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(80)).await;
+    }
+}

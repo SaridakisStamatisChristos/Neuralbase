@@ -142,6 +142,9 @@ pub struct RaftNode<T: Transport> {
     /// source of quorum truth.
     bootstrap_membership: ClusterMembership,
     joining_learner: bool,
+    /// Routing authorization while a joining node replays the original log.
+    /// These IDs never grant voting rights or replace committed membership.
+    joining_seeds: BTreeSet<NodeId>,
     transport: Arc<T>,
     ps: PersistentState,
     /// Latest configuration represented by committed membership plus any newer
@@ -204,6 +207,39 @@ impl<T: Transport> RaftNode<T> {
         ))
     }
 
+    /// Join after earlier membership changes using the original log's genesis
+    /// configuration separately from the current routing voters. A seed may
+    /// supply replication only while this node is non-voting and not removed.
+    pub fn new_learner_from_genesis(
+        id: NodeId,
+        genesis_voters: Vec<NodeId>,
+        seed_voters: Vec<NodeId>,
+        transport: Arc<T>,
+    ) -> Result<Self, String> {
+        let mut node = Self::new_learner(id.clone(), genesis_voters, transport)?;
+        if seed_voters.is_empty() || seed_voters.len() > 128 || seed_voters.contains(&id) {
+            return Err("invalid joining routing voters".into());
+        }
+        node.joining_seeds = seed_voters.into_iter().collect();
+        Ok(node)
+    }
+
+    fn accepts_replication_from(&self, leader: &NodeId) -> bool {
+        if self
+            .ps
+            .membership
+            .as_ref()
+            .is_some_and(|m| m.is_removed(leader))
+        {
+            return false;
+        }
+        self.effective_membership.is_voter(leader)
+            || (self.joining_learner
+                && !self.effective_membership.is_voter(&self.id)
+                && !self.effective_membership.is_removed(&self.id)
+                && self.joining_seeds.contains(leader))
+    }
+
     fn from_bootstrap(
         id: NodeId,
         bootstrap_membership: ClusterMembership,
@@ -216,6 +252,7 @@ impl<T: Transport> RaftNode<T> {
             effective_membership: bootstrap_membership.clone(),
             bootstrap_membership,
             joining_learner,
+            joining_seeds: BTreeSet::new(),
             transport,
             ps,
             commit_index: 0,
@@ -1019,7 +1056,7 @@ impl<T: Transport> RaftNode<T> {
                 self.on_request_vote_reply(from, reply).await;
             }
             RaftMessage::AppendEntries(args) => {
-                let reset = self.effective_membership.is_voter(&args.leader_id)
+                let reset = self.accepts_replication_from(&args.leader_id)
                     && args.term >= self.ps.current_term;
                 let reply = self.on_append_entries(args);
                 self.transport
@@ -1033,7 +1070,7 @@ impl<T: Transport> RaftNode<T> {
                 self.on_append_entries_reply(from, reply).await;
             }
             RaftMessage::InstallSnapshot(args) => {
-                let reset = self.effective_membership.is_voter(&args.leader_id)
+                let reset = self.accepts_replication_from(&args.leader_id)
                     && args.term >= self.ps.current_term;
                 let reply = self.on_install_snapshot(args);
                 self.transport
@@ -1235,7 +1272,7 @@ impl<T: Transport> RaftNode<T> {
     }
 
     fn on_append_entries(&mut self, args: AppendEntriesArgs) -> AppendEntriesReply {
-        if !self.effective_membership.is_voter(&args.leader_id)
+        if !self.accepts_replication_from(&args.leader_id)
             || self
                 .ps
                 .membership
@@ -1693,7 +1730,7 @@ impl<T: Transport> RaftNode<T> {
     }
 
     fn on_install_snapshot(&mut self, args: InstallSnapshotArgs) -> InstallSnapshotReply {
-        if !self.effective_membership.is_voter(&args.leader_id)
+        if !self.accepts_replication_from(&args.leader_id)
             || self
                 .ps
                 .membership
