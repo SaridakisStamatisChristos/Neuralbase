@@ -74,7 +74,9 @@ fn execute_phase8_scalar(query: &Query) -> Result<Option<QueryResult>, QueryErro
 fn column_name(item: &SelectItem) -> String {
     match item {
         SelectItem::ExprWithAlias { alias, .. } => alias.value.clone(),
-        SelectItem::UnnamedExpr(Expr::Function(function)) => function.name.to_string().to_lowercase(),
+        SelectItem::UnnamedExpr(Expr::Function(function)) => {
+            function.name.to_string().to_lowercase()
+        }
         SelectItem::UnnamedExpr(Expr::Identifier(id)) => id.value.clone(),
         _ => "col".to_string(),
     }
@@ -138,7 +140,11 @@ fn eval(expr: &Expr) -> Result<ScalarVal, QueryError> {
             let ge = compare(&value, &eval(low)?, &BinaryOperator::GtEq)?;
             let le = compare(&value, &eval(high)?, &BinaryOperator::LtEq)?;
             let value = sql_and(&ge, &le)?;
-            if *negated { sql_not(&value) } else { Ok(value) }
+            if *negated {
+                sql_not(&value)
+            } else {
+                Ok(value)
+            }
         }
         Expr::Case {
             operand,
@@ -166,7 +172,9 @@ fn eval(expr: &Expr) -> Result<ScalarVal, QueryError> {
                 )))
             }
         }
-        _ => Err(QueryError::Unsupported(format!("scalar expression: {expr}"))),
+        _ => Err(QueryError::Unsupported(format!(
+            "scalar expression: {expr}"
+        ))),
     }
 }
 
@@ -192,7 +200,9 @@ fn unary(op: &UnaryOperator, value: ScalarVal) -> Result<ScalarVal, QueryError> 
         UnaryOperator::Not => sql_not(&value),
         UnaryOperator::Plus => match value {
             ScalarVal::Int(_) | ScalarVal::Float(_) | ScalarVal::Null => Ok(value),
-            _ => Err(QueryError::TypeError("unary plus requires numeric input".into())),
+            _ => Err(QueryError::TypeError(
+                "unary plus requires numeric input".into(),
+            )),
         },
         UnaryOperator::Minus => match value {
             ScalarVal::Int(value) => value
@@ -201,7 +211,9 @@ fn unary(op: &UnaryOperator, value: ScalarVal) -> Result<ScalarVal, QueryError> 
                 .ok_or_else(|| QueryError::TypeError("integer overflow".into())),
             ScalarVal::Float(value) => Ok(ScalarVal::Float(-value)),
             ScalarVal::Null => Ok(ScalarVal::Null),
-            _ => Err(QueryError::TypeError("unary minus requires numeric input".into())),
+            _ => Err(QueryError::TypeError(
+                "unary minus requires numeric input".into(),
+            )),
         },
         _ => Err(QueryError::Unsupported(format!("unary operator: {op}"))),
     }
@@ -364,7 +376,10 @@ fn in_list(expr: &Expr, list: &[Expr], negated: bool) -> Result<ScalarVal, Query
         let candidate = eval(candidate)?;
         if matches!(candidate, ScalarVal::Null) {
             saw_null = true;
-        } else if matches!(compare(&value, &candidate, &BinaryOperator::Eq)?, ScalarVal::Bool(true)) {
+        } else if matches!(
+            compare(&value, &candidate, &BinaryOperator::Eq)?,
+            ScalarVal::Bool(true)
+        ) {
             return Ok(ScalarVal::Bool(!negated));
         }
     }
@@ -394,7 +409,10 @@ fn eval_case(
             return eval(result);
         }
     }
-    else_result.map(eval).transpose().map(|v| v.unwrap_or(ScalarVal::Null))
+    else_result
+        .map(eval)
+        .transpose()
+        .map(|v| v.unwrap_or(ScalarVal::Null))
 }
 
 fn function_value(function: &sqlparser::ast::Function) -> Result<ScalarVal, QueryError> {
@@ -426,7 +444,10 @@ fn function_value(function: &sqlparser::ast::Function) -> Result<ScalarVal, Quer
             let right = eval(exprs[1])?;
             if matches!(left, ScalarVal::Null) || matches!(right, ScalarVal::Null) {
                 Ok(left)
-            } else if matches!(compare(&left, &right, &BinaryOperator::Eq)?, ScalarVal::Bool(true)) {
+            } else if matches!(
+                compare(&left, &right, &BinaryOperator::Eq)?,
+                ScalarVal::Bool(true)
+            ) {
                 Ok(ScalarVal::Null)
             } else {
                 Ok(left)
