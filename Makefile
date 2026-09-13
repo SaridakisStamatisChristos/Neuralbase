@@ -7,6 +7,7 @@ lint:
 
 confidence:
 	cargo test --test confidence_yaml --locked
+	cargo test --test sql_compatibility_profile --locked
 
 bench:
 	cargo test --test perf_tpch --release --locked -- --nocapture
