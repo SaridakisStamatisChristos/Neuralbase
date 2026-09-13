@@ -71,8 +71,7 @@ fn validate_persistent_dml_predicate(
     match (statement, plan) {
         (
             Statement::Update {
-                selection: Some(_),
-                ..
+                selection: Some(_), ..
             },
             BoundPlan::Update(update),
         ) if update.predicate.is_none() => Err(BindError::Unsupported),
