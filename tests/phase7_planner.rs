@@ -209,3 +209,12 @@ fn retry_bounded_and_restart_safe() {
     r.reset();
     assert_eq!(r, RetryState::default());
 }
+
+#[test]
+fn quorum_alone_does_not_report_all_desired_processes_converged() {
+    let (d, mut o) = fixture();
+    o.processes.get_mut("c").unwrap().ready = false;
+    assert!(
+        matches!(reconcile(&d, &o).unwrap().action, Action::Blocked(reason) if reason.contains("all confirmed readiness"))
+    );
+}

@@ -107,3 +107,19 @@ Report which checks actually ran, including missing toolchains or Docker. A work
 Green CI means the exact checked commit passed the repository's current executable gates. For the distributed path it supports replicated tables, SQL-aware snapshots, coordinated membership, replicated SCRAM identity, the tested Phase-5 recovery model, and the Phase-6 leader-path read-consistency contract under the scenarios above.
 
 It still does **not** mean production readiness, complete PostgreSQL compatibility, linearizable arbitrary-follower reads, automatic strong-read routing, automatic deployment membership reconciliation/HPA, PITR or automatic DR, security certification, or performance superiority outside measured workloads.
+
+## Phase-7 operator gates (validation in progress)
+
+`phase7_planner`, `phase7_guarded_membership`, `phase7_managed_storage` and
+`phase7_process` cover deterministic guarded planning, real Raft partitions and
+joint boundaries, later learner genesis replay, immutable storage, independent
+process lifecycle and replicated SQL/SCRAM convergence. The guarded variation in
+`phase4_identity_membership` forces learner snapshot bootstrap after compaction.
+
+The checks job additionally creates a disposable kind cluster and runs
+`tests/phase7_kubernetes.py`: partial PVC-quota failure, object drift, 3→4 scaling,
+leader restart/replacement, 4→3 scaling, retained PVCs and SQL/SCRAM convergence.
+`tests/phase7_kubernetes_guards.py` checks object UID/version preconditions and
+mid-command desired-revision rejection. Details and current closure status are in
+[the Phase-7 guide](PHASE7_OPERATOR.md). Neither these tests nor static Helm
+rendering establish HPA safety or production readiness.

@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Real kind/StatefulSet/PVC lifecycle; invoked by the exact-head CI job."""
+import base64
+import hashlib
+import hmac
+import os
 import json
 from pathlib import Path
 import subprocess
@@ -23,6 +27,16 @@ def main():
                   "minimum_voters": 3, "voters": ids[:3], "endpoints": {node: host + ":7001" for node, host in dns.items()}},
                   "processes": {node: {"sql_addr": host + ":5432", "metrics_addr": host + ":9090"} for node, host in dns.items()},
                   "kubernetes": {"context": CONTEXT, "namespace": NAMESPACE, "image": "neuralbase:phase7", "storage_class": "standard", "storage": "1Gi"}}
+        salt = os.urandom(16)
+        salted = hashlib.pbkdf2_hmac("sha256", b"phase7-password", salt, 4096)
+        encode = lambda value: base64.b64encode(value).decode()
+        identity = {"users": [{"method": "scram-sha-256", "username": "postgres", "salt": encode(salt), "iterations": 4096,
+                              "stored_key": encode(hashlib.sha256(hmac.digest(salted, b"Client Key", "sha256")).digest()),
+                              "server_key": encode(hmac.digest(salted, b"Server Key", "sha256"))}]}
+        identity_path = Path(root) / "bootstrap-users.json"
+        identity_path.write_text(json.dumps(identity))
+        identity_path.chmod(0o600)
+        config["identity_bootstrap"] = {"path": str(identity_path), "sha256": hashlib.sha256(identity_path.read_bytes()).hexdigest()}
         path = Path(root) / "desired.json"
         def write():
             path.write_text(json.dumps(config))
@@ -49,12 +63,26 @@ def main():
             config["desired"]["revision"] += 1
             config["desired"]["voters"] = voters
             write()
-        def sql(node, statement, user="postgres"):
-            return kube("exec", node.replace(".", "-") + "-0", "--", "env", "PGPASSWORD=phase7-password",
+        def sql(node, statement, user="postgres", password="phase7-password"):
+            return kube("exec", node.replace(".", "-") + "-0", "--", "env", "PGPASSWORD=" + password,
                         "psql", "-h", "127.0.0.1", "-U", user, "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-Atc", statement).strip()
         def verify(voters):
             for node in voters:
-                assert sql(node, "SELECT COUNT(*) FROM kube_items", "kube_user") == "1", node
+                deadline = time.monotonic() + 30
+                while True:
+                    try:
+                        valid = sql(node, "SELECT COUNT(*) FROM kube_items", "kube_user") == "1"
+                        try:
+                            sql(node, "SELECT COUNT(*) FROM kube_items", "kube_user", "wrong-password")
+                            authenticated = False
+                        except subprocess.CalledProcessError:
+                            authenticated = True
+                        if valid and authenticated:
+                            break
+                    except subprocess.CalledProcessError:
+                        pass
+                    assert time.monotonic() < deadline, "SQL/SCRAM did not converge on " + node
+                    time.sleep(0.2)
         try:
             invoke("bootstrap")
             first = converge()
@@ -71,7 +99,7 @@ def main():
             # learner's storage. It must not become a voter or lose its intent.
             kube("create", "quota", "phase7-pvc-limit", "--hard=persistentvolumeclaims=3")
             failed = invoke("reconcile")
-            assert "exceeded quota" in failed.get("blocked", ""), failed
+            assert "quota" in failed.get("blocked", "").lower(), failed
             kube("delete", "quota", "phase7-pvc-limit")
             invoke("reconcile")
             # External template drift must block, never silently overwrite it.

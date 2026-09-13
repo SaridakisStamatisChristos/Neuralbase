@@ -6,7 +6,7 @@ Repository-specific guidance for coding agents and automated contributors.
 
 NeuralBase is an experimental Rust SQL engine. Configured clusters replicate persistent table mutations and SCRAM identity through deterministic Raft-backed state machines, use SQL-aware snapshots, support learner/joint-consensus membership changes, provide the tested Phase-5 NBBK/NBEC backup/restore/fresh-cluster recovery lifecycle, and expose tested Phase-6 session read-consistency modes.
 
-Do not turn those scoped guarantees into a claim of general or production SQL HA. Reads default to `Local` and may lag on followers. `Leader` and `Linearizable` strong reads require the current serving leader and the Phase-6 consensus barrier; arbitrary-follower linearizable routing is not implemented. Deployment membership reconciliation and automatic node replacement are not implemented, PITR/automatic DR remain open, and the online backup coordinator is currently an in-process API rather than a standalone live-server CLI.
+Do not turn those scoped guarantees into a claim of general or production SQL HA. Reads default to `Local` and may lag on followers. `Leader` and `Linearizable` strong reads require the current serving leader and the Phase-6 consensus barrier; arbitrary-follower linearizable routing is not implemented. Opt-in process/Kubernetes membership reconciliation and fresh-identity replacement are implemented under the Phase-7 profile, whose validation/closure status is recorded in docs/PHASE7_OPERATOR.md; arbitrary Helm/HPA scaling remains unsupported, PITR/automatic DR remain open, and the online backup coordinator is currently an in-process API rather than a standalone live-server CLI.
 
 ## Toolchain and gates
 

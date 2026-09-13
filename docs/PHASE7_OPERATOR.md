@@ -77,9 +77,9 @@ examples. HPA remains unsupported.
 
 Requirements: Linux with `pidfd_open`/`pidfd_send_signal`, Python 3.9 or later,
 Rust 1.88 builds of both server and planner, and one trusted local user. Raft and
-SQL bind to unique loopback ports. The development adapter uses plaintext and
-`NEURALBASE_AUTH_REQUIRED=0`; it does not configure remote credentials, TLS or
-production authorization. Prometheus currently binds the selected metrics port
+SQL bind to unique loopback ports. The development adapter uses plaintext. SQL authentication defaults to disabled;
+the explicit identity bootstrap selection below enables required SCRAM authentication.
+The adapter does not configure TLS or production authorization. Prometheus currently binds the selected metrics port
 on all interfaces, as in the existing server. Protect that listener at the host.
 
 The root directory must be private (0700). The server's management socket is
@@ -127,6 +127,27 @@ does not persist accepted revisions, create/stop processes, or change membership
 Obtaining authority appends a read barrier to Raft. For a completely offline
 calculation, feed a previously captured `{desired, observed}` document into
 `neuralbase-operator plan`; the result is advisory and is revalidated at execution.
+
+## Required SQL authentication
+
+Before the first bootstrap, optionally add an `identity_bootstrap` object with
+`path` (an absolute private verifier file, mode 0600) and `sha256` (its exact
+lowercase SHA-256 digest) to the controller configuration. The file must contain
+valid existing strict SCRAM registry JSON and be at most 128 KiB. No password or
+verifier belongs in the desired topology or controller state. The file selection
+and digest are immutable for that controller root; preserve the source across
+restarts. A digest mismatch fails before member creation.
+
+This enables `NEURALBASE_AUTH_REQUIRED=1` and the existing Phase-4 explicit identity
+migration. Connect once to the current leader with a bootstrap credential to
+commit initialization; followers fail closed while initialization is pending.
+Subsequent user changes use the replicated identity store, which remains
+authoritative across replacement and restart. The process adapter creates private
+per-node bootstrap copies. Kubernetes creates retained immutable Secrets mounted
+read-only in member pods; the controller Role therefore includes Secret read/create.
+Treat that principal and namespace as trusted. No Secret data is included in
+controller status. Both executable deployment lifecycles select this profile and
+check that correct passwords work and incorrect passwords are rejected.
 
 ## Failure handling and bounds
 

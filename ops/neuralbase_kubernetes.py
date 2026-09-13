@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Single-writer Kubernetes adapter: one StatefulSet and retained PVC per identity."""
 import json
+import base64
 from pathlib import Path
 import re
 import subprocess
@@ -9,13 +10,28 @@ import uuid
 from neuralbase_operator import Controller, MAX_BYTES, read_json
 
 
-def contains(actual, expected):
-    """Allow API-defaulted fields, reject changes to every field we manage."""
+def mismatch(actual, expected, path=""):
+    """Return only a field path (never Secret values) for managed-field drift."""
     if isinstance(expected, dict):
-        return isinstance(actual, dict) and all(k in actual and contains(actual[k], v) for k, v in expected.items())
+        if not isinstance(actual, dict):
+            return path or "/"
+        for key, value in expected.items():
+            child = path + "/" + key
+            if key not in actual:
+                return child
+            difference = mismatch(actual[key], value, child)
+            if difference:
+                return difference
+        return None
     if isinstance(expected, list):
-        return isinstance(actual, list) and len(actual) == len(expected) and all(contains(a, e) for a, e in zip(actual, expected))
-    return actual == expected
+        if not isinstance(actual, list) or len(actual) != len(expected):
+            return path or "/"
+        for index, (a, e) in enumerate(zip(actual, expected)):
+            difference = mismatch(a, e, path + "/" + str(index))
+            if difference:
+                return difference
+        return None
+    return None if actual == expected else path or "/"
 
 
 class KubernetesController(Controller):
@@ -86,6 +102,9 @@ class KubernetesController(Controller):
                "NEURALBASE_DB_PATH": "/data/db", "NEURALBASE_USERS_FILE": "/data/users.json",
                "NEURALBASE_PEERS": "", "NEURALBASE_RAFT_ADDR": "0.0.0.0:7001", "NEURALBASE_LISTEN_ADDR": "0.0.0.0:5432",
                "NEURALBASE_METRICS_PORT": "9090", "NEURALBASE_AUTH_REQUIRED": "0", "NEURALBASE_RAFT_TLS": "0"}
+        if self.identity:
+            env.update(NEURALBASE_AUTH_REQUIRED="1", NEURALBASE_USERS_FILE="/identity/users.json",
+                       NEURALBASE_IDENTITY_MIGRATION_SHA256=self.identity["sha256"])
         container = {"name": "neuralbase", "image": self.kube["image"], "imagePullPolicy": "IfNotPresent",
                      "command": ["/bin/sh", "-ec", "umask 077; mkdir -p /run/neuralbase/private; exec /app/neuralbase"],
                      "env": [{"name": k, "value": v} for k, v in sorted(env.items())],
@@ -109,7 +128,16 @@ class KubernetesController(Controller):
                        "metadata": dict(meta, name=name + "-sql"),
                        "spec": {"selector": labels,
                                 "ports": [{"name": "sql", "port": 5432, "targetPort": 5432}]}}
-        return [config, service, sql_service, pvc, stateful]
+        resources = [config, service, sql_service, pvc]
+        if self.identity:
+            secret_name = name + "-identity"
+            resources.append({"apiVersion": "v1", "kind": "Secret", "metadata": dict(meta, name=secret_name),
+                              "immutable": True, "type": "Opaque",
+                              "data": {"users.json": base64.b64encode(self.identity_bytes).decode()}})
+            container["volumeMounts"].append({"name": "identity", "mountPath": "/identity", "readOnly": True})
+            stateful["spec"]["template"]["spec"]["volumes"].append(
+                {"name": "identity", "secret": {"secretName": secret_name, "defaultMode": 0o440}})
+        return [*resources, stateful]
 
     def validate_object(self, actual, expected):
         key = expected["kind"] + "/" + expected["metadata"]["name"]
@@ -121,8 +149,18 @@ class KubernetesController(Controller):
             compare["spec"]["replicas"] = actual["spec"]["replicas"]
             if actual["spec"]["replicas"] not in (0, 1):
                 raise RuntimeError("raw replica scaling is forbidden")
-        if not contains(actual, compare):
-            raise RuntimeError("managed Kubernetes object configuration drift")
+        actual = json.loads(json.dumps(actual))
+        if expected["kind"] == "StatefulSet":
+            # EnvVar.value is omitted by the API for the empty string. Preserve
+            # its meaning while still rejecting injected peers/valueFrom.
+            for container in actual["spec"].get("template", {}).get("spec", {}).get("containers", []):
+                for entry in container.get("env", []):
+                    if "valueFrom" in entry:
+                        raise RuntimeError("managed Kubernetes object configuration drift: indirect environment value")
+                    entry.setdefault("value", "")
+        difference = mismatch(actual, compare)
+        if difference:
+            raise RuntimeError("managed Kubernetes object configuration drift: " + key + difference)
         return key
 
     def ensure(self, expected):

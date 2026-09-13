@@ -86,9 +86,19 @@ Archived replicated-log/WAL-equivalent streaming and point-in-time recovery rema
 
 The initial implementation deliberately uses one replicated control/log entry per `Leader` or `Linearizable` read. Arbitrary-follower linearizable routing, automatic follower-to-leader forwarding, and lower-overhead ReadIndex/lease optimization are not implemented and are not part of the Phase-6 claim.
 
-## P1 — operator membership orchestration
+## Phase 7 — operator membership orchestration (validation in progress)
 
-The consensus membership protocol exists, but deployment reconciliation remains manual. A future operator/controller should safely connect StatefulSet changes to learner admission, catch-up, promotion, leadership transfer/removal, rollback and address reconciliation before automatic scaling is enabled.
+Implemented: versioned deterministic planning; guarded committed membership
+administration; non-voting managed startup; separate genesis replay/routing seeds;
+immutable storage identity; local process and per-member Kubernetes StatefulSet
+adapters; retained PVCs; object UID/resource-version guards; and bounded retries.
+Replacement promotes a fresh identity before transferring/removing/retiring the
+old member. Static Helm/Compose deployments are not adopted and HPA stays disabled.
+
+Executable gates cover partitions, joint-transition leader loss, learner
+snapshot/bootstrap, controller restart, partial creation failure, replacement and
+SQL/SCRAM convergence. Phase 7 remains open pending final-head and post-merge CI.
+See [the operator guide](docs/PHASE7_OPERATOR.md). Phase 8 has not started.
 
 ## P1 — SQL semantic depth
 

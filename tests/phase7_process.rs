@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Real server + independent controller processes, TCP Raft and RocksDB.
 #![cfg(target_os = "linux")]
+use neuralbase::auth::{create_scram_user, UserRegistry};
 use postgres::{Client, NoTls, SimpleQueryMessage};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
 use std::net::TcpListener;
@@ -34,7 +36,14 @@ impl Deployment {
             endpoints.insert(id.into(), json!(format!("127.0.0.1:{}", port())));
             processes.insert(id.into(),json!({"sql_addr":format!("127.0.0.1:{}",port()),"metrics_addr":format!("127.0.0.1:{}",port())}));
         }
-        let config = json!({"root":root.path().join("nodes"),"desired":{"version":1,"cluster":"g1","revision":1,"minimum_voters":3,"endpoints":endpoints,"voters":["g1.a","g1.b","g1.c"]},"processes":processes});
+        let identity_path = root.path().join("bootstrap-users.json");
+        let mut registry = UserRegistry::new();
+        registry.add_user(create_scram_user("postgres", "phase7-bootstrap-password"));
+        registry
+            .save_to_file(identity_path.to_str().unwrap())
+            .unwrap();
+        let digest = hex::encode(Sha256::digest(fs::read(&identity_path).unwrap()));
+        let config = json!({"identity_bootstrap":{"path":identity_path,"sha256":digest},"root":root.path().join("nodes"),"desired":{"version":1,"cluster":"g1","revision":1,"minimum_voters":3,"endpoints":endpoints,"voters":["g1.a","g1.b","g1.c"]},"processes":processes});
         let path = root.path().join("config.json");
         fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
         Self { root, config, path }
@@ -114,7 +123,7 @@ impl Deployment {
         config.connect(NoTls)
     }
     fn sql(&self, id: &str, sql: &str) {
-        self.connect(id, "postgres", None)
+        self.connect(id, "postgres", Some("phase7-bootstrap-password"))
             .unwrap()
             .simple_query(sql)
             .unwrap();
@@ -129,7 +138,8 @@ impl Deployment {
                 if let Ok(rows) = result {
                     if rows.iter().any(
                         |r| matches!(r,SimpleQueryMessage::Row(row) if row.get(0)==Some(count)),
-                    ) {
+                    ) && self.connect(id, "p7_user", Some("wrong-password")).is_err()
+                    {
                         break;
                     }
                 }
@@ -186,6 +196,13 @@ impl Drop for Deployment {
 #[test]
 fn process_controller_scale_replace_restart_and_identity_convergence() {
     let mut d = Deployment::new();
+    let mut invalid = d.config.clone();
+    invalid["identity_bootstrap"]["sha256"] = json!("0".repeat(64));
+    fs::write(&d.path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+    let rejected = d.command("bootstrap").output().unwrap();
+    assert!(!rejected.status.success());
+    assert!(!d.root.path().join("nodes/state.json").exists());
+    fs::write(&d.path, serde_json::to_vec(&d.config).unwrap()).unwrap();
     d.invoke("bootstrap");
     let initial = d.converge();
     let leader = initial["observed"]["leader"].as_str().unwrap();

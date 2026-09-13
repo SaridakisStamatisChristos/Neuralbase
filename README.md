@@ -7,7 +7,7 @@
 **NeuralBase is an experimental SQL engine in Rust** with a PostgreSQL wire endpoint, MVCC/RocksDB storage, vectorized/general execution, and Raft-replicated table mutations and SCRAM identity over TCP/TLS. It also includes an ONNX join-order optimizer for library use and benchmarks; the live SQL planner does not currently invoke it.
 
 > [!IMPORTANT]
-> NeuralBase is **pre-1.0 research/development software**. Configured clusters replicate persistent table mutations and SCRAM identity through Raft, support SQL-aware snapshot/recovery, implement learner/joint-consensus membership changes, provide the tested Phase-5 backup/restore/fresh-cluster recovery lifecycle, and expose explicit session-scoped read-consistency modes. Successful replicated mutations and strong read barriers wait for quorum commit plus confirmed durable local apply. This is still not a production-HA claim: strong reads must be sent to the current leader, arbitrary-follower linearizable routing is not implemented, Kubernetes membership reconciliation is not automatic, PITR/automatic disaster recovery remain open, and broader authorization/security hardening is still required.
+> NeuralBase is **pre-1.0 research/development software**. Configured clusters replicate persistent table mutations and SCRAM identity through Raft, support SQL-aware snapshot/recovery, implement learner/joint-consensus membership changes, provide the tested Phase-5 backup/restore/fresh-cluster recovery lifecycle, and expose explicit session-scoped read-consistency modes. Successful replicated mutations and strong read barriers wait for quorum commit plus confirmed durable local apply. This is still not a production-HA claim: strong reads must be sent to the current leader, arbitrary-follower linearizable routing is not implemented, managed deployment reconciliation is opt-in and Phase-7 validation is in progress, PITR/automatic disaster recovery remain open, and broader authorization/security hardening is still required.
 
 ## Current highlights
 
@@ -93,7 +93,7 @@ The logical snapshot contains SQL catalog/data/apply/HLC state and replicated id
 
 The consensus layer supports learners and joint old/new voter configurations. A learner must catch up before promotion; removal is coordinated and the current leader must transfer leadership before being removed. Finalized membership is persisted and removed identities are protected against stale-disk rejoin.
 
-The checked-in deployment does **not** automatically translate StatefulSet replica changes into these membership operations, so HPA remains intentionally disabled.
+The static Helm/Compose examples do **not** translate replica-count changes into membership. The opt-in [Phase-7 controller](docs/PHASE7_OPERATOR.md) sequences local processes or per-member Kubernetes StatefulSets through the guarded membership path. Its validation gate is still in progress; HPA remains disabled.
 
 ## Legacy identity migration
 
@@ -122,7 +122,8 @@ A fresh cluster with authentication disabled and no legacy file may initialize r
 | Legacy identity migration | **Explicit digest-selected SCRAM migration implemented** |
 | Session `Local` / `Leader` / `Linearizable` reads | **Implemented and Phase-6 tested** |
 | Linearizable arbitrary-follower reads / automatic strong-read routing | **Not implemented** |
-| Automatic Kubernetes membership reconciliation / HPA | **Not implemented** |
+| Managed process / Kubernetes membership reconciliation | **Implemented; Phase-7 validation in progress** |
+| Arbitrary Helm replica scaling / HPA | **Unsupported** |
 | Backup / restore / fresh-cluster DR | **Implemented and tested to Phase-5 scope** |
 | Point-in-time recovery / automatic DR | **Not implemented** |
 | Production SQL HA | **Not claimed** |
@@ -131,7 +132,7 @@ A fresh cluster with authentication disabled and no legacy file may initialize r
 
 The [configuration reference](docs/CONFIGURATION.md) lists every runtime environment variable, default, alias and TLS precedence rule. [.env.example](.env.example) is a shell configuration example; the binary does not load it automatically.
 
-The [operator runbook](ops/RUNBOOK.md) covers NBBK/NBEC create, verify and restore commands. Backup requires a stopped source with durable Raft/membership state; a standalone-only database is not an accepted source. Online backup and membership administration are currently in-process APIs.
+The [operator runbook](ops/RUNBOOK.md) covers NBBK/NBEC create, verify and restore commands. Backup requires a stopped source with durable Raft/membership state; a standalone-only database is not an accepted source. Online backup remains an in-process API. Managed membership administration uses the private operator socket and controller described in the [Phase-7 guide](docs/PHASE7_OPERATOR.md).
 
 ## Verification
 
@@ -161,7 +162,7 @@ Green CI is evidence for the exact checked commit and tested scopes, not a produ
 
 ## Project maturity
 
-Phases 1–6 close replicated table mutations, SQL-aware snapshot/recovery, coordinated membership, replicated identity, the documented operator backup/restore/fresh-cluster DR model, and explicit tested read-consistency modes under the repository's failure model. The next high-value correctness work is operator/deployment membership orchestration and deeper SQL/security/upgrade hardening. PITR remains a later recovery extension, and arbitrary-follower strong-read routing/ReadIndex optimization remains optional future read-path work rather than a claimed capability.
+Phases 1–6 close replicated table mutations, SQL-aware snapshot/recovery, coordinated membership, replicated identity, the documented operator backup/restore/fresh-cluster DR model, and explicit tested read-consistency modes under the repository's failure model. Phase 7 adds operator/deployment membership orchestration and remains open until its exact-head and post-merge gates pass. Later work covers deeper SQL/security/upgrade hardening. PITR remains a later recovery extension, and arbitrary-follower strong-read routing/ReadIndex optimization remains optional future read-path work rather than a claimed capability.
 
 ## License
 

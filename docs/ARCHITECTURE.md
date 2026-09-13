@@ -95,7 +95,7 @@ Finalized membership is durable and overrides stale bootstrap peer configuration
 
 Strong-read barriers use the same membership/quorum rules: learners do not contribute to quorum, joint configurations require the configured joint-majority rules, and removed nodes cannot be counted as a shortcut.
 
-This capability does not automatically reconcile Kubernetes replicas; deployment orchestration remains separate.
+The [Phase-7 controller](PHASE7_OPERATOR.md) adds a separate deterministic planner and opt-in deployment adapters. It reads committed membership through a quorum/apply authority barrier; every membership command checks leader, term and generation inside the serialized Raft loop. Process count and Kubernetes readiness never establish voter membership. Managed learners replay the original genesis configuration while using separate current routing seeds; routing knowledge never grants a vote. Phase-7 validation remains in progress.
 
 ## Operator backup and disaster-recovery architecture
 
@@ -131,6 +131,8 @@ The log barrier is intentionally stronger/more expensive than a pure authority c
 - `src/replicated_state_machine.rs` — deterministic/idempotent RocksDB apply.
 - `src/replicated_snapshot*.rs` — logical snapshot codec, export/restore and Raft hooks.
 - `src/consensus/membership.rs` / `src/consensus/raft.rs` — Raft, learners and joint-consensus lifecycle.
+- `src/operator.rs` / `src/consensus/operator_control.rs` / `src/operator_admin.rs` — deterministic membership plans and guarded committed-state administration.
+- `ops/neuralbase_operator.py` / `ops/neuralbase_kubernetes.py` — explicit process/StatefulSet execution, durable intent and retained storage.
 - `src/raft_persistence.rs` — RocksDB-backed Raft stable state and staged snapshots.
 - `src/backup.rs` / `offline_backup.rs` / `online_backup.rs` — versioned operator backup contract and consistent capture.
 - `src/backup_encryption.rs` — authenticated NBEC container, key-file validation and encrypted publication.
@@ -140,4 +142,4 @@ The log barrier is intentionally stronger/more expensive than a pure authority c
 
 Standalone mode can fall back to in-memory/demo operation on a RocksDB open failure; its local DDL error handling is weaker than the fail-closed clustered path. SQL-level multi-statement transactions are not implemented despite the MVCC library. These limits are separate from the tested replicated commit/apply guarantees.
 
-Executable evidence supports replicated persistent tables, SQL-aware snapshot/recovery, coordinated membership changes, replicated SCRAM identity, the documented Phase-5 backup/restore/fresh-cluster DR model, and explicit Phase-6 `Local`/`Leader`/`Linearizable` read semantics on the leader path. Stronger production claims still require automatic deployment membership reconciliation, arbitrary-follower strong-read routing if desired, PITR/automatic DR if desired, broader security/authorization, chaos/upgrade validation and production performance characterization.
+Executable evidence supports replicated persistent tables, SQL-aware snapshot/recovery, coordinated membership changes, replicated SCRAM identity, the documented Phase-5 backup/restore/fresh-cluster DR model, and explicit Phase-6 `Local`/`Leader`/`Linearizable` read semantics on the leader path. Stronger production claims still require validated operation of the managed deployment profile, arbitrary-follower strong-read routing if desired, PITR/automatic DR if desired, broader security/authorization, chaos/upgrade validation and production performance characterization.

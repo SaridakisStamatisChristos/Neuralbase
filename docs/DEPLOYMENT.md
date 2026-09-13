@@ -72,7 +72,7 @@ A fresh auth-disabled cluster with no migration file may connect and execute its
 
 Port `8001` (host `8001`–`8003`) is reserved by existing assets for exchange experiments; `main.rs` does not start an exchange listener. Jaeger is an auxiliary development service; the server has no OTLP export pipeline. Grafana uses the development password `neuralbase`. Compose publishes ports on the host with authentication disabled; restrict access to the development environment. See [observability](../observability/README.md).
 
-The Docker runtime image contains `/app/neuralbase` only. It does not package `neuralbase-backup` or the optimizer model; build the operator tool separately for offline access to a stopped member's storage. `docker compose down` retains named volumes; adding `-v` deletes them.
+The Docker runtime image contains `/app/neuralbase` and `/app/neuralbase-operator` for guarded membership administration/readiness. It does not package `neuralbase-backup` or the optimizer model; build the backup tool separately for offline access to a stopped member's storage. `docker compose down` retains named volumes; adding `-v` deletes them.
 
 ## Kubernetes and Helm
 
@@ -124,7 +124,9 @@ Restored clusters begin from exactly one fresh recovery authority. Additional me
 
 ## Membership and scaling
 
-The consensus API supports adding a learner, catch-up, promotion, joint-consensus voter changes, removal and leadership transfer. The deployment assets do not yet reconcile these operations automatically with Kubernetes object changes. `replicaCount` therefore remains a deliberate static-topology setting and HPA is rejected.
+The consensus API supports adding a learner, catch-up, promotion, joint-consensus voter changes, removal and leadership transfer. The static chart does not reconcile these operations when `replicaCount` changes, so that value remains a bootstrap topology setting and HPA is rejected.
+
+The separate [Phase-7 managed profile](PHASE7_OPERATOR.md#managed-kubernetes-profile) connects explicit desired topology to one StatefulSet/PVC per incarnation. It checks committed membership, immutable object identity and Kubernetes resource versions before executing actions. Its CI gate includes a real kind lifecycle; Phase-7 validation remains in progress. Do not point this controller at an existing Helm deployment or change its replicas directly.
 
 ## TLS
 
@@ -132,4 +134,4 @@ Build with `--features tls`. SQL TLS and Raft mTLS remain configuration-dependen
 
 ## Operational readiness boundary
 
-Current manifests demonstrate packaging for the tested replicated-table/snapshot/membership/identity engine. Phase-5 manual backup/restore/fresh-cluster DR is tested separately from deployment automation. Phase-6 strong read modes are implemented on the leader path. Production readiness still requires operator-integrated membership reconciliation, target-environment security review, broader fault/upgrade validation and production performance characterization; PITR and automatic DR remain unimplemented.
+Current manifests demonstrate packaging for the tested replicated-table/snapshot/membership/identity engine. Phase-5 manual backup/restore/fresh-cluster DR is tested separately from deployment automation. Phase-6 strong read modes are implemented on the leader path. Production readiness still requires validated operation of the managed membership profile, target-environment security review, broader fault/upgrade validation and production performance characterization; PITR and automatic DR remain unimplemented.

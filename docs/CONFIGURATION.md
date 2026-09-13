@@ -31,6 +31,7 @@ Where a `NEURALBASE_*` / legacy pair appears above or below, the primary variabl
 
 | Variable | Default | Behavior / legacy alias |
 |---|---|---|
+| `NEURALBASE_OPERATOR_NODE` | unset | Absolute managed-node JSON path; opt-in private admin socket, immutable storage incarnation and non-voting learner startup. Requires durable storage and matching node ID; malformed/mismatched/unmanaged data fails closed. See [Phase 7](PHASE7_OPERATOR.md). |
 | `NEURALBASE_NODE_ID` | unset | Nonempty trimmed logical ID enables clustered mode; alias `NODE_ID`. An empty value selects standalone mode. |
 | `NEURALBASE_RAFT_ADDR` | `0.0.0.0:7001` | Raft TCP bind address; alias `RAFT_ADDR` |
 | `NEURALBASE_PEERS` | empty | Bootstrap peer map; alias `PEERS`. Example: `node2=host2:7001,node3=host3:7001`. Self entries are skipped and duplicate peer IDs rejected. |

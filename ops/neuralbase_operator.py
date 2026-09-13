@@ -8,6 +8,7 @@ No HPA, automatic DR or production HA claim. See docs/PHASE7_OPERATOR.md.
 import argparse
 import concurrent.futures
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,7 @@ import signal
 import socket
 import struct
 import subprocess
+import sys
 import time
 
 MAX_BYTES = 256 * 1024
@@ -36,8 +38,13 @@ def save_json(path, value):
     data = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     if len(data) > MAX_BYTES:
         raise ValueError("state exceeds 256 KiB")
+    save_bytes(path, data)
+
+
+def save_bytes(path, data):
     pending = path.with_suffix(".pending")
     with open(pending, "wb") as file:
+        os.fchmod(file.fileno(), 0o600)
         file.write(data)
         file.flush()
         os.fsync(file.fileno())
@@ -114,6 +121,19 @@ class Controller:
             raise ValueError("duplicate desired voter identities")
         self.desired["voters"] = sorted(self.desired["voters"])
         self.specs = config["processes"]
+        self.identity = config.get("identity_bootstrap")
+        self.identity_bytes = None
+        if self.identity is not None:
+            if set(self.identity) != {"path", "sha256"}:
+                raise ValueError("identity bootstrap requires exact path and SHA-256")
+            source = Path(self.identity["path"])
+            if not source.is_absolute() or source.is_symlink() or source.stat().st_mode & 0o077:
+                raise ValueError("identity bootstrap requires a private absolute file")
+            with open(source, "rb") as file:
+                self.identity_bytes = file.read(128 * 1024 + 1)
+            if len(self.identity_bytes) > 128 * 1024 or hashlib.sha256(self.identity_bytes).hexdigest() != self.identity["sha256"]:
+                raise ValueError("identity bootstrap size/digest mismatch")
+            json.loads(self.identity_bytes)  # Rust performs strict SCRAM validation at migration.
         self.children = []
         if set(self.specs) != set(self.desired["endpoints"]) or len(self.specs) > 128:
             raise ValueError("process inventory must equal endpoint inventory")
@@ -122,6 +142,8 @@ class Controller:
             self.state = read_json(self.path)
             if self.state["version"] != 1:
                 raise ValueError("unsupported controller state version")
+            if self.state.get("identity_bootstrap") != self.identity:
+                raise ValueError("immutable identity bootstrap selection changed")
             old = self.state["desired"]
             for key in ("version", "cluster", "endpoints", "minimum_voters"):
                 if old[key] != self.desired[key]:
@@ -136,6 +158,7 @@ class Controller:
             if readonly:
                 raise ValueError("no initialized controller state")
             self.state = {"version": 1, "desired": self.desired, "process_specs": self.specs,
+                          "identity_bootstrap": self.identity,
                           "nodes": {}, "pids": {}, "retiring": {}, "bootstrapped": False,
                           "failures": 0, "retry_after": 0, "last_success": None,
                           "metrics": {"controller_starts": 1, "attempts": 0, "blocked": 0, "failed": 0, "completed_actions": 0}}
@@ -215,7 +238,13 @@ class Controller:
                    NEURALBASE_USERS_FILE=str(self.root / (node_id + ".users.json")), NEURALBASE_PEERS="",
                    NEURALBASE_RAFT_ADDR=self.desired["endpoints"][node_id], NEURALBASE_LISTEN_ADDR=spec["sql_addr"],
                    NEURALBASE_METRICS_PORT=spec["metrics_addr"].rsplit(":", 1)[1],
-                   NEURALBASE_AUTH_REQUIRED="0", NEURALBASE_RAFT_TLS="0")
+                   NEURALBASE_AUTH_REQUIRED="1" if self.identity else "0", NEURALBASE_RAFT_TLS="0")
+        if self.identity:
+            identity_path = self.root / (node_id + ".users.json")
+            if identity_path.exists() and identity_path.read_bytes() != self.identity_bytes:
+                raise RuntimeError("managed identity bootstrap copy changed")
+            save_bytes(identity_path, self.identity_bytes)
+            env["NEURALBASE_IDENTITY_MIGRATION_SHA256"] = self.identity["sha256"]
         with open(self.root / (node_id + ".log"), "ab") as log:
             child = subprocess.Popen([self.server], env=env, stdin=subprocess.DEVNULL, stdout=log,
                                      stderr=log, start_new_session=True)
@@ -397,4 +426,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # The Kubernetes subclass imports this module; share the same exception and
+    # controller types when this file is also the executable entry point.
+    sys.modules["neuralbase_operator"] = sys.modules[__name__]
     main()
