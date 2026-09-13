@@ -49,21 +49,30 @@ impl ExtendedProtocolError {
     }
 }
 
-pub fn parse_parse_parameter_types(payload: &[u8], cursor: &mut usize) -> Result<Vec<i32>, ExtendedProtocolError> {
+pub fn parse_parse_parameter_types(
+    payload: &[u8],
+    cursor: &mut usize,
+) -> Result<Vec<i32>, ExtendedProtocolError> {
     let count = read_i16(payload, cursor)?;
     if count < 0 {
-        return Err(ExtendedProtocolError::Protocol("negative Parse parameter count".into()));
+        return Err(ExtendedProtocolError::Protocol(
+            "negative Parse parameter count".into(),
+        ));
     }
     let count = count as usize;
     if count > MAX_BIND_PARAMETERS {
-        return Err(ExtendedProtocolError::Protocol("too many Parse parameters".into()));
+        return Err(ExtendedProtocolError::Protocol(
+            "too many Parse parameters".into(),
+        ));
     }
     let mut types = Vec::with_capacity(count);
     for _ in 0..count {
         types.push(read_i32(payload, cursor)?);
     }
     if *cursor != payload.len() {
-        return Err(ExtendedProtocolError::Protocol("trailing bytes in Parse message".into()));
+        return Err(ExtendedProtocolError::Protocol(
+            "trailing bytes in Parse message".into(),
+        ));
     }
     Ok(types)
 }
@@ -75,28 +84,38 @@ pub fn parse_bind_message(payload: &[u8]) -> Result<BindMessage, ExtendedProtoco
 
     let format_count = read_i16(payload, &mut cursor)?;
     if format_count < 0 {
-        return Err(ExtendedProtocolError::Protocol("negative parameter format count".into()));
+        return Err(ExtendedProtocolError::Protocol(
+            "negative parameter format count".into(),
+        ));
     }
     let format_count = format_count as usize;
     if format_count > MAX_BIND_PARAMETERS {
-        return Err(ExtendedProtocolError::Protocol("too many parameter formats".into()));
+        return Err(ExtendedProtocolError::Protocol(
+            "too many parameter formats".into(),
+        ));
     }
     let mut parameter_formats = Vec::with_capacity(format_count);
     for _ in 0..format_count {
         let format = read_i16(payload, &mut cursor)?;
         if !matches!(format, 0 | 1) {
-            return Err(ExtendedProtocolError::Protocol(format!("invalid parameter format code {format}")));
+            return Err(ExtendedProtocolError::Protocol(format!(
+                "invalid parameter format code {format}"
+            )));
         }
         parameter_formats.push(format);
     }
 
     let parameter_count = read_i16(payload, &mut cursor)?;
     if parameter_count < 0 {
-        return Err(ExtendedProtocolError::Protocol("negative Bind parameter count".into()));
+        return Err(ExtendedProtocolError::Protocol(
+            "negative Bind parameter count".into(),
+        ));
     }
     let parameter_count = parameter_count as usize;
     if parameter_count > MAX_BIND_PARAMETERS {
-        return Err(ExtendedProtocolError::Protocol("too many Bind parameters".into()));
+        return Err(ExtendedProtocolError::Protocol(
+            "too many Bind parameters".into(),
+        ));
     }
     if parameter_formats.len() > 1 && parameter_formats.len() != parameter_count {
         return Err(ExtendedProtocolError::Protocol(
@@ -112,11 +131,15 @@ pub fn parse_bind_message(payload: &[u8]) -> Result<BindMessage, ExtendedProtoco
             continue;
         }
         if len < 0 {
-            return Err(ExtendedProtocolError::Protocol("invalid negative parameter length".into()));
+            return Err(ExtendedProtocolError::Protocol(
+                "invalid negative parameter length".into(),
+            ));
         }
         let len = len as usize;
         if len > MAX_PARAMETER_BYTES || cursor.saturating_add(len) > payload.len() {
-            return Err(ExtendedProtocolError::Protocol("parameter length exceeds message bounds".into()));
+            return Err(ExtendedProtocolError::Protocol(
+                "parameter length exceeds message bounds".into(),
+            ));
         }
         parameters.push(Some(payload[cursor..cursor + len].to_vec()));
         cursor += len;
@@ -124,22 +147,30 @@ pub fn parse_bind_message(payload: &[u8]) -> Result<BindMessage, ExtendedProtoco
 
     let result_count = read_i16(payload, &mut cursor)?;
     if result_count < 0 {
-        return Err(ExtendedProtocolError::Protocol("negative result format count".into()));
+        return Err(ExtendedProtocolError::Protocol(
+            "negative result format count".into(),
+        ));
     }
     let result_count = result_count as usize;
     if result_count > MAX_BIND_PARAMETERS {
-        return Err(ExtendedProtocolError::Protocol("too many result formats".into()));
+        return Err(ExtendedProtocolError::Protocol(
+            "too many result formats".into(),
+        ));
     }
     let mut result_formats = Vec::with_capacity(result_count);
     for _ in 0..result_count {
         let format = read_i16(payload, &mut cursor)?;
         if !matches!(format, 0 | 1) {
-            return Err(ExtendedProtocolError::Protocol(format!("invalid result format code {format}")));
+            return Err(ExtendedProtocolError::Protocol(format!(
+                "invalid result format code {format}"
+            )));
         }
         result_formats.push(format);
     }
     if cursor != payload.len() {
-        return Err(ExtendedProtocolError::Protocol("trailing bytes in Bind message".into()));
+        return Err(ExtendedProtocolError::Protocol(
+            "trailing bytes in Bind message".into(),
+        ));
     }
 
     Ok(BindMessage {
@@ -215,7 +246,8 @@ fn render_parameter(
     };
     if oid == 0 {
         return Err(ExtendedProtocolError::Unsupported(
-            "OID 0 parameter inference is not implemented; Parse must declare parameter types".into(),
+            "OID 0 parameter inference is not implemented; Parse must declare parameter types"
+                .into(),
         ));
     }
     match format {
@@ -228,20 +260,22 @@ fn render_parameter(
 }
 
 fn render_text_parameter(oid: i32, bytes: &[u8]) -> Result<String, ExtendedProtocolError> {
-    let text = std::str::from_utf8(bytes)
-        .map_err(|_| ExtendedProtocolError::InvalidParameter("parameter text is not UTF-8".into()))?;
+    let text = std::str::from_utf8(bytes).map_err(|_| {
+        ExtendedProtocolError::InvalidParameter("parameter text is not UTF-8".into())
+    })?;
     match oid {
         INT2OID | INT4OID | INT8OID => text
             .parse::<i64>()
             .map(|value| value.to_string())
             .map_err(|_| ExtendedProtocolError::InvalidParameter("invalid integer".into())),
         FLOAT4OID | FLOAT8OID => {
-            let value = text
-                .parse::<f64>()
-                .map_err(|_| ExtendedProtocolError::InvalidParameter("invalid floating-point value".into()))?;
+            let value = text.parse::<f64>().map_err(|_| {
+                ExtendedProtocolError::InvalidParameter("invalid floating-point value".into())
+            })?;
             if !value.is_finite() {
                 return Err(ExtendedProtocolError::Unsupported(
-                    "non-finite floating-point parameters are outside the compatibility profile".into(),
+                    "non-finite floating-point parameters are outside the compatibility profile"
+                        .into(),
                 ));
             }
             Ok(value.to_string())
@@ -249,7 +283,9 @@ fn render_text_parameter(oid: i32, bytes: &[u8]) -> Result<String, ExtendedProto
         BOOLOID => match text.to_ascii_lowercase().as_str() {
             "t" | "true" | "1" => Ok("TRUE".into()),
             "f" | "false" | "0" => Ok("FALSE".into()),
-            _ => Err(ExtendedProtocolError::InvalidParameter("invalid boolean".into())),
+            _ => Err(ExtendedProtocolError::InvalidParameter(
+                "invalid boolean".into(),
+            )),
         },
         TEXTOID | VARCHAROID | BPCHAROID => Ok(quote_sql_string(text)),
         DATEOID => {
@@ -268,22 +304,32 @@ fn render_binary_parameter(oid: i32, bytes: &[u8]) -> Result<String, ExtendedPro
         BOOLOID if bytes.len() == 1 => match bytes[0] {
             0 => Ok("FALSE".into()),
             1 => Ok("TRUE".into()),
-            _ => Err(ExtendedProtocolError::InvalidParameter("invalid binary boolean".into())),
+            _ => Err(ExtendedProtocolError::InvalidParameter(
+                "invalid binary boolean".into(),
+            )),
         },
         INT2OID if bytes.len() == 2 => Ok(i16::from_be_bytes([bytes[0], bytes[1]]).to_string()),
-        INT4OID if bytes.len() == 4 => Ok(i32::from_be_bytes(bytes.try_into().unwrap()).to_string()),
-        INT8OID if bytes.len() == 8 => Ok(i64::from_be_bytes(bytes.try_into().unwrap()).to_string()),
+        INT4OID if bytes.len() == 4 => {
+            Ok(i32::from_be_bytes(bytes.try_into().unwrap()).to_string())
+        }
+        INT8OID if bytes.len() == 8 => {
+            Ok(i64::from_be_bytes(bytes.try_into().unwrap()).to_string())
+        }
         FLOAT4OID if bytes.len() == 4 => {
             let value = f32::from_bits(u32::from_be_bytes(bytes.try_into().unwrap()));
             if !value.is_finite() {
-                return Err(ExtendedProtocolError::Unsupported("non-finite FLOAT4".into()));
+                return Err(ExtendedProtocolError::Unsupported(
+                    "non-finite FLOAT4".into(),
+                ));
             }
             Ok(value.to_string())
         }
         FLOAT8OID if bytes.len() == 8 => {
             let value = f64::from_bits(u64::from_be_bytes(bytes.try_into().unwrap()));
             if !value.is_finite() {
-                return Err(ExtendedProtocolError::Unsupported("non-finite FLOAT8".into()));
+                return Err(ExtendedProtocolError::Unsupported(
+                    "non-finite FLOAT8".into(),
+                ));
             }
             Ok(value.to_string())
         }
@@ -311,7 +357,8 @@ fn substitute_placeholders(
     rendered: &[String],
 ) -> Result<String, ExtendedProtocolError> {
     let bytes = sql.as_bytes();
-    let mut out = String::with_capacity(sql.len() + rendered.iter().map(String::len).sum::<usize>());
+    let mut out =
+        String::with_capacity(sql.len() + rendered.iter().map(String::len).sum::<usize>());
     let mut index = 0;
     let mut single_quote = false;
     let mut double_quote = false;
@@ -367,7 +414,9 @@ fn substitute_placeholders(
             let number = std::str::from_utf8(&bytes[index + 1..end])
                 .ok()
                 .and_then(|value| value.parse::<usize>().ok())
-                .ok_or_else(|| ExtendedProtocolError::Protocol("invalid parameter placeholder".into()))?;
+                .ok_or_else(|| {
+                    ExtendedProtocolError::Protocol("invalid parameter placeholder".into())
+                })?;
             if number == 0 || number > rendered.len() {
                 return Err(ExtendedProtocolError::Protocol(format!(
                     "parameter ${number} has no bound value"
@@ -400,13 +449,18 @@ fn quote_sql_string(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-fn read_cstring_strict(payload: &[u8], cursor: &mut usize) -> Result<String, ExtendedProtocolError> {
+fn read_cstring_strict(
+    payload: &[u8],
+    cursor: &mut usize,
+) -> Result<String, ExtendedProtocolError> {
     if *cursor >= payload.len() {
         return Err(ExtendedProtocolError::Protocol("missing cstring".into()));
     }
     let rest = &payload[*cursor..];
     let Some(position) = rest.iter().position(|byte| *byte == 0) else {
-        return Err(ExtendedProtocolError::Protocol("unterminated cstring".into()));
+        return Err(ExtendedProtocolError::Protocol(
+            "unterminated cstring".into(),
+        ));
     };
     let value = std::str::from_utf8(&rest[..position])
         .map_err(|_| ExtendedProtocolError::Protocol("cstring is not UTF-8".into()))?
