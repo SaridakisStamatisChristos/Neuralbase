@@ -56,8 +56,8 @@ fn critical_local_execution_artifacts_stay_above_floor() {
 }
 
 #[test]
-fn distributed_claim_tracks_membership_identity_recovery_reads_and_managed_reconciliation_without_overclaiming_production()
-{
+fn distributed_claim_tracks_membership_identity_recovery_reads_and_managed_reconciliation_without_overclaiming_production(
+) {
     let parsed = load_confidence();
     let system = &parsed["system"];
 
@@ -149,8 +149,12 @@ fn distributed_claim_tracks_membership_identity_recovery_reads_and_managed_recon
     let membership_evidence = membership["evidence"]
         .as_sequence()
         .expect("membership evidence must be a list");
-    assert!(membership_evidence.iter().any(|item| item.as_str() == Some("tests/phase7_process.rs")));
-    assert!(membership_evidence.iter().any(|item| item.as_str() == Some("tests/phase7_kubernetes.py")));
+    assert!(membership_evidence
+        .iter()
+        .any(|item| item.as_str() == Some("tests/phase7_process.rs")));
+    assert!(membership_evidence
+        .iter()
+        .any(|item| item.as_str() == Some("tests/phase7_kubernetes.py")));
 
     let identity = artifacts
         .iter()
