@@ -343,9 +343,12 @@ fn render_binary_parameter(oid: i32, bytes: &[u8]) -> Result<String, ExtendedPro
             let iso = epoch_days_to_iso(epoch_days);
             Ok(format!("DATE {}", quote_sql_string(&iso)))
         }
-        TEXTOID | VARCHAROID | BPCHAROID => Err(ExtendedProtocolError::Unsupported(
-            "binary text parameters are not implemented".into(),
-        )),
+        TEXTOID | VARCHAROID | BPCHAROID => {
+            let text = std::str::from_utf8(bytes).map_err(|_| {
+                ExtendedProtocolError::InvalidParameter("binary text is not UTF-8".into())
+            })?;
+            Ok(quote_sql_string(text))
+        }
         _ => Err(ExtendedProtocolError::InvalidParameter(format!(
             "invalid binary length for parameter type OID {oid}"
         ))),
@@ -558,6 +561,15 @@ mod tests {
         assert_eq!(
             materialize_bound_sql("SELECT $1", &[INT4OID], &message).unwrap(),
             "SELECT 42"
+        );
+    }
+
+    #[test]
+    fn binary_text_is_utf8_and_sql_quoted() {
+        let message = bind(vec![Some(b"O'Reilly".to_vec())], vec![1]);
+        assert_eq!(
+            materialize_bound_sql("SELECT $1", &[TEXTOID], &message).unwrap(),
+            "SELECT 'O''Reilly'"
         );
     }
 
