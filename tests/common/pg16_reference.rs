@@ -167,7 +167,9 @@ fn normalize(mut result: CanonicalResult, ordered: bool) -> CanonicalResult {
 }
 
 pub fn postgres_outcome(case: DifferentialCase) -> CanonicalOutcome {
-    let _guard = pg_lock().lock().expect("PostgreSQL reference lock poisoned");
+    let _guard = pg_lock()
+        .lock()
+        .expect("PostgreSQL reference lock poisoned");
     let mut client = pg16_client();
     match client.query(case.sql, &[]) {
         Ok(rows) => {
