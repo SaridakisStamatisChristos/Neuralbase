@@ -25,10 +25,8 @@ fn catalog() -> InMemoryCatalog {
 
 #[test]
 fn update_complex_where_fails_closed_instead_of_becoming_full_table_update() {
-    let stmt = parse_statement(
-        "UPDATE accounts SET balance = 0 WHERE id = 1 AND balance > 0",
-    )
-    .expect("parse UPDATE");
+    let stmt = parse_statement("UPDATE accounts SET balance = 0 WHERE id = 1 AND balance > 0")
+        .expect("parse UPDATE");
 
     assert!(matches!(
         bind_statement(&stmt, &catalog()),
@@ -48,8 +46,8 @@ fn delete_unknown_where_column_fails_closed_instead_of_becoming_full_table_delet
 
 #[test]
 fn update_non_literal_rhs_fails_closed() {
-    let stmt =
-        parse_statement("UPDATE accounts SET balance = 0 WHERE id = balance").expect("parse UPDATE");
+    let stmt = parse_statement("UPDATE accounts SET balance = 0 WHERE id = balance")
+        .expect("parse UPDATE");
 
     assert!(matches!(
         bind_statement(&stmt, &catalog()),
