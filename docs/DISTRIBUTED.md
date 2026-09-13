@@ -73,7 +73,7 @@ Interrupted restore remnants remain hidden non-authoritative stages and are neve
 
 ## Deployment boundary
 
-The checked-in Compose/Kubernetes/Helm assets still describe a static process topology. The consensus layer can change membership, but no controller automatically sequences StatefulSet replica changes with learner admission/catch-up/promotion/removal. HPA therefore remains intentionally disabled/rejected.
+The existing Compose/Kubernetes/Helm examples still describe static bootstrap topology and reject HPA. The separate [Phase-7 managed controller](PHASE7_OPERATOR.md) sequences explicit desired topology through authoritative observation, learner catch-up, joint promotion/removal and tombstone-guarded retirement. Its local process and per-member StatefulSet adapters require their dedicated managed storage/configuration; they do not adopt existing deployments. Phase-7 validation remains in progress.
 
 ## Read consistency
 
@@ -110,4 +110,4 @@ Arbitrary-follower linearizable reads and automatic follower-to-leader strong-re
 - versioned offline/online backup, independent verification, authenticated encrypted backup, fresh-target restore and fresh-generation cluster recovery;
 - explicit `Local`/`Leader`/`Linearizable` read modes, including immediate read-after-write, stale-former-leader partition rejection, follower rejection, leadership transfer, learner/promotion membership transitions, recovery readiness, restart, restored-cluster bootstrap and real-process concurrent read/write evidence.
 
-Still open before stronger production claims: automatic operator membership reconciliation, arbitrary-follower strong-read routing/optimization, PITR and automatic DR, broader authorization/security, upgrade/storage-chaos evidence and production performance characterization.
+Still open before stronger production claims: validated operation of the managed operator profile, arbitrary-follower strong-read routing/optimization, PITR and automatic DR, broader authorization/security, upgrade/storage-chaos evidence and production performance characterization.

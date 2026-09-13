@@ -1,6 +1,6 @@
 # NeuralBase roadmap
 
-NeuralBase is a pre-1.0 experimental SQL engine. The distributed correctness baseline now includes replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated Raft membership changes, strongly consistent replicated SCRAM identity, the tested Phase-5 operator backup/restore/fresh-cluster recovery model, and explicit Phase-6 read-consistency modes. The next major boundary is operator/deployment membership orchestration plus deeper SQL/security/upgrade hardening.
+NeuralBase is a pre-1.0 experimental SQL engine. The distributed correctness baseline now includes replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated Raft membership changes, strongly consistent replicated SCRAM identity, the tested Phase-5 operator backup/restore/fresh-cluster recovery model, explicit Phase-6 read-consistency modes, and the tested opt-in Phase-7 managed membership reconciliation profile.
 
 This is an engineering roadmap, not a release-date commitment.
 
@@ -86,9 +86,20 @@ Archived replicated-log/WAL-equivalent streaming and point-in-time recovery rema
 
 The initial implementation deliberately uses one replicated control/log entry per `Leader` or `Linearizable` read. Arbitrary-follower linearizable routing, automatic follower-to-leader forwarding, and lower-overhead ReadIndex/lease optimization are not implemented and are not part of the Phase-6 claim.
 
-## P1 — operator membership orchestration
+## Completed Phase 7 — operator membership orchestration
 
-The consensus membership protocol exists, but deployment reconciliation remains manual. A future operator/controller should safely connect StatefulSet changes to learner admission, catch-up, promotion, leadership transfer/removal, rollback and address reconciliation before automatic scaling is enabled.
+- [x] Versioned deterministic desired-topology planning with monotonic revisions and immutable incarnation inventory.
+- [x] Quorum/apply authority observations and leader/term/generation guards rechecked inside the serialized Raft loop.
+- [x] Fresh non-voting learner creation, snapshot/log catch-up gating, joint-consensus promotion, leader transfer and finalized removal.
+- [x] Durable managed storage identity, tombstone reuse rejection, retained storage, controller restart/reobservation and bounded retry behavior.
+- [x] Independent Linux process adapter with authenticated SQL/SCRAM convergence across scale-out, leader restart, replacement and scale-in.
+- [x] Opt-in Kubernetes adapter using one StatefulSet/PVC per incarnation, ownership/UID checks, resource-version guarded replica updates and retained PVCs.
+- [x] Real disposable-kind lifecycle covering partial PVC-quota failure, configuration drift, 3→4 expansion, leader pod loss, fresh-identity replacement, 4→3 contraction and SQL/SCRAM convergence.
+- [x] Exact PR-head CI #315 passed core tests, lint, confidence, adversarial, PostgreSQL reference, deployment-manifest and managed Kubernetes lifecycle gates on `fb7d099c6248f18b324d8817fb2878885dbe38a8` before claim synchronization.
+
+The managed profile is explicit and opt-in. It does **not** adopt the static Helm/Compose topology, make raw replica-count changes safe, enable HPA, provide rolling-upgrade orchestration, or establish production HA/security readiness. Final milestone closure still requires the synchronized final PR head to pass CI and the merged `main` commit to pass post-merge CI.
+
+See [the operator guide](docs/PHASE7_OPERATOR.md). Phase 8 has not started.
 
 ## P1 — SQL semantic depth
 
@@ -107,7 +118,7 @@ Only after lifecycle safety remains intact:
 - cost model calibration, spills and memory accounting;
 - reproducible write/read/failover/snapshot throughput/latency measurement.
 
-Performance work must not weaken acknowledgement, read-consistency, snapshot, membership, identity or recovery semantics.
+Performance work must not weaken acknowledgement, read-consistency, snapshot, membership, identity, recovery or managed-reconciliation semantics.
 
 ## P2 — production hardening
 
@@ -116,7 +127,7 @@ Performance work must not weaken acknowledgement, read-consistency, snapshot, me
 - certificate lifecycle/rotation;
 - broader secret-management integration and backup key lifecycle automation;
 - broader network/storage chaos testing;
-- upgrade/rollback compatibility;
+- managed upgrade/rollback compatibility and reconciliation hardening;
 - supply-chain/security automation with reviewed exceptions;
 - production performance characterization.
 
@@ -130,7 +141,7 @@ A future milestone suitable for stronger HA/database claims should demonstrate a
 
 1. the current deterministic/quorum-applied replicated table-mutation guarantees;
 2. the current SQL-aware snapshot/recovery guarantees;
-3. the current coordinated membership protocol;
+3. the current coordinated and managed membership lifecycle;
 4. the current replicated SCRAM identity model;
 5. the current explicit leader-path `Local`/`Leader`/`Linearizable` read-consistency contract;
 6. tested backup/restore and disaster-recovery procedures;

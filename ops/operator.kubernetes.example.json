@@ -1,0 +1,50 @@
+{
+  "root": "/tmp/neuralbase-kubernetes-controller",
+  "desired": {
+    "version": 1,
+    "cluster": "k7",
+    "revision": 1,
+    "minimum_voters": 3,
+    "endpoints": {
+      "k7.a": "k7-a-0.k7-a.neuralbase-phase7.svc.cluster.local:7001",
+      "k7.b": "k7-b-0.k7-b.neuralbase-phase7.svc.cluster.local:7001",
+      "k7.c": "k7-c-0.k7-c.neuralbase-phase7.svc.cluster.local:7001",
+      "k7.d": "k7-d-0.k7-d.neuralbase-phase7.svc.cluster.local:7001",
+      "k7.e": "k7-e-0.k7-e.neuralbase-phase7.svc.cluster.local:7001"
+    },
+    "voters": [
+      "k7.a",
+      "k7.b",
+      "k7.c"
+    ]
+  },
+  "processes": {
+    "k7.a": {
+      "sql_addr": "k7-a-0.k7-a.neuralbase-phase7.svc.cluster.local:5432",
+      "metrics_addr": "k7-a-0.k7-a.neuralbase-phase7.svc.cluster.local:9090"
+    },
+    "k7.b": {
+      "sql_addr": "k7-b-0.k7-b.neuralbase-phase7.svc.cluster.local:5432",
+      "metrics_addr": "k7-b-0.k7-b.neuralbase-phase7.svc.cluster.local:9090"
+    },
+    "k7.c": {
+      "sql_addr": "k7-c-0.k7-c.neuralbase-phase7.svc.cluster.local:5432",
+      "metrics_addr": "k7-c-0.k7-c.neuralbase-phase7.svc.cluster.local:9090"
+    },
+    "k7.d": {
+      "sql_addr": "k7-d-0.k7-d.neuralbase-phase7.svc.cluster.local:5432",
+      "metrics_addr": "k7-d-0.k7-d.neuralbase-phase7.svc.cluster.local:9090"
+    },
+    "k7.e": {
+      "sql_addr": "k7-e-0.k7-e.neuralbase-phase7.svc.cluster.local:5432",
+      "metrics_addr": "k7-e-0.k7-e.neuralbase-phase7.svc.cluster.local:9090"
+    }
+  },
+  "kubernetes": {
+    "context": "kind-neuralbase-phase7",
+    "namespace": "neuralbase-phase7",
+    "image": "neuralbase:phase7",
+    "storage_class": "standard",
+    "storage": "1Gi"
+  }
+}

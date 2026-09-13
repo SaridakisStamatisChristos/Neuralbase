@@ -17,7 +17,7 @@ Install the [native prerequisites](../CONTRIBUTING.md#development-prerequisites)
 
 | Command | Actual scope / prerequisite |
 |---|---|
-| `make test` | `cargo test --features tls --tests --locked`; includes library/binary unit tests and integration suites, including OS-process recovery/read tests |
+| `make test` | `cargo test --features tls --tests --locked`; includes library/binary unit tests and integration suites, including OS-process recovery/read/managed-membership tests |
 | `make lint` | rustfmt plus `cargo clippy --all-targets --locked -- -D warnings`; Clippy uses default features, not an all-features matrix |
 | `make confidence` | Machine-readable claim assertions in `tests/confidence_yaml.rs` |
 | `make adversarial` | Vectorized suite with `simd`, plus optimizer/MVCC/Raft adversarial suites |
@@ -25,7 +25,7 @@ Install the [native prerequisites](../CONTRIBUTING.md#development-prerequisites)
 | `make bench` / `make bench-full` | Optional release-profile benchmarks; historical numbers are not refreshed by CI |
 | `make cluster-test` | Starts Compose and runs Raft integration tests; the Rust suites create their own test nodes, so this is not a complete SQL test of the Compose deployment |
 
-The normal core gate excludes the Docker-backed reference test by Cargo's `required-features`. CI runs that reference suite in a separate job. Fuzzing, ThreadSanitizer, `cargo deny`, benchmarks and live Kubernetes deployment are not part of the normal CI workflow. Some cleanup/certificate Makefile helpers use Windows `cmd` syntax; they are not portable Linux deployment instructions.
+The normal core gate excludes the Docker-backed reference test by Cargo's `required-features`. CI runs that reference suite in a separate job. The checks job also creates a disposable kind cluster and executes the Phase-7 managed Kubernetes lifecycle. Fuzzing, ThreadSanitizer, `cargo deny` and benchmarks are not part of the normal CI workflow. Some cleanup/certificate Makefile helpers use Windows `cmd` syntax; they are not portable Linux deployment instructions.
 
 ## Core replicated SQL/snapshot evidence
 
@@ -42,7 +42,7 @@ The core suite covers deterministic table command encoding, leader materializati
 - durable finalized membership overriding stale startup peers after restart;
 - removed-node/stale-disk protection.
 
-This proves explicit consensus membership operations, not automatic Kubernetes reconciliation or HPA safety.
+This proves explicit consensus membership operations. Arbitrary raw Kubernetes/Helm/HPA replica changes remain outside that contract; the separate Phase-7 managed profile sequences deployment changes through the membership protocol.
 
 ## Phase 4 identity evidence
 
@@ -82,7 +82,7 @@ The implementation uses a current-term Raft control/log entry rather than a sepa
 
 ## Confidence gate
 
-`tests/confidence_yaml.rs` protects the machine-readable boundary. It requires production readiness to remain false, asserts the tested membership/identity/backup boundaries, asserts the Phase-6 read modes and strong-read barrier contract, and keeps arbitrary-follower linearizable reads plus automatic membership reconciliation/HPA false.
+`tests/confidence_yaml.rs` protects the machine-readable boundary. It requires production readiness, production HA and HPA safety to remain false, asserts the tested membership/identity/backup/read boundaries, and now requires the Phase-7 managed reconciliation claim plus both real-process and Kubernetes lifecycle evidence. Arbitrary-follower linearizable reads, automatic strong-read routing, PITR and automatic DR remain false.
 
 ## Lint, adversarial and PostgreSQL reference gates
 
@@ -94,7 +94,7 @@ CI performs Helm lint/default render, auth-required render, explicit identity-mi
 
 `auth.existingSecret` must be paired with an exact 64-hex `auth.migrationSha256`; auth-required startup from already initialized replicated state needs neither. TLS rendering configures SQL TLS only. Both CI and the release workflow exercise these render variants and an `autoscaling.enabled=true` failure case. The release validation job runs core/lint/confidence/adversarial gates; the PostgreSQL reference job belongs to normal CI, not the tag workflow.
 
-A successful render does not prove live Kubernetes membership orchestration, upgrade/failover, disaster recovery or production security.
+A successful static manifest render does not prove the managed lifecycle by itself. The separate Phase-7 kind gate provides that deployment evidence for the opt-in managed profile only; it does not establish HPA safety, rolling upgrades or production security.
 
 ## Documentation validation
 
@@ -104,6 +104,24 @@ Report which checks actually ran, including missing toolchains or Docker. A work
 
 ## What green CI means
 
-Green CI means the exact checked commit passed the repository's current executable gates. For the distributed path it supports replicated tables, SQL-aware snapshots, coordinated membership, replicated SCRAM identity, the tested Phase-5 recovery model, and the Phase-6 leader-path read-consistency contract under the scenarios above.
+Green CI means the exact checked commit passed the repository's current executable gates. For the distributed path it supports replicated tables, SQL-aware snapshots, coordinated membership, replicated SCRAM identity, the tested Phase-5 recovery model, the Phase-6 leader-path read-consistency contract, and—when the managed lifecycle step passes—the explicit Phase-7 process/Kubernetes reconciliation profile under the scenarios below.
 
-It still does **not** mean production readiness, complete PostgreSQL compatibility, linearizable arbitrary-follower reads, automatic strong-read routing, automatic deployment membership reconciliation/HPA, PITR or automatic DR, security certification, or performance superiority outside measured workloads.
+It still does **not** mean production readiness, complete PostgreSQL compatibility, linearizable arbitrary-follower reads, automatic strong-read routing, arbitrary Helm/HPA scaling, PITR or automatic DR, security certification, rolling-upgrade safety, or performance superiority outside measured workloads.
+
+## Phase-7 operator gates
+
+`phase7_planner`, `phase7_guarded_membership`, `phase7_managed_storage` and
+`phase7_process` cover deterministic guarded planning, real Raft partitions and
+joint boundaries, later learner genesis replay, immutable storage, independent
+process lifecycle and replicated SQL/SCRAM convergence. The guarded variation in
+`phase4_identity_membership` forces learner snapshot bootstrap after compaction.
+
+The checks job additionally creates a disposable kind cluster and runs
+`tests/phase7_kubernetes.py`: partial PVC-quota failure, object drift, 3→4 scaling,
+leader restart/replacement, 4→3 scaling, retained PVCs and SQL/SCRAM convergence.
+`tests/phase7_kubernetes_guards.py` checks object UID/version preconditions and
+mid-command desired-revision rejection. CI #315 passed the complete functional
+Phase-7 gate on `fb7d099c6248f18b324d8817fb2878885dbe38a8`. The synchronized
+claim/documentation head must pass again before merge, followed by post-merge
+`main` CI for milestone closure. Neither the managed tests nor static Helm
+rendering establish HPA safety or production readiness.

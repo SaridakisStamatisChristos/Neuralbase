@@ -25,7 +25,7 @@ NeuralBase is currently a **pre-1.0 experimental project**. The crate version is
 - Added joint-consensus voter promotion/removal and finalized membership persistence.
 - Added leadership-transfer constraints for leader removal and removed-node/stale-disk protection.
 - Added 3 → 4 → 3 lifecycle, finalized-config restart, and stale removed-node regression tests.
-- Automatic Kubernetes/HPA scaling remains disabled: the consensus protocol exists, but deployment reconciliation is not automated.
+- Automatic Kubernetes/HPA scaling remains disabled: the consensus protocol exists, while deployment changes must use deliberate membership operations or the separate Phase-7 managed profile.
 
 ### Replicated identity — Phase 4
 
@@ -62,6 +62,18 @@ NeuralBase is currently a **pre-1.0 experimental project**. The crate version is
 - Added real OS-process/TCP immediate linearizable read-after-write plus concurrent write/linearizable-read evidence.
 - Arbitrary-follower linearizable routing, automatic follower-to-leader forwarding and ReadIndex/lease optimization remain unimplemented.
 
+### Managed membership reconciliation — Phase 7
+
+- Added a bounded deterministic desired-topology planner with monotonic revisions, immutable incarnation inventory, voter floors and one-action reconciliation.
+- Added current-term quorum/apply authority observations plus leader/term/membership-generation guards checked inside the serialized Raft loop.
+- Added managed fresh-learner startup using original genesis voters separately from current routing seeds, preserving safe replay after earlier membership changes.
+- Added guarded learner admission, catch-up gating, joint-consensus promotion/removal, leadership transfer before leader removal, finalized tombstone retirement and retained storage.
+- Added a Linux independent-process adapter with private management sockets, pidfd-based retirement checks, durable controller intent/restart recovery, authenticated SCRAM bootstrap and SQL/identity convergence tests.
+- Added an opt-in Kubernetes adapter with one StatefulSet/PVC per incarnation, immutable ConfigMaps/Secrets, explicit context/namespace, ownership/UID validation, managed-field drift rejection and resource-version-guarded replica patches.
+- Added disposable-kind lifecycle evidence for PVC-quota partial creation failure, configuration drift, 3→4 expansion, leader pod loss, fresh-identity replacement, 4→3 contraction, retained PVCs and SQL/SCRAM convergence.
+- CI #315 passed the complete functional Phase-7 gate on `fb7d099c6248f18b324d8817fb2878885dbe38a8`; claim synchronization keeps `production_ready`, `production_ha` and `hpa_safe` false.
+- Arbitrary Helm/StatefulSet replica scaling, HPA, rolling-upgrade orchestration, production security and production HA remain outside the Phase-7 claim.
+
 ### Documentation and deployment
 
 - Audited runtime configuration and SQL/client limits against current implementation; added a complete environment/default/alias/TLS reference.
@@ -70,22 +82,22 @@ NeuralBase is currently a **pre-1.0 experimental project**. The crate version is
 - Removed obsolete raw Kubernetes per-node credential-file seeding; migration remains explicit and digest-authorized through Helm.
 - Updated package/chart descriptions and Compose comments to reflect replicated tables and identity.
 - Corrected release Helm migration rendering to supply the required digest and aligned auth/TLS/negative cases with CI.
-
-- Synchronized architecture, distributed semantics, SQL support, threat model, testing, roadmap, runbook and confidence claims through Phase 6.
+- Synchronized architecture, distributed semantics, SQL support, threat model, testing, roadmap, runbook and confidence claims through the implemented Phase-7 managed profile.
 - Helm no longer copies a `users.json` file into each pod PVC as live identity state. An optional legacy source is mounted read-only and paired with an explicit SHA-256 migration authorization.
 - Added CI rendering coverage for the identity-migration Helm path and rejection of incomplete migration configuration.
 
 ### Important remaining boundaries
 
 - `Local` reads may be stale on followers; `Leader`/`Linearizable` require the current serving leader. Linearizable reads from arbitrary followers and automatic strong-read routing are not claimed.
-- Membership operations are not automatically reconciled by the checked-in Kubernetes/Helm deployment; HPA remains rejected.
+- The opt-in Phase-7 managed profile sequences deployment membership safely within its tested scope; the checked-in static Kubernetes/Helm assets still do not make arbitrary replica-count/HPA changes safe.
 - Manual Phase-5 backup/restore/fresh-cluster DR is implemented and tested; PITR and automatic disaster recovery remain unimplemented.
 - Authorization remains intentionally limited compared with a production database security model.
+- Managed rolling upgrades, hostile multi-tenant controller isolation, broad storage/network chaos certification and production performance characterization remain open.
 - These changes do **not** make NeuralBase production-ready or justify a general production-HA claim.
 
 ### CI maintenance
 
-- CI gates core tests, rustfmt/Clippy with warnings denied, confidence assertions, adversarial suites, PostgreSQL 16 TPC-H Q1-Q22 reference validation, Helm rendering, auth/identity-migration/TLS rendering and unsafe HPA rejection.
+- CI gates core tests, rustfmt/Clippy with warnings denied, confidence assertions, adversarial suites, PostgreSQL 16 TPC-H Q1-Q22 reference validation, Helm rendering, auth/identity-migration/TLS rendering, unsafe HPA rejection, and the disposable-kind Phase-7 managed Kubernetes lifecycle.
 
 ## [0.1.0] — development baseline
 

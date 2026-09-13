@@ -1,10 +1,10 @@
 # Architecture
 
-NeuralBase combines a local SQL engine with a Raft consensus subsystem and deterministic replicated state machines for persistent table mutations and clustered identity. SQL-aware snapshots preserve the same authoritative replicated state across compaction, recovery and learner bootstrap. Phase 6 adds an explicit session-scoped read-consistency layer on top of the same tested Raft commit/apply boundary.
+NeuralBase combines a local SQL engine with a Raft consensus subsystem and deterministic replicated state machines for persistent table mutations and clustered identity. SQL-aware snapshots preserve the same authoritative replicated state across compaction, recovery and learner bootstrap. Phase 6 adds an explicit session-scoped read-consistency layer on top of the same tested Raft commit/apply boundary. Phase 7 adds an opt-in managed deployment reconciler that sequences process/Kubernetes lifecycle changes through guarded committed membership.
 
 ## Design principles
 
-- **Explicit semantics over fallback.** Invalid clustered durability, persistence, snapshot, membership, identity or strong-read prerequisites fail closed.
+- **Explicit semantics over fallback.** Invalid clustered durability, persistence, snapshot, membership, identity, strong-read or managed-reconciliation prerequisites fail closed.
 - **Append is not acknowledgement.** Replicated success waits for quorum commit plus confirmed durable local apply.
 - **Concrete replicated effects.** Followers do not re-plan `UPDATE`/`DELETE` predicates.
 - **No plaintext identity log commands.** Cluster user passwords are converted to SCRAM verifier material before proposal.
@@ -13,6 +13,7 @@ NeuralBase combines a local SQL engine with a Raft consensus subsystem and deter
 - **Membership is a consensus operation.** Learners do not vote; promotion/removal use coordinated configuration changes.
 - **Read consistency is explicit.** `Local` preserves the historical local-read behavior; `Leader` and `Linearizable` require the current serving leader and a successful consensus barrier. Strong modes never silently downgrade.
 - **Operator recovery is a separate artifact lifecycle.** NBBK/NBEC backup verification and fresh-cluster restore do not reuse raw internal Raft snapshot bytes or copied consensus disks.
+- **Deployment count is not membership.** The Phase-7 managed profile creates/retires incarnations only through guarded committed-state reconciliation; static Helm/HPA replica changes remain outside the contract.
 
 ## High-level flow
 
@@ -95,7 +96,7 @@ Finalized membership is durable and overrides stale bootstrap peer configuration
 
 Strong-read barriers use the same membership/quorum rules: learners do not contribute to quorum, joint configurations require the configured joint-majority rules, and removed nodes cannot be counted as a shortcut.
 
-This capability does not automatically reconcile Kubernetes replicas; deployment orchestration remains separate.
+The [Phase-7 controller](PHASE7_OPERATOR.md) adds a separate deterministic planner and opt-in deployment adapters. It reads committed membership through a quorum/apply authority barrier; every membership command checks leader, term and generation inside the serialized Raft loop. Process count and Kubernetes readiness never establish voter membership. Managed learners replay the original genesis configuration while using separate current routing seeds; routing knowledge never grants a vote. The authenticated process lifecycle and disposable-kind Kubernetes lifecycle passed CI evidence, including partial creation failure, drift, replacement, contraction and retained storage. Raw Helm/HPA replica changes remain unsupported.
 
 ## Operator backup and disaster-recovery architecture
 
@@ -131,6 +132,8 @@ The log barrier is intentionally stronger/more expensive than a pure authority c
 - `src/replicated_state_machine.rs` — deterministic/idempotent RocksDB apply.
 - `src/replicated_snapshot*.rs` — logical snapshot codec, export/restore and Raft hooks.
 - `src/consensus/membership.rs` / `src/consensus/raft.rs` — Raft, learners and joint-consensus lifecycle.
+- `src/operator.rs` / `src/consensus/operator_control.rs` / `src/operator_admin.rs` — deterministic membership plans and guarded committed-state administration.
+- `ops/neuralbase_operator.py` / `ops/neuralbase_kubernetes.py` — explicit process/StatefulSet execution, durable intent and retained storage.
 - `src/raft_persistence.rs` — RocksDB-backed Raft stable state and staged snapshots.
 - `src/backup.rs` / `offline_backup.rs` / `online_backup.rs` — versioned operator backup contract and consistent capture.
 - `src/backup_encryption.rs` — authenticated NBEC container, key-file validation and encrypted publication.
@@ -140,4 +143,4 @@ The log barrier is intentionally stronger/more expensive than a pure authority c
 
 Standalone mode can fall back to in-memory/demo operation on a RocksDB open failure; its local DDL error handling is weaker than the fail-closed clustered path. SQL-level multi-statement transactions are not implemented despite the MVCC library. These limits are separate from the tested replicated commit/apply guarantees.
 
-Executable evidence supports replicated persistent tables, SQL-aware snapshot/recovery, coordinated membership changes, replicated SCRAM identity, the documented Phase-5 backup/restore/fresh-cluster DR model, and explicit Phase-6 `Local`/`Leader`/`Linearizable` read semantics on the leader path. Stronger production claims still require automatic deployment membership reconciliation, arbitrary-follower strong-read routing if desired, PITR/automatic DR if desired, broader security/authorization, chaos/upgrade validation and production performance characterization.
+Executable evidence supports replicated persistent tables, SQL-aware snapshot/recovery, coordinated membership changes, replicated SCRAM identity, the documented Phase-5 backup/restore/fresh-cluster DR model, explicit Phase-6 `Local`/`Leader`/`Linearizable` read semantics on the leader path, and the opt-in Phase-7 managed process/Kubernetes membership lifecycle. Stronger production claims still require target-environment security review, broader fault/upgrade validation, managed upgrade semantics and production performance characterization; arbitrary-follower strong-read routing, raw HPA scaling, PITR and automatic DR remain outside the claim.

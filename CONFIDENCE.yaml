@@ -1,8 +1,8 @@
 version: 4
-updated: 2026-09-12
+updated: 2026-09-13
 
 system:
-  scope: local_sql_engine_plus_replicated_tables_snapshots_membership_identity_backup_and_read_consistency
+  scope: local_sql_engine_plus_replicated_tables_snapshots_membership_identity_backup_read_consistency_and_managed_reconciliation
   effective_confidence: 0.78
   production_ready: false
   distributed_sql_replication: true
@@ -39,19 +39,21 @@ system:
     fresh_cluster_dr: true
     pitr: false
     automatic_dr: false
-    automatic_membership_reconciliation: false
+    automatic_membership_reconciliation: true
     hpa_safe: false
     production_ha: false
   summary: >-
     Confidence covers the tested local SQL/MVCC engine, replicated persistent-table
     mutations, SQL-aware snapshot/recovery, coordinated learner/joint-consensus
-    membership changes, replicated SCRAM identity, Phase-5 operator recovery, and
-    Phase-6 Local/Leader/Linearizable leader-path read semantics. Replicated
+    membership changes, replicated SCRAM identity, Phase-5 operator recovery,
+    Phase-6 Local/Leader/Linearizable leader-path read semantics, and the opt-in
+    Phase-7 managed process/Kubernetes membership reconciliation profile. Replicated
     mutation success and strong-read barriers wait for Raft quorum commit and
-    confirmed durable local state-machine apply. This does not imply production
-    HA, linearizable arbitrary-follower reads, automatic strong-read routing,
-    automatic Kubernetes membership reconciliation, PITR, or automatic disaster
-    recovery.
+    confirmed durable local state-machine apply. Managed reconciliation sequences
+    fresh learner creation/catch-up/promotion, leader transfer, removal and retained
+    storage under guarded committed membership. This does not imply production HA,
+    linearizable arbitrary-follower reads, automatic strong-read routing, arbitrary
+    Helm/HPA replica scaling, PITR, or automatic disaster recovery.
 
 artifacts:
   - artifact: wire_protocol_v3
@@ -150,10 +152,10 @@ artifacts:
       - tests/phase6_read_barrier.rs
       - tests/phase6_membership_reads.rs
     limitation: >-
-      No TLA+ proof or automatic deployment/operator reconciliation. Membership
-      changes are exercised through explicit learner, joint-consensus and removal
-      operations; arbitrary HPA replica changes remain unsafe. Strong reads use a
-      log-backed barrier rather than ReadIndex/lease optimization.
+      No TLA+ proof or arbitrary HPA deployment semantics. Membership changes are
+      exercised through explicit learner, joint-consensus and guarded Phase-7
+      reconciliation paths; arbitrary replica-count changes remain unsafe. Strong
+      reads use a log-backed barrier rather than ReadIndex/lease optimization.
 
   - artifact: raft_persistence
     effective: 0.76
@@ -224,16 +226,29 @@ artifacts:
 
   - artifact: membership_changes
     effective: 0.74
-    status: learner_joint_consensus_lifecycle_tested
+    status: learner_joint_consensus_and_managed_reconciliation_tested
     evidence:
       - src/consensus/membership.rs
       - src/consensus/raft.rs
+      - src/operator.rs
+      - src/consensus/operator_control.rs
+      - src/operator_admin.rs
+      - ops/neuralbase_operator.py
+      - ops/neuralbase_kubernetes.py
       - tests/phase3_membership.rs
       - tests/phase4_identity_membership.rs
       - tests/phase6_membership_reads.rs
+      - tests/phase7_planner.rs
+      - tests/phase7_guarded_membership.rs
+      - tests/phase7_managed_storage.rs
+      - tests/phase7_process.rs
+      - tests/phase7_kubernetes.py
+      - tests/phase7_kubernetes_guards.py
     limitation: >-
-      Consensus membership operations exist and are tested, but checked-in
-      deployment manifests do not automatically orchestrate replica changes.
+      The opt-in managed process/Kubernetes profile reconciles explicit desired
+      topology through the guarded membership protocol and retains removed storage.
+      It does not make raw StatefulSet/Helm replica changes safe, does not enable
+      HPA, and is not a production-HA or upgrade-orchestration claim.
 
   - artifact: replicated_identity
     effective: 0.76
@@ -287,26 +302,30 @@ artifacts:
       - docker-compose.yml
       - k8s/deployment.yaml
       - helm/neuralbase
+      - ops/neuralbase_kubernetes.py
+      - tests/phase7_kubernetes.py
     limitation: >-
-      The manifests deploy a static topology. Consensus membership changes exist,
-      but automatic StatefulSet/HPA reconciliation is not implemented. Probes
-      check TCP reachability only and SQL Services are not leader-aware. Helm
-      TLS configures SQL TLS, not Raft mTLS.
+      The checked-in Compose/raw Kubernetes/Helm examples remain static topology
+      examples and must not be scaled arbitrarily. A separate opt-in Phase-7
+      per-incarnation StatefulSet/PVC profile is lifecycle-tested through kind and
+      guarded membership reconciliation. HPA remains unsupported, SQL Services are
+      not leader-routing, and the managed profile is not a production security or
+      upgrade baseline.
 
 verification_policy:
   - No performance claim without a reproducible benchmark and workload context.
   - distributed_sql_replication means only the machine-readable replication_scope above.
-  - production_ready and production_ha remain false despite membership, identity, recovery and read-consistency progress.
+  - production_ready and production_ha remain false despite membership, identity, recovery, read-consistency and managed-reconciliation progress.
   - Keep SQL correctness claims synchronized with executable PostgreSQL reference tests.
-  - Keep deployment examples free of automatic HPA scaling until membership reconciliation is implemented.
+  - Keep arbitrary Helm/HPA scaling unsupported; the managed Phase-7 profile must sequence changes through guarded committed membership.
   - Replicated identity claims require verifier-only log material and explicit legacy migration semantics.
   - Follower authentication reads locally applied identity without a quorum barrier; user DDL does not terminate existing sessions.
   - Library optimizer/exchange components do not establish live SQL planner or distributed-query integration.
   - Strong-read claims require explicit current-leader authority, quorum barrier, confirmed local apply, and no silent downgrade.
-  - A release head must pass tests, lint, confidence checks, adversarial tests, TPC-H reference validation, and Helm rendering.
+  - A release head must pass tests, lint, confidence checks, adversarial tests, TPC-H reference validation, Helm rendering, and the managed Kubernetes lifecycle gate.
 
 next_high_value_work:
-  - Build automatic deployment membership reconciliation on top of the tested learner/joint-consensus protocol.
+  - Harden the managed reconciliation profile for upgrades, broader network/storage chaos, and production-grade security without enabling raw HPA scaling.
   - Deepen PostgreSQL compatibility without weakening distributed lifecycle or read-consistency safety.
   - Expand authorization/security and upgrade/storage-chaos hardening.
   - Optimize strong reads with ReadIndex/lease mechanics only if the Phase-6 public contract and failure semantics remain unchanged.

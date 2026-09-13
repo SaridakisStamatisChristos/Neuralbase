@@ -35,6 +35,21 @@ fn env_with_legacy(primary: &str, legacy: &str) -> Option<String> {
         .or_else(|| std::env::var(legacy).ok())
 }
 
+fn managed_node_config() -> io::Result<Option<neuralbase::operator_admin::ManagedNode>> {
+    let Some(path) = std::env::var_os("NEURALBASE_OPERATOR_NODE") else {
+        return Ok(None);
+    };
+    #[cfg(unix)]
+    {
+        neuralbase::operator_admin::read_config(Path::new(&path)).map(Some)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Err(io::Error::other("managed process operator requires Unix"))
+    }
+}
+
 fn read_node_id() -> Option<String> {
     env_with_legacy("NEURALBASE_NODE_ID", "NODE_ID")
         .map(|s| s.trim().to_string())
@@ -206,13 +221,25 @@ fn spawn_raft<T: Transport>(
         }
     });
 
-    let mut node = RaftNode::new(node_id, peers, transport)
+    let managed = managed_node_config()?;
+    let node = match managed.as_ref() {
+        Some(config) if config.learner => {
+            RaftNode::new_learner_from_genesis(node_id, config.genesis.clone(), peers, transport)
+                .map_err(io::Error::other)?
+        }
+        _ => RaftNode::new(node_id, peers, transport),
+    };
+    let mut node = node
         .with_snapshot_store(snapshot_store)
         .with_persistence(strict_store)
         .with_confirmed_apply_tx(apply_tx);
     node.set_election_timeout_ms(election_timeout_ms);
     let serving_ready = node.serving_readiness();
     let (client_tx, shared, handle) = node.spawn();
+    #[cfg(unix)]
+    if let Some(config) = managed {
+        neuralbase::operator_admin::spawn(config, handle.operator_handle())?;
+    }
 
     Ok(RaftRuntime {
         client_tx,
@@ -248,7 +275,25 @@ async fn start_raft_node(
     let raft_addr = env_with_legacy("NEURALBASE_RAFT_ADDR", "RAFT_ADDR")
         .unwrap_or_else(|| "0.0.0.0:7001".to_string());
     let peer_spec = env_with_legacy("NEURALBASE_PEERS", "PEERS").unwrap_or_default();
-    let (peers, peer_addrs) = parse_peer_config(&peer_spec, &node_id, &raft_addr)?;
+    let (mut peers, mut peer_addrs) = parse_peer_config(&peer_spec, &node_id, &raft_addr)?;
+    if let Some(config) = managed_node_config()? {
+        if config.id != node_id {
+            return Err(io::Error::other("managed node id mismatch"));
+        }
+        peers = config
+            .seeds
+            .iter()
+            .filter(|id| *id != &node_id)
+            .cloned()
+            .collect();
+        peer_addrs = config
+            .topology
+            .endpoints
+            .iter()
+            .filter(|(id, _)| *id != &node_id)
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+    }
     let election_timeout_ms = env_with_legacy(
         "NEURALBASE_RAFT_ELECTION_TIMEOUT_MS",
         "RAFT_ELECTION_TIMEOUT_MS",
@@ -318,6 +363,14 @@ async fn main() -> io::Result<()> {
 
     let catalog: Arc<InMemoryCatalog> = Arc::new(InMemoryCatalog::with_tpch_all_tables());
 
+    let managed = managed_node_config()?;
+    if managed.is_some()
+        && (!clustered || env_with_legacy("NEURALBASE_DB_PATH", "DB_PATH").is_none())
+    {
+        return Err(io::Error::other(
+            "managed startup requires node identity and durable storage",
+        ));
+    }
     let storage_engine = if let Some(db_path) = env_with_legacy("NEURALBASE_DB_PATH", "DB_PATH") {
         if clustered {
             ensure_clustered_startup_restore_safe(Path::new(&db_path)).map_err(|error| {
@@ -326,10 +379,22 @@ async fn main() -> io::Result<()> {
                 ))
             })?;
         }
+        #[cfg(unix)]
+        if let Some(config) = &managed {
+            if read_node_id().as_ref() != Some(&config.id) {
+                return Err(io::Error::other("managed node id missing or mismatched"));
+            }
+            neuralbase::operator_admin::bind_storage(config, Path::new(&db_path))?;
+        }
         match StorageEngine::open(Path::new(&db_path)) {
             Ok(engine) => {
                 tracing::info!(db_path, "RocksDB storage engine opened");
                 Some(Arc::new(engine))
+            }
+            Err(e) if managed.is_some() => {
+                return Err(io::Error::other(format!(
+                    "managed storage open failed: {e}"
+                )));
             }
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to open RocksDB; using in-memory mode");

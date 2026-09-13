@@ -1,6 +1,6 @@
 # NeuralBase development and disaster-recovery runbook
 
-This runbook documents the **tested pre-1.0 operator recovery model** plus the Phase-6 read-consistency controls relevant to validation after failover/recovery. It is not a production-HA or automatic-disaster-recovery guarantee. `Local` reads may lag, strong reads require the current serving leader, deployment membership reconciliation is not automatic, and PITR is not implemented.
+This runbook documents the **tested pre-1.0 operator recovery model** plus the Phase-6 read-consistency controls relevant to validation after failover/recovery. It is not a production-HA or automatic-disaster-recovery guarantee. `Local` reads may lag, strong reads require the current serving leader, membership reconciliation requires the explicit managed profile, and PITR is not implemented.
 
 ## Safety rules
 
@@ -283,8 +283,8 @@ This runbook does **not** provide or claim:
 
 - point-in-time recovery or archived WAL/Raft-log replay;
 - automatic disaster detection/failover/recovery;
-- automatic operator-safe node replacement;
-- automatic Kubernetes membership reconciliation or HPA safety;
+- adoption/replacement of unmanaged nodes or automatic disaster replacement;
+- arbitrary StatefulSet replica changes or HPA safety;
 - linearizable reads from arbitrary followers or automatic follower-to-leader read routing;
 - a low-overhead ReadIndex/lease-read implementation;
 - complete authorization/audit/security hardening;
@@ -292,3 +292,13 @@ This runbook does **not** provide or claim:
 - a measured RPO/RTO SLA.
 
 For design limits also read `docs/ARCHITECTURE.md`, `docs/DISTRIBUTED.md`, `docs/THREAT_MODEL.md`, `docs/TESTING.md`, `CONFIDENCE.md`, and `ROADMAP.md`.
+
+## Phase-7 managed membership
+
+For explicit scale-out, scale-in, leader replacement and controller restart, use
+[the Phase-7 guide](../docs/PHASE7_OPERATOR.md). It defines the separate local and
+Kubernetes profiles, immutable incarnation/endpoint inventory, genesis versus
+routing configuration, and blocked-state diagnostics. Removed storage stays
+retained. Do not relabel a PVC or adopt a Phase-5 restore directory through this
+controller; deliberate fresh-cluster DR remains the procedure above. Phase 7 is
+still awaiting its final-head and post-merge validation gate.

@@ -225,6 +225,38 @@ where
 
 #[tokio::test]
 async fn learner_bootstrap_promotion_rotation_and_removal_preserve_identity() {
+    membership_lifecycle(false).await;
+}
+
+#[tokio::test]
+async fn phase7_guarded_learner_snapshot_bootstrap_preserves_identity() {
+    membership_lifecycle(true).await;
+}
+
+async fn change_member(
+    node: &MemberNode,
+    change: MembershipChange,
+    guarded: bool,
+) -> Result<u64, String> {
+    if !guarded {
+        return submit(&node.client_tx, encode_membership_change(&change)).await;
+    }
+    use neuralbase::consensus::operator_control::{GuardedMembership, MembershipGuard};
+    let handle = node.handle.as_ref().unwrap().operator_handle();
+    let status = handle.observe_authoritative().await?;
+    handle
+        .change_membership(GuardedMembership {
+            guard: MembershipGuard {
+                leader: status.id,
+                term: status.term,
+                generation: status.committed.generation,
+            },
+            change,
+        })
+        .await
+}
+
+async fn membership_lifecycle(guarded: bool) {
     let bus = ChannelTransport::new_bus();
     let mut nodes = Vec::new();
     for id in INITIAL {
@@ -252,9 +284,10 @@ async fn learner_bootstrap_promotion_rotation_and_removal_preserve_identity() {
 
     nodes.push(spawn_member(Arc::clone(&bus), LEARNER, true).await);
     let leader = leader_index(&nodes, 3).await;
-    submit(
-        &nodes[leader].client_tx,
-        encode_membership_change(&MembershipChange::AddLearner(LEARNER.to_string())),
+    change_member(
+        &nodes[leader],
+        MembershipChange::AddLearner(LEARNER.to_string()),
+        guarded,
     )
     .await
     .unwrap();
@@ -268,9 +301,10 @@ async fn learner_bootstrap_promotion_rotation_and_removal_preserve_identity() {
     let promotion_deadline = tokio::time::Instant::now() + TIMEOUT;
     loop {
         let leader = leader_index(&nodes, 3).await;
-        match submit(
-            &nodes[leader].client_tx,
-            encode_membership_change(&MembershipChange::PromoteLearner(LEARNER.to_string())),
+        match change_member(
+            &nodes[leader],
+            MembershipChange::PromoteLearner(LEARNER.to_string()),
+            guarded,
         )
         .await
         {
@@ -314,9 +348,10 @@ async fn learner_bootstrap_promotion_rotation_and_removal_preserve_identity() {
     }
 
     let leader = leader_index(&nodes, 4).await;
-    submit(
-        &nodes[leader].client_tx,
-        encode_membership_change(&MembershipChange::RemoveNode(LEARNER.to_string())),
+    change_member(
+        &nodes[leader],
+        MembershipChange::RemoveNode(LEARNER.to_string()),
+        guarded,
     )
     .await
     .unwrap();

@@ -7,7 +7,7 @@
 **NeuralBase is an experimental SQL engine in Rust** with a PostgreSQL wire endpoint, MVCC/RocksDB storage, vectorized/general execution, and Raft-replicated table mutations and SCRAM identity over TCP/TLS. It also includes an ONNX join-order optimizer for library use and benchmarks; the live SQL planner does not currently invoke it.
 
 > [!IMPORTANT]
-> NeuralBase is **pre-1.0 research/development software**. Configured clusters replicate persistent table mutations and SCRAM identity through Raft, support SQL-aware snapshot/recovery, implement learner/joint-consensus membership changes, provide the tested Phase-5 backup/restore/fresh-cluster recovery lifecycle, and expose explicit session-scoped read-consistency modes. Successful replicated mutations and strong read barriers wait for quorum commit plus confirmed durable local apply. This is still not a production-HA claim: strong reads must be sent to the current leader, arbitrary-follower linearizable routing is not implemented, Kubernetes membership reconciliation is not automatic, PITR/automatic disaster recovery remain open, and broader authorization/security hardening is still required.
+> NeuralBase is **pre-1.0 research/development software**. Configured clusters replicate persistent table mutations and SCRAM identity through Raft, support SQL-aware snapshot/recovery, implement learner/joint-consensus membership changes, provide the tested Phase-5 backup/restore/fresh-cluster recovery lifecycle, expose explicit session-scoped read-consistency modes, and include an opt-in Phase-7 managed process/Kubernetes membership reconciliation profile. Successful replicated mutations and strong read barriers wait for quorum commit plus confirmed durable local apply. This is still not a production-HA claim: strong reads must be sent to the current leader, arbitrary-follower linearizable routing is not implemented, raw Helm/StatefulSet replica changes and HPA remain unsupported, PITR/automatic disaster recovery remain open, and broader authorization/security/upgrade hardening is still required.
 
 ## Current highlights
 
@@ -27,6 +27,7 @@
 - Versioned NBBK offline/online backup, independent verification, crash-safe fresh-cluster restore, and authenticated NBEC backup encryption.
 - Fresh-generation cluster recovery through one restored authority plus learner catch-up/promotion, failover and restart evidence.
 - Explicit `Local`, `Leader`, and `Linearizable` read modes; strong modes use a current-term replicated barrier and confirmed local apply before query execution, with explicit follower rejection and no silent downgrade.
+- Opt-in managed process/Kubernetes membership reconciliation with guarded committed-state observations, fresh learner creation/promotion, leader transfer, finalized removal, retained storage, object UID/resource-version checks and real kind lifecycle evidence.
 - PostgreSQL 16 row-for-row TPC-H Q1-Q22 reference checks at a small deterministic scale.
 - Docker Compose, Kubernetes StatefulSet and Helm development deployments.
 
@@ -93,7 +94,7 @@ The logical snapshot contains SQL catalog/data/apply/HLC state and replicated id
 
 The consensus layer supports learners and joint old/new voter configurations. A learner must catch up before promotion; removal is coordinated and the current leader must transfer leadership before being removed. Finalized membership is persisted and removed identities are protected against stale-disk rejoin.
 
-The checked-in deployment does **not** automatically translate StatefulSet replica changes into these membership operations, so HPA remains intentionally disabled.
+The static Helm/Compose examples do **not** translate replica-count changes into membership. The opt-in [Phase-7 controller](docs/PHASE7_OPERATOR.md) sequences local processes or per-member Kubernetes StatefulSets through the guarded membership path. Exact-head CI has exercised its authenticated process lifecycle and real disposable-kind lifecycle, including partial creation failure, drift, replacement, contraction and retained storage. HPA and arbitrary raw replica changes remain disabled.
 
 ## Legacy identity migration
 
@@ -122,7 +123,8 @@ A fresh cluster with authentication disabled and no legacy file may initialize r
 | Legacy identity migration | **Explicit digest-selected SCRAM migration implemented** |
 | Session `Local` / `Leader` / `Linearizable` reads | **Implemented and Phase-6 tested** |
 | Linearizable arbitrary-follower reads / automatic strong-read routing | **Not implemented** |
-| Automatic Kubernetes membership reconciliation / HPA | **Not implemented** |
+| Managed process / Kubernetes membership reconciliation | **Implemented and Phase-7 lifecycle-tested** |
+| Arbitrary Helm replica scaling / HPA | **Unsupported** |
 | Backup / restore / fresh-cluster DR | **Implemented and tested to Phase-5 scope** |
 | Point-in-time recovery / automatic DR | **Not implemented** |
 | Production SQL HA | **Not claimed** |
@@ -131,7 +133,7 @@ A fresh cluster with authentication disabled and no legacy file may initialize r
 
 The [configuration reference](docs/CONFIGURATION.md) lists every runtime environment variable, default, alias and TLS precedence rule. [.env.example](.env.example) is a shell configuration example; the binary does not load it automatically.
 
-The [operator runbook](ops/RUNBOOK.md) covers NBBK/NBEC create, verify and restore commands. Backup requires a stopped source with durable Raft/membership state; a standalone-only database is not an accepted source. Online backup and membership administration are currently in-process APIs.
+The [operator runbook](ops/RUNBOOK.md) covers NBBK/NBEC create, verify and restore commands. Backup requires a stopped source with durable Raft/membership state; a standalone-only database is not an accepted source. Online backup remains an in-process API. Managed membership administration uses the private operator socket and controller described in the [Phase-7 guide](docs/PHASE7_OPERATOR.md).
 
 ## Verification
 
@@ -143,7 +145,7 @@ make adversarial
 make tpch-correctness
 ```
 
-Green CI is evidence for the exact checked commit and tested scopes, not a production-readiness or universal PostgreSQL-compatibility claim.
+Green CI is evidence for the exact checked commit and tested scopes, not a production-readiness or universal PostgreSQL-compatibility claim. Phase-7 closure additionally requires the managed Kubernetes lifecycle gate on the synchronized head and a green post-merge `main` run.
 
 ## Documentation
 
@@ -161,7 +163,7 @@ Green CI is evidence for the exact checked commit and tested scopes, not a produ
 
 ## Project maturity
 
-Phases 1–6 close replicated table mutations, SQL-aware snapshot/recovery, coordinated membership, replicated identity, the documented operator backup/restore/fresh-cluster DR model, and explicit tested read-consistency modes under the repository's failure model. The next high-value correctness work is operator/deployment membership orchestration and deeper SQL/security/upgrade hardening. PITR remains a later recovery extension, and arbitrary-follower strong-read routing/ReadIndex optimization remains optional future read-path work rather than a claimed capability.
+Phases 1–7 implement replicated table mutations, SQL-aware snapshot/recovery, coordinated membership, replicated identity, the documented operator backup/restore/fresh-cluster DR model, explicit tested read-consistency modes, and an opt-in managed process/Kubernetes membership reconciliation profile under the repository's failure model. Phase 7 has passed its functional PR-head evidence gate; milestone closure still requires the synchronized final head and post-merge `main` CI. Later work covers deeper SQL/security/upgrade hardening. PITR remains a later recovery extension, and arbitrary-follower strong-read routing/ReadIndex optimization remains optional future read-path work rather than a claimed capability.
 
 ## License
 

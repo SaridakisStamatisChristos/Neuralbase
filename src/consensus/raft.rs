@@ -19,6 +19,10 @@ use crate::consensus::log::{
     PersistentState, RaftPersistenceStore, StagedSnapshot, StagedSnapshotKind,
 };
 use crate::consensus::membership::ClusterMembership;
+use crate::consensus::operator_control::{
+    ControlRequest, GuardedMembership, MembershipGuard, OperatorHandle, OperatorStatus,
+    GUARDED_MEMBERSHIP_TAG,
+};
 use crate::consensus::rpc::{
     AppendEntriesArgs, AppendEntriesReply, InstallSnapshotArgs, InstallSnapshotReply, LogEntry,
     MembershipChange, NodeId, RaftMessage, RequestVoteArgs, RequestVoteReply,
@@ -85,12 +89,17 @@ pub struct CommittedEntry {
 }
 
 pub struct RaftTaskHandle {
+    operator: OperatorHandle,
     shutdown_tx: Option<oneshot::Sender<()>>,
     join_handle: tokio::task::JoinHandle<()>,
     transfer_tx: mpsc::Sender<oneshot::Sender<Result<String, String>>>,
 }
 
 impl RaftTaskHandle {
+    pub fn operator_handle(&self) -> OperatorHandle {
+        self.operator.clone()
+    }
+
     pub async fn shutdown(mut self) {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
@@ -133,6 +142,9 @@ pub struct RaftNode<T: Transport> {
     /// source of quorum truth.
     bootstrap_membership: ClusterMembership,
     joining_learner: bool,
+    /// Routing authorization while a joining node replays the original log.
+    /// These IDs never grant voting rights or replace committed membership.
+    joining_seeds: BTreeSet<NodeId>,
     transport: Arc<T>,
     ps: PersistentState,
     /// Latest configuration represented by committed membership plus any newer
@@ -195,6 +207,39 @@ impl<T: Transport> RaftNode<T> {
         ))
     }
 
+    /// Join after earlier membership changes using the original log's genesis
+    /// configuration separately from the current routing voters. A seed may
+    /// supply replication only while this node is non-voting and not removed.
+    pub fn new_learner_from_genesis(
+        id: NodeId,
+        genesis_voters: Vec<NodeId>,
+        seed_voters: Vec<NodeId>,
+        transport: Arc<T>,
+    ) -> Result<Self, String> {
+        let mut node = Self::new_learner(id.clone(), genesis_voters, transport)?;
+        if seed_voters.is_empty() || seed_voters.len() > 128 || seed_voters.contains(&id) {
+            return Err("invalid joining routing voters".into());
+        }
+        node.joining_seeds = seed_voters.into_iter().collect();
+        Ok(node)
+    }
+
+    fn accepts_replication_from(&self, leader: &NodeId) -> bool {
+        if self
+            .ps
+            .membership
+            .as_ref()
+            .is_some_and(|m| m.is_removed(leader))
+        {
+            return false;
+        }
+        self.effective_membership.is_voter(leader)
+            || (self.joining_learner
+                && !self.effective_membership.is_voter(&self.id)
+                && !self.effective_membership.is_removed(&self.id)
+                && self.joining_seeds.contains(leader))
+    }
+
     fn from_bootstrap(
         id: NodeId,
         bootstrap_membership: ClusterMembership,
@@ -207,6 +252,7 @@ impl<T: Transport> RaftNode<T> {
             effective_membership: bootstrap_membership.clone(),
             bootstrap_membership,
             joining_learner,
+            joining_seeds: BTreeSet::new(),
             transport,
             ps,
             commit_index: 0,
@@ -684,6 +730,11 @@ impl<T: Transport> RaftNode<T> {
 
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<ClientCommand>(64);
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+        let (control_tx, mut control_rx) = mpsc::channel::<ControlRequest>(16);
+        let operator = OperatorHandle {
+            control_tx,
+            client_tx: cmd_tx.clone(),
+        };
         let (transfer_tx, mut transfer_rx) =
             mpsc::channel::<oneshot::Sender<Result<String, String>>>(1);
         let shared = Arc::new(Mutex::new(RaftShared {
@@ -746,6 +797,16 @@ impl<T: Transport> RaftNode<T> {
                             }
                             Err(error) => {
                                 let _ = cmd.reply.send(Err(error));
+                            }
+                        }
+                    }
+                    Some(control) = control_rx.recv() => {
+                        match control {
+                            ControlRequest::Status(reply) => { let _ = reply.send(self.operator_status()); }
+                            ControlRequest::Transfer(guard, target, reply) => {
+                                let result = self.validate_operator_guard(&guard).and_then(|()| self.initiate_leader_transfer(target.clone()));
+                                if result.is_ok() { self.transport.send(&target, RaftMessage::TimeoutNow { term: self.ps.current_term }).await; }
+                                let _ = reply.send(result);
                             }
                         }
                     }
@@ -970,6 +1031,7 @@ impl<T: Transport> RaftNode<T> {
             cmd_tx,
             shared,
             RaftTaskHandle {
+                operator,
                 shutdown_tx: Some(shutdown_tx),
                 join_handle,
                 transfer_tx,
@@ -994,7 +1056,7 @@ impl<T: Transport> RaftNode<T> {
                 self.on_request_vote_reply(from, reply).await;
             }
             RaftMessage::AppendEntries(args) => {
-                let reset = self.effective_membership.is_voter(&args.leader_id)
+                let reset = self.accepts_replication_from(&args.leader_id)
                     && args.term >= self.ps.current_term;
                 let reply = self.on_append_entries(args);
                 self.transport
@@ -1008,7 +1070,7 @@ impl<T: Transport> RaftNode<T> {
                 self.on_append_entries_reply(from, reply).await;
             }
             RaftMessage::InstallSnapshot(args) => {
-                let reset = self.effective_membership.is_voter(&args.leader_id)
+                let reset = self.accepts_replication_from(&args.leader_id)
                     && args.term >= self.ps.current_term;
                 let reply = self.on_install_snapshot(args);
                 self.transport
@@ -1210,7 +1272,7 @@ impl<T: Transport> RaftNode<T> {
     }
 
     fn on_append_entries(&mut self, args: AppendEntriesArgs) -> AppendEntriesReply {
-        if !self.effective_membership.is_voter(&args.leader_id)
+        if !self.accepts_replication_from(&args.leader_id)
             || self
                 .ps
                 .membership
@@ -1433,12 +1495,54 @@ impl<T: Transport> RaftNode<T> {
         }
     }
 
-    fn handle_client_command(&mut self, payload: Vec<u8>) -> Result<u64, String> {
+    fn operator_status(&self) -> OperatorStatus {
+        OperatorStatus {
+            id: self.id.clone(),
+            leader: self.leader_id.clone(),
+            is_leader: self.role == RaftRole::Leader,
+            term: self.ps.current_term,
+            committed: self.committed_membership().clone(),
+            transition_pending: self.membership_transition_active(),
+            applied: self.last_applied,
+            commit_index: self.commit_index,
+            ready: self.serving_ready.load(Ordering::Acquire),
+            matched: self
+                .leader
+                .as_ref()
+                .map(|s| s.match_index.iter().map(|(k, v)| (k.clone(), *v)).collect())
+                .unwrap_or_default(),
+            authority_index: 0,
+        }
+    }
+    fn validate_operator_guard(&self, guard: &MembershipGuard) -> Result<(), String> {
+        if self.role != RaftRole::Leader
+            || guard.leader != self.id
+            || guard.term != self.ps.current_term
+            || guard.generation != self.committed_membership().generation
+            || self.membership_transition_active()
+            || !self.serving_ready.load(Ordering::Acquire)
+        {
+            return Err("stale operator leadership/membership guard or node not ready".into());
+        }
+        Ok(())
+    }
+    fn handle_client_command(&mut self, mut payload: Vec<u8>) -> Result<u64, String> {
         if self.role != RaftRole::Leader {
             return Err(format!("not leader; redirect to {:?}", self.leader_id));
         }
         if self.transfer_in_progress.is_some() {
             return Err("leadership transfer in progress; retry later".to_string());
+        }
+        if payload.starts_with(GUARDED_MEMBERSHIP_TAG) {
+            if payload.len() > 4096 {
+                return Err("guarded membership request too large".into());
+            }
+            let request: GuardedMembership =
+                serde_json::from_slice(&payload[GUARDED_MEMBERSHIP_TAG.len()..])
+                    .map_err(|e| format!("invalid guarded membership request: {e}"))?;
+            self.validate_operator_guard(&request.guard)?;
+            // Persist only the existing Phase-3 command format; no new recovery codec.
+            payload = encode_membership_change(&request.change);
         }
         if payload.starts_with(COMPACT_LOG_TAG) {
             return self.handle_compact_log_cmd(payload);
@@ -1626,7 +1730,7 @@ impl<T: Transport> RaftNode<T> {
     }
 
     fn on_install_snapshot(&mut self, args: InstallSnapshotArgs) -> InstallSnapshotReply {
-        if !self.effective_membership.is_voter(&args.leader_id)
+        if !self.accepts_replication_from(&args.leader_id)
             || self
                 .ps
                 .membership
