@@ -7,7 +7,7 @@
 
 use crate::catalog::Catalog;
 use crate::sql::NbStatement;
-use sqlparser::ast::Statement;
+use sqlparser::ast::{Expr, FunctionArg, FunctionArgExpr, Query, SelectItem, SetExpr, Statement, WindowType};
 
 pub use crate::binder_legacy::{
     coerce_expr_to_value, date_str_to_epoch_days, BindError, BoundPlan, CreateTablePlan,
@@ -38,20 +38,142 @@ pub fn bind_nb_statement(
     }
 }
 
-/// Reject parsed CREATE TABLE features whose semantics NeuralBase does not yet
-/// enforce. Silently dropping a PRIMARY KEY, UNIQUE, CHECK, FOREIGN KEY or
-/// DEFAULT declaration would create a durable schema different from the SQL the
-/// client requested.
+/// Reject parsed syntax whose semantics the established execution path would
+/// otherwise silently discard.
 fn validate_statement_semantics(statement: &Statement) -> Result<(), BindError> {
-    if let Statement::CreateTable {
-        columns,
-        constraints,
-        ..
-    } = statement
-    {
-        if columns.iter().any(|column| !column.options.is_empty()) || !constraints.is_empty() {
-            return Err(BindError::Unsupported);
+    match statement {
+        Statement::CreateTable {
+            columns,
+            constraints,
+            ..
+        } => {
+            if columns.iter().any(|column| !column.options.is_empty()) || !constraints.is_empty() {
+                return Err(BindError::Unsupported);
+            }
         }
+        Statement::Query(query) => validate_query_semantics(query)?,
+        Statement::Explain { statement, .. } => validate_statement_semantics(statement)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Phase 8 supports the established ROW_NUMBER/RANK/LAG/LEAD partition/order
+/// subset, but not named-window inheritance or explicit frame clauses. The
+/// legacy executor ignores those fields; accepting them would therefore return
+/// a result for semantics the engine did not execute.
+fn validate_query_semantics(query: &Query) -> Result<(), BindError> {
+    if let Some(with) = &query.with {
+        for cte in &with.cte_tables {
+            validate_query_semantics(&cte.query)?;
+        }
+    }
+    validate_set_expr(&query.body)
+}
+
+fn validate_set_expr(set_expr: &SetExpr) -> Result<(), BindError> {
+    match set_expr {
+        SetExpr::Select(select) => {
+            if !select.named_window.is_empty() {
+                return Err(BindError::Unsupported);
+            }
+            for item in &select.projection {
+                match item {
+                    SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
+                        validate_expr_windows(expr)?;
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(selection) = &select.selection {
+                validate_expr_windows(selection)?;
+            }
+            if let Some(having) = &select.having {
+                validate_expr_windows(having)?;
+            }
+        }
+        SetExpr::Query(query) => validate_query_semantics(query)?,
+        SetExpr::SetOperation { left, right, .. } => {
+            validate_set_expr(left)?;
+            validate_set_expr(right)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_expr_windows(expr: &Expr) -> Result<(), BindError> {
+    match expr {
+        Expr::Function(function) => {
+            if let Some(over) = &function.over {
+                match over {
+                    WindowType::NamedWindow(_) => return Err(BindError::Unsupported),
+                    WindowType::WindowSpec(spec)
+                        if spec.window_name.is_some() || spec.window_frame.is_some() =>
+                    {
+                        return Err(BindError::Unsupported);
+                    }
+                    WindowType::WindowSpec(_) => {}
+                }
+            }
+            if let sqlparser::ast::FunctionArguments::List(args) = &function.args {
+                for arg in &args.args {
+                    match arg {
+                        FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
+                        | FunctionArg::Named {
+                            arg: FunctionArgExpr::Expr(expr),
+                            ..
+                        } => validate_expr_windows(expr)?,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            validate_expr_windows(left)?;
+            validate_expr_windows(right)?;
+        }
+        Expr::UnaryOp { expr, .. } | Expr::Nested(expr) | Expr::IsNull(expr) | Expr::IsNotNull(expr) => {
+            validate_expr_windows(expr)?;
+        }
+        Expr::Between {
+            expr, low, high, ..
+        } => {
+            validate_expr_windows(expr)?;
+            validate_expr_windows(low)?;
+            validate_expr_windows(high)?;
+        }
+        Expr::InList { expr, list, .. } => {
+            validate_expr_windows(expr)?;
+            for item in list {
+                validate_expr_windows(item)?;
+            }
+        }
+        Expr::Case {
+            operand,
+            conditions,
+            results,
+            else_result,
+        } => {
+            if let Some(operand) = operand {
+                validate_expr_windows(operand)?;
+            }
+            for condition in conditions {
+                validate_expr_windows(condition)?;
+            }
+            for result in results {
+                validate_expr_windows(result)?;
+            }
+            if let Some(result) = else_result {
+                validate_expr_windows(result)?;
+            }
+        }
+        Expr::Subquery(query)
+        | Expr::Exists { subquery: query, .. }
+        | Expr::InSubquery {
+            subquery: query, ..
+        } => validate_query_semantics(query)?,
+        _ => {}
     }
     Ok(())
 }
