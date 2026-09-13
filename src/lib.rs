@@ -1,6 +1,9 @@
 pub mod auth;
 pub mod backup;
 pub mod backup_encryption;
+#[path = "binder.rs"]
+mod binder_legacy;
+#[path = "binder_phase8.rs"]
 pub mod binder;
 pub mod catalog;
 pub mod cluster;
