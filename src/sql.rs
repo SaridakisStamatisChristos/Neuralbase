@@ -7,6 +7,8 @@ use thiserror::Error;
 pub enum SqlParseError {
     #[error("empty SQL input")]
     Empty,
+    #[error("multiple SQL statements in one request are unsupported (got {0})")]
+    MultipleStatements(usize),
     #[error("{0}")]
     Parser(String),
 }
@@ -17,10 +19,14 @@ pub fn parse_statement(sql: &str) -> Result<Statement, SqlParseError> {
     }
 
     let dialect = GenericDialect {};
-    let statements =
+    let mut statements =
         Parser::parse_sql(&dialect, sql).map_err(|err| SqlParseError::Parser(err.to_string()))?;
 
-    statements.into_iter().next().ok_or(SqlParseError::Empty)
+    match statements.len() {
+        0 => Err(SqlParseError::Empty),
+        1 => Ok(statements.remove(0)),
+        count => Err(SqlParseError::MultipleStatements(count)),
+    }
 }
 
 // ── NeuralBase-extended statement type ────────────────────────────────────────
