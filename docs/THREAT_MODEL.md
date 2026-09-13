@@ -1,6 +1,6 @@
 # NeuralBase threat model
 
-**Updated:** 2026-09-12  
+**Updated:** 2026-09-13  
 **Scope:** pre-1.0 standalone and clustered development/research deployments
 
 This is a risk inventory, not a security certification.
@@ -14,6 +14,7 @@ This is a risk inventory, not a security certification.
 - standalone credential files and clustered legacy migration files;
 - TLS private keys/CA material;
 - NBBK/NBEC operator backups and their separately managed encryption keys;
+- managed-controller desired topology, durable controller state and Kubernetes object ownership metadata;
 - metrics and diagnostics.
 
 ## Trust boundaries
@@ -22,6 +23,7 @@ This is a risk inventory, not a security certification.
 2. Raft node → Raft node; default TCP is trusted-network-only, optional TLS provides transport protection.
 3. Process → local disk; RocksDB and migration files are trusted durable/operator inputs and are not transparently encrypted at rest.
 4. Operator configuration → peer/bootstrap/migration/security configuration.
+5. Phase-7 controller → local management socket or explicit Kubernetes context/namespace; the controller principal and its durable root are trusted for the managed profile.
 
 ## Authentication and identity risks
 
@@ -49,7 +51,9 @@ Required Raft persistence failures fail-stop the node. Replicated success waits 
 
 Learners do not count toward quorum. Promotion/removal use coordinated configuration changes; current-leader removal requires transfer. Finalized membership is persisted and removed-node tombstones prevent a stale disk from silently rejoining as a voter.
 
-Residual risks include operator misuse of the membership API, address/configuration mistakes, lack of formal proof, and lack of an automatic deployment reconciler. Arbitrary StatefulSet/HPA replica changes remain unsafe even though the consensus membership protocol exists.
+Phase 7 adds an opt-in managed reconciler that obtains a quorum/apply authority observation, plans one deterministic next action, and rechecks leader/term/membership generation inside the serialized Raft path before membership changes. The process adapter uses a private same-user management socket and pidfd-based retirement checks. The Kubernetes adapter uses an explicit context/namespace, ownership/UID checks, managed-field drift rejection and resource-version-guarded replica patches. Storage is retained after member retirement.
+
+Residual risks still include operator misuse or compromise of the trusted controller principal/root, address/configuration mistakes, controller/Kubernetes API availability, lack of formal proof, lack of rolling-upgrade orchestration, and insufficient hostile-network/storage/upgrade chaos coverage. The managed profile does not make arbitrary StatefulSet/Helm/HPA replica changes safe and does not establish a hostile multi-tenant control plane.
 
 ## Snapshot/recovery risk
 
@@ -77,9 +81,11 @@ NeuralBase does not automatically route strong reads from followers to the leade
 
 SQL TLS and Raft mTLS are configuration-dependent rather than secure-by-default production profiles. In a TLS-enabled build, configuring the SQL acceptor requires SSLRequest/TLS and rejects plaintext startup. Helm TLS settings configure SQL only; Raft mTLS needs its separate enable switch, CA and certificate-name configuration. See [CONFIGURATION.md](CONFIGURATION.md#tls). Certificate provisioning/rotation/revocation remain operator responsibilities. A compromised node with valid cluster credentials remains inside the Raft trust boundary.
 
+The Phase-7 local-process adapter is a trusted-host development profile and uses plaintext Raft. The managed Kubernetes profile expects an isolated trusted namespace/network and an external controller principal with the documented RBAC permissions. Member pods do not mount Kubernetes API credentials, but compromise of the controller principal can still create/patch managed objects within its Role. This is not a production multi-tenant security boundary.
+
 ## Current production blockers
 
-Stronger production claims require secure-by-default deployment profiles, certificate/secret lifecycle, richer authorization/auditability, automatic membership reconciliation, broader partition/storage/upgrade chaos testing, and production resource/performance characterization. Arbitrary-follower strong-read routing and lower-overhead ReadIndex/lease optimization remain unimplemented. PITR and automatic DR remain unimplemented; Phase-5 backup encryption does not imply general database-at-rest encryption.
+Stronger production claims require secure-by-default deployment profiles, certificate/secret lifecycle, richer authorization/auditability, broader network/storage/upgrade chaos testing, managed upgrade/rollback semantics, controller-principal hardening, and production resource/performance characterization. Arbitrary Helm/HPA scaling remains unsupported even though the explicit Phase-7 managed profile is lifecycle-tested. Arbitrary-follower strong-read routing and lower-overhead ReadIndex/lease optimization remain unimplemented. PITR and automatic DR remain unimplemented; Phase-5 backup encryption does not imply general database-at-rest encryption.
 
 ## Evidence references
 
@@ -93,4 +99,5 @@ Stronger production claims require secure-by-default deployment profiles, certif
 - `tests/phase4_identity*.rs` — identity failover/recovery/membership/process evidence.
 - `tests/raft_persistence_fail_closed.rs` and replicated SQL snapshot/process suites — durability/failure evidence.
 - `src/backup*.rs`, `src/offline_backup.rs`, `src/online_backup.rs`, `src/restore.rs` and `tests/phase5_*` — operator recovery/security evidence.
+- `src/operator.rs`, `src/consensus/operator_control.rs`, `src/operator_admin.rs`, `ops/neuralbase_operator.py`, `ops/neuralbase_kubernetes.py` and `tests/phase7_*` — guarded managed membership/deployment evidence.
 - `CONFIDENCE.md` / `CONFIDENCE.yaml` — machine-readable claim boundary.

@@ -1,8 +1,8 @@
 # Confidence Report
 
-**Updated:** 2026-09-12
+**Updated:** 2026-09-13
 
-NeuralBase remains pre-1.0 research/development software. The evidence boundary now includes replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated Raft membership changes, strongly consistent replicated SCRAM identity, the documented Phase-5 operator backup/restore/fresh-cluster DR model, and explicit Phase-6 read-consistency modes on the leader path. It remains deliberately narrower than a production-HA database claim.
+NeuralBase remains pre-1.0 research/development software. The evidence boundary now includes replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated Raft membership changes, strongly consistent replicated SCRAM identity, the documented Phase-5 operator backup/restore/fresh-cluster DR model, explicit Phase-6 read-consistency modes on the leader path, and the opt-in Phase-7 managed process/Kubernetes membership reconciliation profile. It remains deliberately narrower than a production-HA database claim.
 
 ## Strongest evidence
 
@@ -18,6 +18,9 @@ NeuralBase remains pre-1.0 research/development software. The evidence boundary 
 - Phase 5 adds versioned offline/online backup, independent verification, authenticated NBEC encryption, fresh-target restore, fresh-generation cluster rebuild, interruption evidence and a real-process recovery path.
 - Phase 6 adds explicit `Local`, `Leader`, and `Linearizable` session modes. Strong modes require the current serving leader, use a current-term replicated barrier, and proceed only after quorum commit plus confirmed durable local apply through that barrier.
 - Phase 6 tests cover follower rejection, stale former leader partitions, leader transfer, learner/promotion/finalization, recovery readiness, restart, Phase-5 restore bootstrap, concurrent real-process reads/writes and immediate linearizable read-after-write.
+- Phase 7 adds deterministic desired-topology planning, quorum/apply authority observations, in-loop leader/term/generation guards, managed learner creation/catch-up/promotion, leader transfer/removal, durable incarnation identity, retained storage and bounded reobservation/retry behavior.
+- Phase 7 process tests use independent authenticated server/controller processes and verify SQL/SCRAM convergence through scale-out, leader restart, fresh-identity replacement and scale-in.
+- Phase 7 Kubernetes CI uses a disposable kind cluster and exercises PVC-quota partial creation failure, managed-object drift, 3→4 expansion, leader pod loss, fresh-identity replacement, 4→3 contraction, retained PVCs and SQL/SCRAM convergence.
 - PostgreSQL 16 TPC-H Q1-Q22 reference comparison remains part of CI at a deterministic small scale.
 
 ## Read-consistency scope
@@ -49,22 +52,25 @@ In configured clustered mode:
 
 Identity mutation ordering is consensus-backed, but login on a follower reads its locally applied registry without a fresh quorum barrier. Credential changes need not be visible instantly on lagging followers and do not revoke existing sessions. Standalone mode keeps the historical local registry for backward compatibility.
 
-## Membership scope
+## Membership and managed reconciliation scope
 
-The Raft layer supports explicit learner admission, learner catch-up, promotion through joint old/new voter configurations, coordinated removal, leadership-transfer constraints and durable finalized membership. This is consensus capability evidence.
+The Raft layer supports explicit learner admission, learner catch-up, promotion through joint old/new voter configurations, coordinated removal, leadership-transfer constraints and durable finalized membership.
 
-It does **not** mean the checked-in Kubernetes/Helm manifests automatically reconcile arbitrary replica-count changes. HPA remains disabled because an operator/controller still must sequence deployment changes with the membership protocol.
+The Phase-7 managed profile connects explicit desired topology to that protocol. It reobserves current committed membership through a quorum/apply authority barrier, checks guards inside the serialized Raft loop, creates fresh learner incarnations, waits for catch-up, promotes before replacement/removal, transfers leadership before leader removal, retires only after finalized committed tombstones, and retains removed storage. The Linux process and Kubernetes adapters are both executable-evidence paths rather than design-only code.
+
+This does **not** mean arbitrary changes to the checked-in static Helm/Compose/StatefulSet replica counts are safe. The managed Kubernetes profile uses separate per-incarnation StatefulSets/PVCs and must be driven through its controller. HPA remains disabled. Rolling-upgrade orchestration, automatic version/image migration, hostile multi-tenant controller isolation and production deployment certification are not part of the claim.
 
 ## What the confidence claim still excludes
 
 - `production_ready: true` or production SQL HA;
 - linearizable reads from arbitrary followers or automatic strong-read routing;
-- automatic Kubernetes membership reconciliation or safe HPA scaling;
+- arbitrary Helm/StatefulSet replica scaling or HPA safety outside the explicit managed Phase-7 controller;
+- managed rolling-upgrade/version orchestration;
 - PITR or automatic disaster recovery beyond the documented manual fresh-cluster Phase-5 procedure;
 - complete PostgreSQL semantic compatibility, SQL transaction blocks, bound parameters or constraint enforcement;
 - live-server ONNX join-order planning or distributed query exchange;
 - production-grade authorization/audit policy;
-- broad upgrade/storage-chaos certification.
+- broad upgrade/storage/network chaos certification.
 
 ## Confidence interpretation
 

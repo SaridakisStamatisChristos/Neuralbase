@@ -78,7 +78,7 @@ The Docker runtime image contains `/app/neuralbase` and `/app/neuralbase-operato
 
 The chart deploys a static StatefulSet topology. The Raft implementation supports explicit learner/joint-consensus membership changes, but the chart does not automatically orchestrate those operations when replica count changes. Do not attach an HPA.
 
-The SQL Service selects all matching pods and is not leader-aware. Use an application-controlled connection to the current leader for writes and strong reads. Docker and Kubernetes probes only open the SQL TCP port; the server binds that listener before catch-up completes, so probe success does not establish SQL serving readiness, quorum availability or leadership.
+The SQL Service selects all matching pods and is not leader-aware. Use an application-controlled connection to the current leader for writes and strong reads. Docker and static Kubernetes probes only open the SQL TCP port; the server binds that listener before catch-up completes, so probe success does not establish SQL serving readiness, quorum availability or leadership.
 
 Set `image.repository` / `image.tag` to an image you have built and made available to the cluster. The checked-in `0.1.0` tag is a packaging default, not evidence that it contains current `main`.
 
@@ -126,12 +126,14 @@ Restored clusters begin from exactly one fresh recovery authority. Additional me
 
 The consensus API supports adding a learner, catch-up, promotion, joint-consensus voter changes, removal and leadership transfer. The static chart does not reconcile these operations when `replicaCount` changes, so that value remains a bootstrap topology setting and HPA is rejected.
 
-The separate [Phase-7 managed profile](PHASE7_OPERATOR.md#managed-kubernetes-profile) connects explicit desired topology to one StatefulSet/PVC per incarnation. It checks committed membership, immutable object identity and Kubernetes resource versions before executing actions. Its CI gate includes a real kind lifecycle; Phase-7 validation remains in progress. Do not point this controller at an existing Helm deployment or change its replicas directly.
+The separate [Phase-7 managed profile](PHASE7_OPERATOR.md#managed-kubernetes-profile) connects explicit desired topology to one StatefulSet/PVC per incarnation. It checks committed membership, immutable object identity and Kubernetes resource versions before executing actions, and only changes deployment state through the guarded membership sequence. Its CI evidence includes authenticated independent-process scale/replacement and a real disposable-kind lifecycle with PVC-quota partial failure, drift, leader restart/replacement, contraction, retained PVCs and SQL/SCRAM convergence. Do not point this controller at an existing Helm deployment or change its replicas directly.
+
+The Phase-7 profile is therefore an implemented and lifecycle-tested **opt-in managed reconciler**, not a declaration that arbitrary Kubernetes scaling is safe. Static Helm/Compose assets stay static; HPA remains disabled.
 
 ## TLS
 
-Build with `--features tls`. SQL TLS and Raft mTLS remain configuration-dependent; certificate lifecycle/rotation remains an operator responsibility. Helm's TLS values configure SQL TLS only, when configured, the SQL listener rejects plaintext startup. See [TLS configuration](CONFIGURATION.md#tls) for activation, certificate-name checks, CA requirements and precedence.
+Build with `--features tls`. SQL TLS and Raft mTLS remain configuration-dependent; certificate lifecycle/rotation remains an operator responsibility. Helm's TLS values configure SQL TLS only; when configured, the SQL listener rejects plaintext startup. See [TLS configuration](CONFIGURATION.md#tls) for activation, certificate-name checks, CA requirements and precedence.
 
 ## Operational readiness boundary
 
-Current manifests demonstrate packaging for the tested replicated-table/snapshot/membership/identity engine. Phase-5 manual backup/restore/fresh-cluster DR is tested separately from deployment automation. Phase-6 strong read modes are implemented on the leader path. Production readiness still requires validated operation of the managed membership profile, target-environment security review, broader fault/upgrade validation and production performance characterization; PITR and automatic DR remain unimplemented.
+Current manifests demonstrate packaging for the tested replicated-table/snapshot/membership/identity engine. Phase-5 manual backup/restore/fresh-cluster DR is tested separately from deployment automation. Phase-6 strong read modes are implemented on the leader path. Phase 7 adds tested opt-in managed process/Kubernetes membership reconciliation, but production readiness still requires target-environment security review, broader fault/upgrade validation, managed upgrade/rollback semantics and production performance characterization. PITR, automatic DR, arbitrary Helm/HPA scaling and production HA remain unimplemented or unclaimed.
