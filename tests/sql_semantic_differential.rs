@@ -29,6 +29,16 @@ fn scalar_semantics_match_postgresql_16() {
             ordered: true,
         },
         DifferentialCase {
+            name: "text_equality_ascii",
+            sql: "SELECT 'abc' = 'abc' AS v",
+            ordered: true,
+        },
+        DifferentialCase {
+            name: "text_upper_ascii",
+            sql: "SELECT UPPER('neuralbase') AS v",
+            ordered: true,
+        },
+        DifferentialCase {
             name: "is_null",
             sql: "SELECT NULL IS NULL AS v",
             ordered: true,
@@ -111,6 +121,31 @@ fn scalar_semantics_match_postgresql_16() {
         DifferentialCase {
             name: "date_difference_epoch_independent",
             sql: "SELECT DATE '2024-01-02' - DATE '1970-01-01' AS v",
+            ordered: true,
+        },
+    ];
+
+    for case in cases {
+        assert_matches_postgres(case);
+    }
+}
+
+#[test]
+fn basic_window_semantics_match_postgresql_16() {
+    let cases = [
+        DifferentialCase {
+            name: "row_number_single_row",
+            sql: "SELECT ROW_NUMBER() OVER () AS rn",
+            ordered: true,
+        },
+        DifferentialCase {
+            name: "rank_single_row",
+            sql: "SELECT RANK() OVER (ORDER BY 1) AS rnk",
+            ordered: true,
+        },
+        DifferentialCase {
+            name: "lag_single_row",
+            sql: "SELECT LAG(7) OVER () AS previous_value",
             ordered: true,
         },
     ];
