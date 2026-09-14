@@ -46,7 +46,7 @@ async fn read_message(stream: &mut TcpStream) -> std::io::Result<(u8, Vec<u8>)> 
     let mut len = [0_u8; 4];
     stream.read_exact(&mut len).await?;
     let len = i32::from_be_bytes(len);
-    if len < 4 || len > 1_048_576 {
+    if !(4..=1_048_576).contains(&len) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "invalid backend message length",
