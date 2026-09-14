@@ -61,3 +61,8 @@ postgres = "=0.19.12"
 name = "tpch_correctness"
 path = "tests/tpch_correctness.rs"
 required-features = ["tpch-reference-tests"]
+
+[[test]]
+name = "sql_semantic_differential"
+path = "tests/sql_semantic_differential.rs"
+required-features = ["tpch-reference-tests"]

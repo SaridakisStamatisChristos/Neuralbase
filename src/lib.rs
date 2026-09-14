@@ -1,7 +1,10 @@
 pub mod auth;
 pub mod backup;
 pub mod backup_encryption;
+#[path = "binder_phase8.rs"]
 pub mod binder;
+#[path = "binder.rs"]
+mod binder_legacy;
 pub mod catalog;
 pub mod cluster;
 pub mod codec;
@@ -9,6 +12,7 @@ pub mod consensus;
 pub mod cost_model;
 pub mod distributed;
 pub mod execution;
+pub mod extended_protocol;
 pub mod gc;
 pub mod hlc;
 pub mod index_advisor;
@@ -18,7 +22,10 @@ pub mod offline_backup;
 pub mod online_backup;
 pub mod optimizer;
 pub mod protocol;
+#[path = "query_executor_phase8.rs"]
 pub mod query_executor;
+#[path = "query_executor.rs"]
+mod query_executor_legacy;
 pub mod raft_persistence;
 pub mod read_barrier;
 pub mod read_consistency;

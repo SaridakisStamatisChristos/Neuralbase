@@ -1,8 +1,8 @@
 # Confidence Report
 
-**Updated:** 2026-09-13
+**Updated:** 2026-09-14
 
-NeuralBase remains pre-1.0 research/development software. The evidence boundary now includes replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated Raft membership changes, strongly consistent replicated SCRAM identity, the documented Phase-5 operator backup/restore/fresh-cluster DR model, explicit Phase-6 read-consistency modes on the leader path, and the opt-in Phase-7 managed process/Kubernetes membership reconciliation profile. It remains deliberately narrower than a production-HA database claim.
+NeuralBase remains pre-1.0 research/development software. The evidence boundary includes replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated Raft membership changes, strongly consistent replicated SCRAM identity, the documented Phase-5 operator backup/restore/fresh-cluster DR model, explicit Phase-6 read-consistency modes on the leader path, the opt-in Phase-7 managed process/Kubernetes membership reconciliation profile, and the bounded Phase-8 SQL compatibility profile. It remains deliberately narrower than a production-HA or complete PostgreSQL-compatibility claim.
 
 ## Strongest evidence
 
@@ -21,7 +21,28 @@ NeuralBase remains pre-1.0 research/development software. The evidence boundary 
 - Phase 7 adds deterministic desired-topology planning, quorum/apply authority observations, in-loop leader/term/generation guards, managed learner creation/catch-up/promotion, leader transfer/removal, durable incarnation identity, retained storage and bounded reobservation/retry behavior.
 - Phase 7 process tests use independent authenticated server/controller processes and verify SQL/SCRAM convergence through scale-out, leader restart, fresh-identity replacement and scale-in.
 - Phase 7 Kubernetes CI uses a disposable kind cluster and exercises PVC-quota partial creation failure, managed-object drift, 3→4 expansion, leader pod loss, fresh-identity replacement, 4→3 contraction, retained PVCs and SQL/SCRAM convergence.
+- Phase 8 adds an executable `SQL_COMPATIBILITY.yaml` anti-overclaim profile and PostgreSQL-16 differential tests for a selected scalar NULL/boolean/cast/date/text surface plus basic window cases.
+- Unsupported or unbindable `UPDATE`/`DELETE` predicates now fail closed instead of broadening to an unfiltered mutation; unenforced CREATE TABLE options/constraints, named windows and explicit window frames also fail closed.
+- Compound SQL requests are rejected before partial execution. `BEGIN`, `COMMIT`, and `ROLLBACK` remain explicitly unsupported, and connection recovery after those errors is tested.
+- The extended protocol supports a bounded typed parameter subset with NULL, text and selected binary scalar encodings, statement parameter descriptions and lifecycle handling. A real Rust `postgres` client reuses a typed prepared statement against the live server.
+- Typed parameter materialization is deterministic before the established parser/binder and replicated mutation path; this is not a distributed transaction claim.
 - PostgreSQL 16 TPC-H Q1-Q22 reference comparison remains part of CI at a deterministic small scale.
+
+## Phase-8 SQL compatibility scope
+
+The authoritative compatibility inventory is [`SQL_COMPATIBILITY.yaml`](SQL_COMPATIBILITY.yaml), guarded by `tests/sql_compatibility_profile.rs`. Phase 8 intentionally distinguishes reference-tested, divergent, partial, unsupported and unsafe-clustered surfaces rather than inferring support from parser acceptance.
+
+Within the promoted Phase-8 scope:
+
+- one ordinary request contains exactly one statement; compound requests fail before partial execution;
+- selected no-FROM scalar SQL has PostgreSQL-16 differential evidence for three-valued NULL logic, `CASE`, `COALESCE`, `NULLIF`, `IN`/`NOT IN`, selected casts, DATE subtraction and selected text semantics;
+- basic implemented window shapes retain their expression semantics and have selected PostgreSQL reference evidence; named windows and explicit frames remain unsupported;
+- typed Parse/Bind supports declared BOOL, INT2/4/8, FLOAT4/8, TEXT/VARCHAR/BPCHAR and DATE OIDs, including NULL plus text and selected binary encodings;
+- OID 0 inference, binary row output, complete RowDescription metadata and full PostgreSQL extended-protocol error recovery are not implemented;
+- SQL transaction blocks remain unsupported and ordinary statements are independent/autocommit-style requests;
+- locale-aware collation parity, exact PostgreSQL NUMERIC/DECIMAL semantics, broad timestamp/timezone behavior and enforceable general constraints remain outside the claim.
+
+The PostgreSQL differential harness is reusable evidence for selected semantics, not a statement of general PostgreSQL compatibility.
 
 ## Read-consistency scope
 
@@ -63,11 +84,14 @@ This does **not** mean arbitrary changes to the checked-in static Helm/Compose/S
 ## What the confidence claim still excludes
 
 - `production_ready: true` or production SQL HA;
+- complete PostgreSQL semantic or wire-protocol compatibility;
+- SQL transaction blocks, savepoints or distributed multi-statement transactions;
+- arbitrary parameter OIDs/inference, binary row results or full extended-protocol failed-transaction/error-state behavior;
+- general constraint enforcement, exact PostgreSQL NUMERIC/DECIMAL semantics, broad timestamp/timezone semantics or locale-aware collations;
 - linearizable reads from arbitrary followers or automatic strong-read routing;
 - arbitrary Helm/StatefulSet replica scaling or HPA safety outside the explicit managed Phase-7 controller;
 - managed rolling-upgrade/version orchestration;
 - PITR or automatic disaster recovery beyond the documented manual fresh-cluster Phase-5 procedure;
-- complete PostgreSQL semantic compatibility, SQL transaction blocks, bound parameters or constraint enforcement;
 - live-server ONNX join-order planning or distributed query exchange;
 - production-grade authorization/audit policy;
 - broad upgrade/storage/network chaos certification.

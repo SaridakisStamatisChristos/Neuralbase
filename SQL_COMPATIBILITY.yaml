@@ -1,0 +1,272 @@
+version: 1
+phase: 8
+updated: 2026-09-14
+postgresql_reference_version: 16
+full_postgresql_compatibility: false
+profile_name: neuralbase_explicit_sql_profile
+status_values:
+  - supported_reference_tested
+  - supported_divergent
+  - partial
+  - unsupported
+  - unsafe_clustered
+
+features:
+  - feature: select.tpch_q1_q22_exact_forms
+    family: query
+    status: supported_reference_tested
+    supported_syntax: checked-in TPC-H Q1-Q22 SQL strings
+    semantic_scope: deterministic small reference dataset only
+    postgres_reference_evidence:
+      - tests/tpch_correctness.rs
+    neuralbase_divergence: no broad PostgreSQL SELECT compatibility implied
+    clustered_mode_restriction: none beyond declared read-consistency contract
+    introduced: pre_phase8
+
+  - feature: request.multi_statement
+    family: parser
+    status: unsupported
+    supported_syntax: exactly one parsed statement per ordinary request
+    semantic_scope: compound simple-query requests are rejected before any statement is executed; no first-statement partial execution is permitted
+    postgres_reference_evidence: []
+    neuralbase_evidence:
+      - tests/phase8_transaction_protocol.rs
+    neuralbase_divergence: PostgreSQL simple-query multi-statement behavior is not implemented
+    clustered_mode_restriction: none
+    introduced: pre_phase8
+
+  - feature: dml.insert_values
+    family: dml
+    status: partial
+    supported_syntax: INSERT INTO table [(columns)] VALUES (...)[, ...]
+    semantic_scope: literal VALUES rows; INSERT SELECT is unsupported
+    postgres_reference_evidence: []
+    neuralbase_divergence: narrower expression and type-coercion surface than PostgreSQL
+    clustered_mode_restriction: clustered success requires deterministic Raft commit and confirmed local apply
+    introduced: pre_phase8
+
+  - feature: dml.update_delete_predicate
+    family: dml
+    status: partial
+    supported_syntax: single column comparison against a coercible literal using = != > < >= <=
+    semantic_scope: unsupported or unbindable WHERE predicates fail closed and never become unfiltered mutations
+    postgres_reference_evidence: []
+    neuralbase_evidence:
+      - tests/phase8_dml_predicate_safety.rs
+    neuralbase_divergence: rich SELECT predicates do not imply UPDATE/DELETE predicate support
+    clustered_mode_restriction: leader materializes concrete effects before replicated proposal
+    introduced: phase8
+
+  - feature: type.integer
+    family: types
+    status: partial
+    supported_syntax: INT INTEGER INT4 BIGINT INT8
+    semantic_scope: integer literals, selected explicit casts, and stored integer columns in declared engine scope
+    postgres_reference_evidence:
+      - tests/tpch_correctness.rs
+      - tests/sql_semantic_differential.rs
+    neuralbase_divergence: PostgreSQL width/overflow/cast matrix is not fully implemented
+    clustered_mode_restriction: persistent encodings must remain deterministic
+    introduced: pre_phase8
+
+  - feature: type.numeric_decimal
+    family: types
+    status: partial
+    supported_syntax: DECIMAL NUMERIC
+    semantic_scope: declarations currently map to DOUBLE
+    postgres_reference_evidence: []
+    neuralbase_divergence: precision and scale are not preserved
+    clustered_mode_restriction: floating-point semantics are not a PostgreSQL NUMERIC compatibility claim
+    introduced: pre_phase8
+
+  - feature: type.boolean
+    family: types
+    status: partial
+    supported_syntax: BOOLEAN and selected scalar casts
+    semantic_scope: scalar BOOLEAN semantics are reference-tested in the Phase-8 no-FROM evaluator; durable declarations still map through the historical integer representation
+    postgres_reference_evidence:
+      - tests/sql_semantic_differential.rs
+    neuralbase_divergence: complete PostgreSQL boolean storage/type-coercion fidelity is not implemented
+    clustered_mode_restriction: deterministic persistent representation only within declared scope
+    introduced: pre_phase8
+
+  - feature: type.date
+    family: date_time
+    status: partial
+    supported_syntax: DATE and selected date functions/expressions
+    semantic_scope: stored DATE uses deterministic days-since-Unix-epoch representation; scalar DATE subtraction has PostgreSQL-reference evidence
+    postgres_reference_evidence:
+      - tests/tpch_correctness.rs
+      - tests/dml_correctness.rs
+      - tests/sql_semantic_differential.rs
+    neuralbase_divergence: complete PostgreSQL date/time/timestamp/timezone semantics are not implemented
+    clustered_mode_restriction: no leader-local wall-clock evaluation may independently occur on followers
+    introduced: pre_phase8
+
+  - feature: type.timestamp
+    family: date_time
+    status: unsupported
+    supported_syntax: none as a declared durable compatibility contract
+    semantic_scope: no Phase-8 timestamp compatibility claim yet
+    postgres_reference_evidence: []
+    neuralbase_divergence: unsupported
+    clustered_mode_restriction: nondeterministic wall-clock writes must be materialized leader-side or rejected if introduced
+    introduced: phase8_inventory
+
+  - feature: null.three_valued_logic
+    family: null_semantics
+    status: partial
+    supported_syntax: selected scalar comparisons, AND OR NOT, IN NOT IN, CASE, COALESCE and NULLIF
+    semantic_scope: Phase-8 no-FROM scalar expressions have PostgreSQL-16 differential evidence; broader table/join/aggregate NULL edge cases remain outside the promoted contract
+    postgres_reference_evidence:
+      - tests/sql_semantic_differential.rs
+    neuralbase_divergence: table executor ordering, aggregate and join NULL edge cases still require explicit differential coverage
+    clustered_mode_restriction: none beyond deterministic persistent effects
+    introduced: phase8
+
+  - feature: text.collation
+    family: text
+    status: supported_divergent
+    supported_syntax: TEXT VARCHAR CHAR within implemented expression surface
+    semantic_scope: deterministic engine text equality/ordering; selected ASCII equality/function behavior is differentially checked, but no locale-aware PostgreSQL collation parity claim is made
+    postgres_reference_evidence:
+      - tests/sql_semantic_differential.rs
+    neuralbase_divergence: locale and PostgreSQL collation catalogs are not implemented
+    clustered_mode_restriction: locale/environment-dependent persistent effects are outside the supported profile
+    introduced: phase8_inventory
+
+  - feature: window.basic
+    family: window
+    status: partial
+    supported_syntax: ROW_NUMBER RANK LAG LEAD with implemented PARTITION/ORDER handling
+    semantic_scope: validated partition/order window expressions route through the general query executor; explicit frames and named windows fail closed
+    postgres_reference_evidence:
+      - tests/session14_advanced_sql.rs
+      - tests/tpch_correctness.rs
+      - tests/sql_semantic_differential.rs
+    neuralbase_evidence:
+      - tests/phase8_window_safety.rs
+    neuralbase_divergence: general PostgreSQL frame semantics and named-window resolution are not implemented
+    clustered_mode_restriction: read-only query surface
+    introduced: pre_phase8
+
+  - feature: ddl.create_drop_table
+    family: ddl
+    status: partial
+    supported_syntax: CREATE TABLE and DROP TABLE within documented column-type scope
+    semantic_scope: catalog/table persistence is replicated in configured clusters
+    postgres_reference_evidence: []
+    neuralbase_divergence: constraints/defaults/ALTER/index DDL/views/schema/database management are not implied
+    clustered_mode_restriction: persistent DDL must use replicated state-machine path
+    introduced: pre_phase8
+
+  - feature: ddl.constraints
+    family: ddl
+    status: unsupported
+    supported_syntax: none as an enforceable schema contract
+    semantic_scope: PRIMARY KEY UNIQUE FOREIGN KEY CHECK DEFAULT and table constraints are rejected fail closed rather than silently discarded
+    postgres_reference_evidence: []
+    neuralbase_evidence:
+      - tests/phase8_ddl_safety.rs
+    neuralbase_divergence: PostgreSQL constraint semantics are not implemented
+    clustered_mode_restriction: none because feature is unsupported
+    introduced: phase8
+
+  - feature: transaction.sql_blocks
+    family: transactions
+    status: unsupported
+    supported_syntax: none
+    semantic_scope: BEGIN COMMIT ROLLBACK savepoints and failed-transaction session state are not implemented; ordinary statements are independent/autocommit execution requests; rejected transaction control does not poison the connection
+    postgres_reference_evidence: []
+    neuralbase_evidence:
+      - tests/phase8_transaction_protocol.rs
+    neuralbase_divergence: MVCC library transactions do not establish SQL multi-statement transaction semantics
+    clustered_mode_restriction: no distributed-transaction or cross-Raft-mutation atomicity claim
+    introduced: pre_phase8
+
+  - feature: wire.extended_parse_execute
+    family: wire_protocol
+    status: partial
+    supported_syntax: Parse Bind Execute Describe Close Sync subset
+    semantic_scope: prepared SQL text and the declared Phase-8 typed-parameter subset traverse the live execution path; named statements and portals have bounded per-session lifecycle
+    postgres_reference_evidence:
+      - tests/session14_advanced_sql.rs
+    neuralbase_evidence:
+      - tests/phase8_extended_protocol.rs
+      - tests/phase8_postgres_client.rs
+    neuralbase_divergence: PostgreSQL extended-protocol failed-cycle state, full result metadata, arbitrary parameter OIDs and binary row encoding are not implemented
+    clustered_mode_restriction: extended reads preserve the same Phase-6 read barrier as simple-query reads
+    introduced: phase8
+
+  - feature: wire.bind_parameters
+    family: wire_protocol
+    status: partial
+    supported_syntax: Parse-declared BOOL INT2 INT4 INT8 FLOAT4 FLOAT8 TEXT VARCHAR BPCHAR DATE OIDs with bounded Bind values
+    semantic_scope: text parameters and selected PostgreSQL binary scalar encodings, including UTF-8 TEXT/VARCHAR/BPCHAR, are deterministically materialized before the established parser/binder path; NULL is supported; OID 0 inference fails closed
+    postgres_reference_evidence: []
+    neuralbase_evidence:
+      - src/extended_protocol.rs
+      - tests/phase8_extended_protocol.rs
+      - tests/phase8_postgres_client.rs
+      - tests/phase8_parameter_determinism.rs
+    neuralbase_divergence: PostgreSQL context-sensitive type inference, arbitrary OIDs, arrays/composites and the complete binary parameter type matrix are not implemented
+    clustered_mode_restriction: decoding/materialization occurs deterministically before any persistent mutation proposal
+    introduced: phase8
+
+  - feature: wire.result_formats
+    family: wire_protocol
+    status: partial
+    supported_syntax: text row result format code 0; binary preference tolerated only for commands that emit no row data
+    semantic_scope: default/text row results use the existing wire encoder; binary result requests for row-producing statements fail closed; a binary preference on no-row SET is semantically irrelevant and accepted for real-client interoperability
+    postgres_reference_evidence: []
+    neuralbase_evidence:
+      - src/extended_protocol.rs
+      - tests/phase8_postgres_client.rs
+    neuralbase_divergence: PostgreSQL binary row encoding and per-column result-format negotiation are not implemented
+    clustered_mode_restriction: none
+    introduced: phase8
+
+  - feature: wire.describe
+    family: wire_protocol
+    status: partial
+    supported_syntax: Describe Statement and Describe Portal
+    semantic_scope: statements return ParameterDescription followed by NoData; portals return NoData
+    postgres_reference_evidence: []
+    neuralbase_evidence:
+      - tests/phase8_extended_protocol.rs
+    neuralbase_divergence: PostgreSQL-compatible RowDescription/result metadata is not yet implemented
+    clustered_mode_restriction: none
+    introduced: phase8
+
+  - feature: explain.plan
+    family: diagnostics
+    status: partial
+    supported_syntax: EXPLAIN SELECT and EXPLAIN ANALYZE SELECT
+    semantic_scope: fixed plan text; ANALYZE has limited correctness value
+    postgres_reference_evidence: []
+    neuralbase_divergence: not a PostgreSQL EXPLAIN-plan compatibility claim
+    clustered_mode_restriction: read-consistency barrier still applies to EXPLAIN reads
+    introduced: pre_phase8
+
+  - feature: authorization.sql_privileges
+    family: security
+    status: unsupported
+    supported_syntax: none
+    semantic_scope: authentication exists; general SQL authorization/RBAC does not
+    postgres_reference_evidence: []
+    neuralbase_divergence: PostgreSQL GRANT/REVOKE and privilege semantics are not implemented
+    clustered_mode_restriction: none because feature is unsupported
+    introduced: pre_phase8
+
+  - feature: read_consistency.neuralbase_modes
+    family: neuralbase_extension
+    status: supported_divergent
+    supported_syntax: SET neuralbase_read_consistency = local|leader|linearizable
+    semantic_scope: Local is default; strong modes require current leader and replicated quorum/apply barrier
+    postgres_reference_evidence: []
+    neuralbase_evidence:
+      - tests/phase6_read_barrier.rs
+      - tests/phase6_read_consistency_process.rs
+    neuralbase_divergence: NeuralBase extension, not PostgreSQL semantics
+    clustered_mode_restriction: followers reject strong modes; no arbitrary-follower routing
+    introduced: phase6

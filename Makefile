@@ -7,6 +7,7 @@ lint:
 
 confidence:
 	cargo test --test confidence_yaml --locked
+	cargo test --test sql_compatibility_profile --locked
 
 bench:
 	cargo test --test perf_tpch --release --locked -- --nocapture
@@ -20,6 +21,10 @@ bench-full:
 
 tpch-correctness:
 	cargo test --test tpch_correctness --features "tls,tpch-reference-tests" --locked -- --nocapture --test-threads=1
+	cargo test --test sql_semantic_differential --features "tls,tpch-reference-tests" --locked -- --nocapture --test-threads=1
+
+sql-differential:
+	cargo test --test sql_semantic_differential --features "tls,tpch-reference-tests" --locked -- --nocapture --test-threads=1
 
 adversarial:
 	cargo test --test adversarial_vectorized --features simd --locked
