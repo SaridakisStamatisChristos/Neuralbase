@@ -100,7 +100,12 @@ where
     let nb_stmt = match parse_nb_statement(sql) {
         Ok(s) => s,
         Err(err) => {
-            write_error_and_ready(socket, &err.to_string(), "42601").await?;
+            // The outer simple-query handler owns ReadyForQuery. Extended
+            // execution likewise reaches ReadyForQuery through Sync. Emitting
+            // it here would leave a stale second 'Z' queued after a Q error.
+            socket
+                .write_all(&build_error_response(&err.to_string(), "42601"))
+                .await?;
             return Ok(());
         }
     };
@@ -128,7 +133,11 @@ where
         let p = match bind_nb_statement(&nb_stmt, catalog) {
             Ok(plan) => plan,
             Err(err) => {
-                write_error_and_ready(socket, &err.to_string(), "42P01").await?;
+                // As above, do not emit ReadyForQuery from inside execution.
+                // Q and Sync are the protocol synchronization boundaries.
+                socket
+                    .write_all(&build_error_response(&err.to_string(), "42P01"))
+                    .await?;
                 return Ok(());
             }
         };
