@@ -25,6 +25,7 @@ pub mod pitr;
 pub mod pitr_archive;
 pub mod pitr_branch;
 pub mod pitr_replay;
+pub mod pitr_retention;
 pub mod pitr_runtime;
 pub mod protocol;
 #[path = "query_executor_phase8.rs"]
