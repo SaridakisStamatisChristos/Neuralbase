@@ -17,9 +17,13 @@ use crate::storage::StorageEngine;
 
 pub const PITR_ARCHIVE_DIR_ENV: &str = "NEURALBASE_PITR_ARCHIVE_DIR";
 pub const PITR_KEY_FILE_ENV: &str = "NEURALBASE_PITR_KEY_FILE";
+pub const PITR_MAX_SEGMENTS_ENV: &str = "NEURALBASE_PITR_MAX_SEGMENTS";
+pub const DEFAULT_MAX_ARCHIVE_SEGMENTS: u64 = 100_000;
+pub const HARD_MAX_ARCHIVE_SEGMENTS: u64 = 1_000_000;
 
 pub struct PitrRuntimeArchiver {
     writer: PitrArchiveWriter,
+    max_segments: u64,
 }
 
 impl PitrRuntimeArchiver {
@@ -38,6 +42,32 @@ impl PitrRuntimeArchiver {
             }
             return Ok(None);
         };
+        let max_segments = match std::env::var(PITR_MAX_SEGMENTS_ENV) {
+            Ok(raw) => {
+                let parsed = raw.parse::<u64>().map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("{PITR_MAX_SEGMENTS_ENV} must be an integer"),
+                    )
+                })?;
+                if parsed == 0 || parsed > HARD_MAX_ARCHIVE_SEGMENTS {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "{PITR_MAX_SEGMENTS_ENV} must be in 1..={HARD_MAX_ARCHIVE_SEGMENTS}"
+                        ),
+                    ));
+                }
+                parsed
+            }
+            Err(std::env::VarError::NotPresent) => DEFAULT_MAX_ARCHIVE_SEGMENTS,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("{PITR_MAX_SEGMENTS_ENV} must be UTF-8"),
+                ))
+            }
+        };
 
         let key = key_file
             .map(|path| load_pitr_archive_key(Path::new(&path)).map_err(io::Error::other))
@@ -45,6 +75,12 @@ impl PitrRuntimeArchiver {
         let writer = PitrArchiveWriter::open(Path::new(&archive_dir), key)
             .map_err(|error| io::Error::other(format!("open PITR archive stream: {error}")))?;
         let status = writer.status();
+        if status.frontier.segments > max_segments {
+            return Err(io::Error::other(format!(
+                "PITR stream already has {} segments, above configured limit {max_segments}",
+                status.frontier.segments
+            )));
+        }
         let durable = state_machine
             .durable_state()
             .map_err(|error| io::Error::other(format!("read durable apply state for PITR: {error}")))?;
@@ -74,7 +110,10 @@ impl PitrRuntimeArchiver {
             }
         }
 
-        Ok(Some(Self { writer }))
+        Ok(Some(Self {
+            writer,
+            max_segments,
+        }))
     }
 
     /// Publish the archive record required for one already-durably-applied entry.
@@ -85,6 +124,13 @@ impl PitrRuntimeArchiver {
         if entry.index <= self.writer.metadata().baseline_index {
             return Ok(());
         }
+        let status = self.writer.status();
+        if entry.index > status.frontier.index && status.frontier.segments >= self.max_segments {
+            return Err(format!(
+                "PITR archive segment limit {} reached at durable frontier {}; create a verified rollover baseline/branch before further writes",
+                self.max_segments, status.frontier.index
+            ));
+        }
         self.writer
             .append_committed(entry)
             .map(|_| ())
@@ -93,6 +139,10 @@ impl PitrRuntimeArchiver {
 
     pub fn durable_frontier(&self) -> u64 {
         self.writer.status().frontier.index
+    }
+
+    pub fn segment_limit(&self) -> u64 {
+        self.max_segments
     }
 
     pub fn timeline(&self) -> [u8; 16] {
