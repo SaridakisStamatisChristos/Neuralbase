@@ -9,6 +9,7 @@ use neuralbase::consensus::{
 use neuralbase::gc::GarbageCollector;
 use neuralbase::hlc::HlcClock;
 use neuralbase::mvcc::TransactionManager;
+use neuralbase::pitr_runtime::PitrRuntimeArchiver;
 use neuralbase::raft_persistence::RocksDbRaftPersistenceStore;
 use neuralbase::replicated_gateway::ReplicatedSqlGateway;
 use neuralbase::replicated_snapshot_hooks::ReplicatedSqlSnapshotHooks;
@@ -199,6 +200,15 @@ fn spawn_raft<T: Transport>(
         Arc::clone(&catalog),
         Arc::clone(&clock),
     ));
+    let mut pitr_archiver =
+        PitrRuntimeArchiver::open_from_env(Arc::clone(&engine), state_machine.as_ref())?;
+    if let Some(archiver) = pitr_archiver.as_ref() {
+        tracing::info!(
+            archive_frontier = archiver.durable_frontier(),
+            timeline = ?archiver.timeline(),
+            "PITR synchronous archive fence enabled"
+        );
+    }
 
     let raw_store: Arc<dyn RaftPersistenceStore> =
         Arc::new(RocksDbRaftPersistenceStore::new(Arc::clone(&engine)));
@@ -212,7 +222,11 @@ fn spawn_raft<T: Transport>(
             let result = apply_state_machine
                 .apply_log_entry(&committed.entry)
                 .map(|_| ())
-                .map_err(|error| error.to_string());
+                .map_err(|error| error.to_string())
+                .and_then(|()| match pitr_archiver.as_mut() {
+                    Some(archiver) => archiver.archive_applied(&committed.entry),
+                    None => Ok(()),
+                });
             let failed = result.is_err();
             let _ = committed.completion.send(result);
             if failed {
