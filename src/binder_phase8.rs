@@ -7,7 +7,9 @@
 
 use crate::catalog::Catalog;
 use crate::sql::NbStatement;
-use sqlparser::ast::{Expr, FunctionArg, FunctionArgExpr, Query, SelectItem, SetExpr, Statement, WindowType};
+use sqlparser::ast::{
+    Expr, FunctionArg, FunctionArgExpr, Query, SelectItem, SetExpr, Statement, WindowType,
+};
 
 pub use crate::binder_legacy::{
     coerce_expr_to_value, date_str_to_epoch_days, BindError, BoundPlan, CreateTablePlan,
@@ -22,6 +24,19 @@ pub fn bind_statement(
     catalog: &dyn Catalog,
 ) -> Result<BoundPlan, BindError> {
     validate_statement_semantics(statement)?;
+
+    // The legacy single-table fast path reduces projection expressions to
+    // column names/aliases. That is correct for its historical scalar subset,
+    // but it would discard a validated window expression such as
+    // ROW_NUMBER() OVER (...). Route window-bearing queries directly to the
+    // general executor, which is the implementation that actually evaluates
+    // the supported Phase-8 partition/order window subset.
+    if let Statement::Query(query) = statement {
+        if query_contains_window(query) {
+            return Ok(BoundPlan::SelectQuery(query.clone()));
+        }
+    }
+
     let plan = crate::binder_legacy::bind_statement(statement, catalog)?;
     validate_persistent_dml_predicate(statement, &plan)?;
     Ok(plan)
@@ -133,7 +148,10 @@ fn validate_expr_windows(expr: &Expr) -> Result<(), BindError> {
             validate_expr_windows(left)?;
             validate_expr_windows(right)?;
         }
-        Expr::UnaryOp { expr, .. } | Expr::Nested(expr) | Expr::IsNull(expr) | Expr::IsNotNull(expr) => {
+        Expr::UnaryOp { expr, .. }
+        | Expr::Nested(expr)
+        | Expr::IsNull(expr)
+        | Expr::IsNotNull(expr) => {
             validate_expr_windows(expr)?;
         }
         Expr::Between {
@@ -169,13 +187,104 @@ fn validate_expr_windows(expr: &Expr) -> Result<(), BindError> {
             }
         }
         Expr::Subquery(query)
-        | Expr::Exists { subquery: query, .. }
+        | Expr::Exists {
+            subquery: query, ..
+        }
         | Expr::InSubquery {
             subquery: query, ..
         } => validate_query_semantics(query)?,
         _ => {}
     }
     Ok(())
+}
+
+fn query_contains_window(query: &Query) -> bool {
+    query
+        .with
+        .as_ref()
+        .is_some_and(|with| with.cte_tables.iter().any(|cte| query_contains_window(&cte.query)))
+        || set_expr_contains_window(&query.body)
+}
+
+fn set_expr_contains_window(set_expr: &SetExpr) -> bool {
+    match set_expr {
+        SetExpr::Select(select) => {
+            select.projection.iter().any(|item| match item {
+                SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
+                    expr_contains_window(expr)
+                }
+                _ => false,
+            }) || select
+                .selection
+                .as_ref()
+                .is_some_and(expr_contains_window)
+                || select.having.as_ref().is_some_and(expr_contains_window)
+        }
+        SetExpr::Query(query) => query_contains_window(query),
+        SetExpr::SetOperation { left, right, .. } => {
+            set_expr_contains_window(left) || set_expr_contains_window(right)
+        }
+        _ => false,
+    }
+}
+
+fn expr_contains_window(expr: &Expr) -> bool {
+    match expr {
+        Expr::Function(function) => {
+            function.over.is_some()
+                || match &function.args {
+                    sqlparser::ast::FunctionArguments::List(args) => {
+                        args.args.iter().any(|arg| match arg {
+                            FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
+                            | FunctionArg::Named {
+                                arg: FunctionArgExpr::Expr(expr),
+                                ..
+                            } => expr_contains_window(expr),
+                            _ => false,
+                        })
+                    }
+                    _ => false,
+                }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            expr_contains_window(left) || expr_contains_window(right)
+        }
+        Expr::UnaryOp { expr, .. }
+        | Expr::Nested(expr)
+        | Expr::IsNull(expr)
+        | Expr::IsNotNull(expr) => expr_contains_window(expr),
+        Expr::Between {
+            expr, low, high, ..
+        } => {
+            expr_contains_window(expr)
+                || expr_contains_window(low)
+                || expr_contains_window(high)
+        }
+        Expr::InList { expr, list, .. } => {
+            expr_contains_window(expr) || list.iter().any(expr_contains_window)
+        }
+        Expr::Case {
+            operand,
+            conditions,
+            results,
+            else_result,
+        } => {
+            operand.as_ref().is_some_and(|expr| expr_contains_window(expr))
+                || conditions.iter().any(expr_contains_window)
+                || results.iter().any(expr_contains_window)
+                || else_result
+                    .as_ref()
+                    .is_some_and(|expr| expr_contains_window(expr))
+        }
+        Expr::Subquery(query)
+        | Expr::Exists {
+            subquery: query, ..
+        }
+        | Expr::InSubquery {
+            subquery: query, ..
+        } => query_contains_window(query),
+        _ => false,
+    }
 }
 
 /// The historical DML binder represents "no WHERE clause" and "WHERE clause
