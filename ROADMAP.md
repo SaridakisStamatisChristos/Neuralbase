@@ -1,6 +1,6 @@
 # NeuralBase roadmap
 
-NeuralBase is a pre-1.0 experimental SQL engine. The distributed correctness baseline now includes replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated Raft membership changes, strongly consistent replicated SCRAM identity, the tested Phase-5 operator backup/restore/fresh-cluster recovery model, explicit Phase-6 read-consistency modes, and the tested opt-in Phase-7 managed membership reconciliation profile.
+NeuralBase is a pre-1.0 experimental SQL engine. The distributed correctness baseline now includes replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated Raft membership changes, strongly consistent replicated SCRAM identity, the tested Phase-5 operator backup/restore/fresh-cluster recovery model, explicit Phase-6 read-consistency modes, the tested opt-in Phase-7 managed membership reconciliation profile, and the bounded Phase-8 SQL semantic/compatibility profile.
 
 This is an engineering roadmap, not a release-date commitment.
 
@@ -35,7 +35,7 @@ This is an engineering roadmap, not a release-date commitment.
 - [x] Leadership-transfer constraint before removing the current leader.
 - [x] Durable finalized membership that overrides stale process-local bootstrap peers after restart.
 - [x] Removed-node tombstoning/stale-disk rejoin protection.
-- [x] 3 → 4 → 3 lifecycle tests with writes before, during and after membership changes.
+- [x] 3 → 4 → 3 lifecycle tests with writes preserved.
 
 Phase 3 is a consensus capability, not an automatic Kubernetes scaling controller. The checked-in StatefulSet/Helm topology still requires deliberate membership operations; HPA-driven replica changes remain rejected.
 
@@ -97,13 +97,43 @@ The initial implementation deliberately uses one replicated control/log entry pe
 - [x] Real disposable-kind lifecycle covering partial PVC-quota failure, configuration drift, 3→4 expansion, leader pod loss, fresh-identity replacement, 4→3 contraction and SQL/SCRAM convergence.
 - [x] Exact PR-head CI #315 passed core tests, lint, confidence, adversarial, PostgreSQL reference, deployment-manifest and managed Kubernetes lifecycle gates on `fb7d099c6248f18b324d8817fb2878885dbe38a8` before claim synchronization.
 
-The managed profile is explicit and opt-in. It does **not** adopt the static Helm/Compose topology, make raw replica-count changes safe, enable HPA, provide rolling-upgrade orchestration, or establish production HA/security readiness. Final milestone closure still requires the synchronized final PR head to pass CI and the merged `main` commit to pass post-merge CI.
+The managed profile is explicit and opt-in. It does **not** adopt the static Helm/Compose topology, make raw replica-count changes safe, enable HPA, provide rolling-upgrade orchestration, or establish production HA/security readiness.
 
-See [the operator guide](docs/PHASE7_OPERATOR.md). Phase 8 has not started.
+See [the operator guide](docs/PHASE7_OPERATOR.md).
 
-## P1 — SQL semantic depth
+## Phase 8 — SQL semantic depth and compatibility profile
 
-Expand SQL without weakening replicated-state safety. Current concrete gaps include SQL transaction blocks, Bind parameter substitution/result formats, constraint enforcement, exact numeric/boolean types, complete statement handling, and fail-closed unsupported DML predicates. Also improve window/frame semantics, DDL/catalog features, NULL/collation/date/time fidelity and differential tests. See [SQL support](docs/SQL_SUPPORT.md#client-and-sql-limitations).
+The Phase-8 implementation candidate passed the full code-only PR-head CI gate in **CI #366** on `5edcfc9b8a5df383a1302f7371bc89cda08f6564`. Milestone closure still requires the synchronized documentation/profile head to pass exact-head CI and the merged `main` commit to pass post-merge CI.
+
+- [x] Authoritative executable [`SQL_COMPATIBILITY.yaml`](SQL_COMPATIBILITY.yaml) with explicit supported/reference-tested/divergent/partial/unsupported boundaries and anti-overclaim tests.
+- [x] Reusable PostgreSQL 16 semantic differential harness alongside the existing TPC-H reference gate.
+- [x] Selected scalar semantic depth for SQL three-valued NULL logic, `CASE`, `COALESCE`, `NULLIF`, `IN`/`NOT IN`, selected casts, DATE subtraction and text equality/casing reference cases.
+- [x] Fail-closed DML predicate boundary so unsupported `UPDATE`/`DELETE` WHERE clauses cannot become unfiltered mutations.
+- [x] Fail-closed CREATE TABLE options/constraints that are parsed but not enforceable.
+- [x] Window semantic routing that preserves implemented window expressions; named windows and explicit frame clauses fail closed.
+- [x] Exactly-one-statement request boundary; compound simple-query input fails before partial execution.
+- [x] Explicit SQL transaction boundary: `BEGIN`, `COMMIT`, `ROLLBACK` remain unsupported; ordinary statements remain independent/autocommit-style requests.
+- [x] Bounded typed PostgreSQL extended-protocol parameters with declared scalar OIDs, NULLs, text encodings and selected binary encodings.
+- [x] `ParameterDescription`, statement/portal lifecycle handling and fail-closed missing statement/portal behavior.
+- [x] Real Rust `postgres` client prepared-statement evidence against the live server.
+- [x] Deterministic typed parameter materialization before the existing parser/binder and replicated mutation path.
+
+Phase 8 does **not** claim full PostgreSQL compatibility, distributed SQL transactions, arbitrary OID/type inference, binary row output, complete RowDescription metadata, full extended-protocol failed-transaction/error state, exact PostgreSQL NUMERIC/DECIMAL semantics, general constraint enforcement, locale-aware collations, broad timestamp/timezone semantics, or general named/frame window support.
+
+## P1 — remaining SQL compatibility depth
+
+Continue only with executable evidence and without weakening replicated-state safety:
+
+- exact NUMERIC/DECIMAL precision, scale and overflow behavior;
+- broader date/time/timestamp/timezone semantics;
+- locale/collation catalog and ordering semantics;
+- enforceable constraints/defaults and additional persistent DDL only when durable meaning can be preserved;
+- broader window/frame semantics;
+- fuller PostgreSQL result metadata, result-format negotiation and extended-protocol error recovery;
+- broader typed parameter coverage and safe inference only where deterministic semantics can be established;
+- SQL transaction blocks only after their local/distributed semantics can be implemented explicitly rather than simulated.
+
+See [SQL support](docs/SQL_SUPPORT.md#client-and-sql-limitations).
 
 ## P2 — optimizer and execution performance
 
@@ -118,7 +148,7 @@ Only after lifecycle safety remains intact:
 - cost model calibration, spills and memory accounting;
 - reproducible write/read/failover/snapshot throughput/latency measurement.
 
-Performance work must not weaken acknowledgement, read-consistency, snapshot, membership, identity, recovery or managed-reconciliation semantics.
+Performance work must not weaken acknowledgement, read-consistency, snapshot, membership, identity, recovery, managed-reconciliation or SQL fail-closed semantics.
 
 ## P2 — production hardening
 
@@ -133,7 +163,7 @@ Performance work must not weaken acknowledgement, read-consistency, snapshot, me
 
 ## Explicit non-goals for the current stage
 
-The project should not optimize for claims of production SQL HA, arbitrary-follower linearizable reads, automatic HPA-driven scaling, official benchmark certification, or broad PostgreSQL compatibility unsupported by executable evidence.
+The project should not optimize for claims of production SQL HA, arbitrary-follower linearizable reads, automatic HPA-driven scaling, official benchmark certification, broad PostgreSQL compatibility unsupported by executable evidence, or distributed SQL transaction semantics that are not implemented.
 
 ## Definition of a stronger pre-1.0 distributed milestone
 
@@ -145,4 +175,5 @@ A future milestone suitable for stronger HA/database claims should demonstrate a
 4. the current replicated SCRAM identity model;
 5. the current explicit leader-path `Local`/`Leader`/`Linearizable` read-consistency contract;
 6. tested backup/restore and disaster-recovery procedures;
-7. deployment/security assumptions matching an operator-tested topology.
+7. the explicit SQL compatibility contract with executable differential/reference evidence;
+8. deployment/security assumptions matching an operator-tested topology.

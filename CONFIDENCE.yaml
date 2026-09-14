@@ -1,8 +1,8 @@
 version: 4
-updated: 2026-09-13
+updated: 2026-09-14
 
 system:
-  scope: local_sql_engine_plus_replicated_tables_snapshots_membership_identity_backup_read_consistency_and_managed_reconciliation
+  scope: local_sql_engine_plus_replicated_tables_snapshots_membership_identity_backup_read_consistency_managed_reconciliation_and_phase8_sql_profile
   effective_confidence: 0.78
   production_ready: false
   distributed_sql_replication: true
@@ -46,39 +46,60 @@ system:
     Confidence covers the tested local SQL/MVCC engine, replicated persistent-table
     mutations, SQL-aware snapshot/recovery, coordinated learner/joint-consensus
     membership changes, replicated SCRAM identity, Phase-5 operator recovery,
-    Phase-6 Local/Leader/Linearizable leader-path read semantics, and the opt-in
-    Phase-7 managed process/Kubernetes membership reconciliation profile. Replicated
-    mutation success and strong-read barriers wait for Raft quorum commit and
-    confirmed durable local state-machine apply. Managed reconciliation sequences
-    fresh learner creation/catch-up/promotion, leader transfer, removal and retained
-    storage under guarded committed membership. This does not imply production HA,
-    linearizable arbitrary-follower reads, automatic strong-read routing, arbitrary
-    Helm/HPA replica scaling, PITR, or automatic disaster recovery.
+    Phase-6 Local/Leader/Linearizable leader-path read semantics, the opt-in Phase-7
+    managed process/Kubernetes membership reconciliation profile, and the explicit
+    Phase-8 SQL compatibility profile. Phase 8 adds fail-closed unsupported DML/DDL
+    semantics, single-statement request enforcement, selected PostgreSQL-16
+    differential scalar/window evidence, and a typed extended-protocol subset with
+    real postgres-client evidence. Replicated mutation success and strong-read
+    barriers still wait for Raft quorum commit and confirmed durable local
+    state-machine apply. This does not imply production HA, full PostgreSQL
+    compatibility, SQL transaction blocks, arbitrary-follower linearizable reads,
+    automatic strong-read routing, arbitrary Helm/HPA replica scaling, PITR, or
+    automatic disaster recovery.
 
 artifacts:
   - artifact: wire_protocol_v3
     effective: 0.68
-    status: tested
+    status: tested_partial_extended_protocol
     evidence:
       - tests/session1_foundation.rs
       - tests/session14_advanced_sql.rs
+      - tests/phase8_extended_protocol.rs
+      - tests/phase8_postgres_client.rs
+      - tests/phase8_parameter_determinism.rs
     limitation: >-
-      Partial protocol surface; Bind does not substitute parameter values or
-      negotiate result formats. SQL transaction blocks are not implemented.
+      Phase 8 supports a bounded typed Parse/Bind/Execute/Describe/Close/Sync subset,
+      NULL parameters, text and selected binary scalar parameter encodings, and
+      ParameterDescription. Row-producing binary result formats, OID 0 inference,
+      complete metadata and PostgreSQL extended-protocol failed-transaction/error
+      state are not implemented. SQL transaction blocks remain unsupported.
 
   - artifact: sql_parser
     effective: 0.78
     status: tested
     evidence:
       - tests/tpch_correctness.rs
+      - tests/phase8_transaction_protocol.rs
+      - tests/sql_compatibility_profile.rs
       - fuzz/fuzz_targets/fuzz_sql_parser.rs
+    limitation: >-
+      Ordinary requests are intentionally limited to exactly one SQL statement;
+      compound input is rejected before execution rather than partially executed.
 
   - artifact: binder
     effective: 0.76
-    status: tested
+    status: tested_fail_closed_phase8_boundary
     evidence:
       - tests/session1_foundation.rs
       - tests/tpch_correctness.rs
+      - tests/phase8_dml_predicate_safety.rs
+      - tests/phase8_ddl_safety.rs
+      - tests/phase8_window_safety.rs
+    limitation: >-
+      Unsupported UPDATE/DELETE predicates, unenforced CREATE TABLE options and
+      constraints, named windows and explicit window frames fail closed. This does
+      not establish broad PostgreSQL binder compatibility.
 
   - artifact: physical_executor
     effective: 0.78
@@ -93,10 +114,34 @@ artifacts:
     evidence:
       - tests/tpch_correctness.rs
       - tests/session14_advanced_sql.rs
+      - tests/sql_semantic_differential.rs
     note: >-
       Checked-in TPC-H Q1-Q22 SQL strings have PostgreSQL-16 row-for-row reference
-      comparisons on the deterministic small test dataset. This is correctness
-      evidence, not production-scale performance evidence.
+      comparisons on the deterministic small test dataset. Phase 8 additionally
+      differentially checks a selected scalar NULL/boolean/cast/date/text surface
+      and basic window cases. This is bounded correctness evidence, not general
+      PostgreSQL semantic compatibility or production-scale performance evidence.
+
+  - artifact: sql_semantic_profile
+    effective: 0.72
+    status: explicit_bounded_phase8_profile
+    evidence:
+      - SQL_COMPATIBILITY.yaml
+      - tests/sql_compatibility_profile.rs
+      - tests/sql_semantic_differential.rs
+      - tests/phase8_dml_predicate_safety.rs
+      - tests/phase8_ddl_safety.rs
+      - tests/phase8_window_safety.rs
+      - tests/phase8_transaction_protocol.rs
+      - tests/phase8_extended_protocol.rs
+      - tests/phase8_postgres_client.rs
+      - tests/phase8_parameter_determinism.rs
+    limitation: >-
+      Full PostgreSQL compatibility is explicitly false. SQL transaction blocks,
+      general constraints, exact NUMERIC semantics, timestamp/timezone semantics,
+      locale-aware collations, general named/frame windows, arbitrary parameter OIDs,
+      binary row results and complete extended-protocol recovery/metadata remain
+      outside the Phase-8 contract.
 
   - artifact: storage_engine
     effective: 0.78
@@ -196,11 +241,14 @@ artifacts:
       - tests/replicated_sql_snapshot_bootstrap.rs
       - tests/replicated_sql_snapshot_cycles.rs
       - tests/phase6_read_barrier.rs
+      - tests/phase8_parameter_determinism.rs
     limitation: >-
       Persistent table CREATE/DROP/INSERT/UPDATE/DELETE and SQL-aware snapshot
-      recovery are tested. Reads default to Local, while explicit Leader and
-      Linearizable modes are tested on the current-leader path. Arbitrary-follower
-      linearizable reads and production HA are not claimed.
+      recovery are tested. Phase-8 typed parameters are materialized into concrete
+      SQL/bound mutation semantics before the established replicated path. This is
+      not a distributed SQL transaction claim. Reads default to Local, while
+      explicit Leader and Linearizable modes are tested on the current-leader path.
+      Arbitrary-follower linearizable reads and production HA are not claimed.
 
   - artifact: read_consistency
     effective: 0.76
@@ -315,17 +363,19 @@ artifacts:
 verification_policy:
   - No performance claim without a reproducible benchmark and workload context.
   - distributed_sql_replication means only the machine-readable replication_scope above.
-  - production_ready and production_ha remain false despite membership, identity, recovery, read-consistency and managed-reconciliation progress.
-  - Keep SQL correctness claims synchronized with executable PostgreSQL reference tests.
+  - production_ready and production_ha remain false despite membership, identity, recovery, read-consistency, managed-reconciliation, and Phase-8 SQL progress.
+  - Keep SQL correctness claims synchronized with SQL_COMPATIBILITY.yaml and executable PostgreSQL reference tests.
   - Keep arbitrary Helm/HPA scaling unsupported; the managed Phase-7 profile must sequence changes through guarded committed membership.
   - Replicated identity claims require verifier-only log material and explicit legacy migration semantics.
   - Follower authentication reads locally applied identity without a quorum barrier; user DDL does not terminate existing sessions.
   - Library optimizer/exchange components do not establish live SQL planner or distributed-query integration.
   - Strong-read claims require explicit current-leader authority, quorum barrier, confirmed local apply, and no silent downgrade.
-  - A release head must pass tests, lint, confidence checks, adversarial tests, TPC-H reference validation, Helm rendering, and the managed Kubernetes lifecycle gate.
+  - Phase-8 extended-protocol claims remain limited to the declared typed subset; SQL transactions, arbitrary OID inference, binary row output and full PostgreSQL protocol error state remain unsupported.
+  - A release head must pass tests, lint, confidence checks, adversarial tests, TPC-H plus semantic PostgreSQL reference validation, Helm rendering, and the managed Kubernetes lifecycle gate.
 
 next_high_value_work:
+  - Continue SQL semantic depth with exact NUMERIC/decimal behavior, broader date/time/timestamp semantics, locale/collation work, enforceable constraints and fuller wire metadata/error-state compatibility.
+  - Preserve the explicit unsupported boundary for SQL transaction blocks until multi-statement/distributed semantics can be implemented without weakening replicated-state safety.
   - Harden the managed reconciliation profile for upgrades, broader network/storage chaos, and production-grade security without enabling raw HPA scaling.
-  - Deepen PostgreSQL compatibility without weakening distributed lifecycle or read-consistency safety.
   - Expand authorization/security and upgrade/storage-chaos hardening.
   - Optimize strong reads with ReadIndex/lease mechanics only if the Phase-6 public contract and failure semantics remain unchanged.
