@@ -3,8 +3,8 @@
 
 use neuralbase::catalog::InMemoryCatalog;
 use neuralbase::{server, storage, storage_executor};
-use postgres::{Client, NoTls};
 use postgres::types::Type;
+use postgres::{Client, NoTls};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
@@ -30,10 +30,8 @@ async fn postgres_client_reuses_typed_prepared_parameter_over_live_server() {
     );
     let outcome = tokio::task::spawn_blocking(move || -> Result<(), postgres::Error> {
         let mut client = Client::connect(&connection, NoTls)?;
-        let statement = client.prepare_typed(
-            "SET neuralbase_read_consistency = $1",
-            &[Type::TEXT],
-        )?;
+        let statement =
+            client.prepare_typed("SET neuralbase_read_consistency = $1", &[Type::TEXT])?;
 
         client.execute(&statement, &[&"local"])?;
         client.execute(&statement, &[&"stale"])?;

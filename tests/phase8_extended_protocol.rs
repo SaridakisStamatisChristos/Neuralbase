@@ -151,17 +151,14 @@ async fn typed_bind_parameter_reaches_live_execute_path() {
         .write_all(&execute_message("p1"))
         .await
         .expect("execute write");
-    client
-        .write_all(&sync_message())
-        .await
-        .expect("sync write");
+    client.write_all(&sync_message()).await.expect("sync write");
 
     let messages = read_until_ready(&mut client).await;
     assert!(messages.iter().any(|(tag, _)| *tag == b'1'));
     assert!(messages.iter().any(|(tag, _)| *tag == b'2'));
-    assert!(messages.iter().any(|(tag, payload)| {
-        *tag == b'D' && String::from_utf8_lossy(payload).contains("42")
-    }));
+    assert!(messages
+        .iter()
+        .any(|(tag, payload)| { *tag == b'D' && String::from_utf8_lossy(payload).contains("42") }));
     assert!(!messages.iter().any(|(tag, _)| *tag == b'E'));
 
     server_task.abort();
@@ -205,10 +202,7 @@ async fn describe_statement_returns_parameter_description() {
         .write_all(&describe_statement("s1"))
         .await
         .expect("describe write");
-    client
-        .write_all(&sync_message())
-        .await
-        .expect("sync write");
+    client.write_all(&sync_message()).await.expect("sync write");
 
     let messages = read_until_ready(&mut client).await;
     let parameter_description = messages

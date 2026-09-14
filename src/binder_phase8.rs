@@ -199,11 +199,11 @@ fn validate_expr_windows(expr: &Expr) -> Result<(), BindError> {
 }
 
 fn query_contains_window(query: &Query) -> bool {
-    query
-        .with
-        .as_ref()
-        .is_some_and(|with| with.cte_tables.iter().any(|cte| query_contains_window(&cte.query)))
-        || set_expr_contains_window(&query.body)
+    query.with.as_ref().is_some_and(|with| {
+        with.cte_tables
+            .iter()
+            .any(|cte| query_contains_window(&cte.query))
+    }) || set_expr_contains_window(&query.body)
 }
 
 fn set_expr_contains_window(set_expr: &SetExpr) -> bool {
@@ -214,10 +214,7 @@ fn set_expr_contains_window(set_expr: &SetExpr) -> bool {
                     expr_contains_window(expr)
                 }
                 _ => false,
-            }) || select
-                .selection
-                .as_ref()
-                .is_some_and(expr_contains_window)
+            }) || select.selection.as_ref().is_some_and(expr_contains_window)
                 || select.having.as_ref().is_some_and(expr_contains_window)
         }
         SetExpr::Query(query) => query_contains_window(query),
@@ -255,11 +252,7 @@ fn expr_contains_window(expr: &Expr) -> bool {
         | Expr::IsNotNull(expr) => expr_contains_window(expr),
         Expr::Between {
             expr, low, high, ..
-        } => {
-            expr_contains_window(expr)
-                || expr_contains_window(low)
-                || expr_contains_window(high)
-        }
+        } => expr_contains_window(expr) || expr_contains_window(low) || expr_contains_window(high),
         Expr::InList { expr, list, .. } => {
             expr_contains_window(expr) || list.iter().any(expr_contains_window)
         }
@@ -269,7 +262,9 @@ fn expr_contains_window(expr: &Expr) -> bool {
             results,
             else_result,
         } => {
-            operand.as_ref().is_some_and(|expr| expr_contains_window(expr))
+            operand
+                .as_ref()
+                .is_some_and(|expr| expr_contains_window(expr))
                 || conditions.iter().any(expr_contains_window)
                 || results.iter().any(expr_contains_window)
                 || else_result

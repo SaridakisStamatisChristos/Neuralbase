@@ -43,7 +43,8 @@ fn typed_bound_update_becomes_concrete_deterministic_plan_before_gateway() {
     assert_eq!(sql, "UPDATE accounts SET balance = 125 WHERE id = 7");
 
     let statement = parse_statement(&sql).expect("parse materialized SQL");
-    let BoundPlan::Update(plan) = bind_statement(&statement, &catalog()).expect("bind update") else {
+    let BoundPlan::Update(plan) = bind_statement(&statement, &catalog()).expect("bind update")
+    else {
         panic!("expected update plan");
     };
 

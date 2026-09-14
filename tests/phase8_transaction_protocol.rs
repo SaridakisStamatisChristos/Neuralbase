@@ -114,9 +114,9 @@ async fn unsupported_transaction_control_does_not_poison_connection() {
     assert!(!begin.iter().any(|(tag, _)| *tag == b'D'));
 
     let select = simple_query(&mut client, "SELECT 7").await;
-    assert!(select.iter().any(|(tag, payload)| {
-        *tag == b'D' && String::from_utf8_lossy(payload).contains('7')
-    }));
+    assert!(select
+        .iter()
+        .any(|(tag, payload)| { *tag == b'D' && String::from_utf8_lossy(payload).contains('7') }));
     assert!(!select.iter().any(|(tag, _)| *tag == b'E'));
 
     server_task.abort();
@@ -135,9 +135,9 @@ async fn compound_simple_query_fails_before_any_partial_result_and_session_recov
     assert!(!compound.iter().any(|(tag, _)| *tag == b'D'));
 
     let select = simple_query(&mut client, "SELECT 9").await;
-    assert!(select.iter().any(|(tag, payload)| {
-        *tag == b'D' && String::from_utf8_lossy(payload).contains('9')
-    }));
+    assert!(select
+        .iter()
+        .any(|(tag, payload)| { *tag == b'D' && String::from_utf8_lossy(payload).contains('9') }));
     assert!(!select.iter().any(|(tag, _)| *tag == b'E'));
 
     server_task.abort();

@@ -141,7 +141,11 @@ fn phase8_anti_overclaim_boundaries_are_locked() {
         field(feature(&profile, "wire.describe"), "status").as_str(),
         Some("partial")
     );
-    for name in ["wire.bind_parameters", "wire.result_formats", "wire.describe"] {
+    for name in [
+        "wire.bind_parameters",
+        "wire.result_formats",
+        "wire.describe",
+    ] {
         assert_ne!(
             field(feature(&profile, name), "status").as_str(),
             Some("supported_reference_tested"),

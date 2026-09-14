@@ -618,12 +618,8 @@ mod tests {
         let mut message = bind(vec![Some(b"local".to_vec())], vec![1]);
         message.result_formats = vec![1];
         assert_eq!(
-            materialize_bound_sql(
-                "SET neuralbase_read_consistency = $1",
-                &[TEXTOID],
-                &message,
-            )
-            .unwrap(),
+            materialize_bound_sql("SET neuralbase_read_consistency = $1", &[TEXTOID], &message,)
+                .unwrap(),
             "SET neuralbase_read_consistency = 'local'"
         );
     }
