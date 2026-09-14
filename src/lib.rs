@@ -21,6 +21,7 @@ pub mod mvcc;
 pub mod offline_backup;
 pub mod online_backup;
 pub mod optimizer;
+pub mod pitr;
 pub mod protocol;
 #[path = "query_executor_phase8.rs"]
 pub mod query_executor;
