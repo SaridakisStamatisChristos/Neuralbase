@@ -7,11 +7,14 @@ use std::process::ExitCode;
 
 use neuralbase::backup::MAX_BACKUP_BYTES;
 use neuralbase::backup_encryption::{
-    load_backup_encryption_key, verify_encrypted_backup_file, MAX_ENCRYPTED_BACKUP_BYTES,
+    create_encrypted_offline_backup, load_backup_encryption_key, verify_encrypted_backup_file,
+    MAX_ENCRYPTED_BACKUP_BYTES,
 };
-use neuralbase::offline_backup::verify_backup_file;
+use neuralbase::offline_backup::{create_offline_backup, verify_backup_file};
 use neuralbase::pitr_archive::{load_pitr_archive_key, PitrArchiveKey, PitrArchiveWriter};
+use neuralbase::pitr_branch::initialize_branch_stream;
 use neuralbase::pitr_replay::{recover_verified_new_cluster, RecoveryTarget};
+use neuralbase::pitr_retention::retire_replaced_stream;
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1).collect()) {
@@ -148,6 +151,90 @@ fn run(args: Vec<String>) -> Result<(), String> {
             );
             Ok(())
         }
+        "branch" => {
+            let parent_archive = required_flag(&args[1..], "--parent-archive")?;
+            let branch_target = required_flag(&args[1..], "--branch-target")?;
+            let db = required_flag(&args[1..], "--db")?;
+            let baseline_out = required_flag(&args[1..], "--baseline-out")?;
+            let archive = required_flag(&args[1..], "--archive")?;
+            let parent_key_file = optional_flag(&args[1..], "--parent-archive-key-file")?;
+            let archive_key_file = optional_flag(&args[1..], "--archive-key-file")?;
+            let baseline_key_file = optional_flag(&args[1..], "--baseline-key-file")?;
+            reject_unknown_flags(
+                &args[1..],
+                &[
+                    "--parent-archive",
+                    "--branch-target",
+                    "--db",
+                    "--baseline-out",
+                    "--archive",
+                    "--parent-archive-key-file",
+                    "--archive-key-file",
+                    "--baseline-key-file",
+                ],
+            )?;
+            let parent = open_archive(Path::new(parent_archive), parent_key_file)?;
+            let target = resolve_branch_target(branch_target, &parent)?;
+            let baseline_out = PathBuf::from(baseline_out);
+            if let Some(key_path) = baseline_key_file {
+                let key = load_backup_encryption_key(Path::new(key_path))
+                    .map_err(|error| error.to_string())?;
+                create_encrypted_offline_backup(Path::new(db), &baseline_out, &key)
+                    .map_err(|error| error.to_string())?;
+            } else {
+                create_offline_backup(Path::new(db), &baseline_out)
+                    .map_err(|error| error.to_string())?;
+            }
+            let baseline_artifact = read_baseline_artifact(&baseline_out)?;
+            let baseline = load_verified_backup(&baseline_out, baseline_key_file)?;
+            let child_key = load_archive_key(archive_key_file)?;
+            let status = initialize_branch_stream(
+                Path::new(archive),
+                &parent,
+                target,
+                &baseline,
+                &baseline_artifact,
+                child_key,
+            )
+            .map_err(|error| error.to_string())?;
+            println!(
+                "PITR branch initialized: parent_timeline={} branch_index={} timeline={} baseline={} encrypted={}",
+                hex(&parent.metadata().timeline),
+                target,
+                hex(&status.metadata.timeline),
+                baseline_out.display(),
+                status.metadata.encrypted,
+            );
+            Ok(())
+        }
+        "retire" => {
+            let archive = required_flag(&args[1..], "--archive")?;
+            let replacement_archive = required_flag(&args[1..], "--replacement-archive")?;
+            let archive_key_file = optional_flag(&args[1..], "--archive-key-file")?;
+            let replacement_key_file =
+                optional_flag(&args[1..], "--replacement-archive-key-file")?;
+            reject_unknown_flags(
+                &args[1..],
+                &[
+                    "--archive",
+                    "--replacement-archive",
+                    "--archive-key-file",
+                    "--replacement-archive-key-file",
+                ],
+            )?;
+            let parent = open_archive(Path::new(archive), archive_key_file)?;
+            let replacement = open_archive(Path::new(replacement_archive), replacement_key_file)?;
+            let report = retire_replaced_stream(Path::new(archive), &parent, &replacement)
+                .map_err(|error| error.to_string())?;
+            println!(
+                "PITR archive retired: timeline={} frontier={} segments={} replacement_timeline={}",
+                hex(&report.retired_timeline),
+                report.retired_frontier,
+                report.retired_segments,
+                hex(&report.replacement_timeline),
+            );
+            Ok(())
+        }
         "diagnose" => {
             let archive_path = required_flag(&args[1..], "--archive")?;
             let archive_key_file = optional_flag(&args[1..], "--archive-key-file")?;
@@ -241,6 +328,22 @@ fn parse_target(raw: &str) -> Result<RecoveryTarget, String> {
     }
 }
 
+fn resolve_branch_target(raw: &str, parent: &PitrArchiveWriter) -> Result<u64, String> {
+    let status = parent.status();
+    match raw {
+        "baseline" => Ok(status.metadata.baseline_index),
+        "latest" => Ok(status.frontier.index),
+        _ => {
+            let index = raw.parse::<u64>().map_err(|_| {
+                "--branch-target must be baseline, latest, or an exact u64 recovery index"
+                    .to_string()
+            })?;
+            parent.verify_target(index).map_err(|error| error.to_string())?;
+            Ok(index)
+        }
+    }
+}
+
 fn required_flag<'a>(args: &'a [String], flag: &str) -> Result<&'a str, String> {
     let mut index = 0;
     while index < args.len() {
@@ -311,10 +414,15 @@ fn usage() -> String {
         "  neuralbase-pitr verify --archive <dir> [--archive-key-file <key>]",
         "  neuralbase-pitr targets --archive <dir> [--archive-key-file <key>]",
         "  neuralbase-pitr recover --backup <NBBK-or-NBEC> --archive <dir> --target <baseline|latest|index> --target-dir <new-db> --node-id <fresh-id> [--backup-key-file <key>] [--archive-key-file <key>]",
+        "  neuralbase-pitr branch --parent-archive <dir> --branch-target <baseline|latest|index> --db <stopped-recovered-db> --baseline-out <new-backup> --archive <new-dir> [--parent-archive-key-file <key>] [--baseline-key-file <key>] [--archive-key-file <key>]",
+        "  neuralbase-pitr retire --archive <old-dir> --replacement-archive <verified-child-dir> [--archive-key-file <key>] [--replacement-archive-key-file <key>]",
         "  neuralbase-pitr diagnose --archive <dir> [--archive-key-file <key>]",
         "",
         "Runtime archival is enabled separately with NEURALBASE_PITR_ARCHIVE_DIR and optional NEURALBASE_PITR_KEY_FILE.",
         "Archive-enabled runtime uses a synchronous durability fence: confirmed Raft apply waits for finalized archive publication.",
+        "NEURALBASE_PITR_MAX_SEGMENTS bounds one stream; rollover by creating a verified branch baseline before retiring the parent.",
+        "branch uses an offline backup of the stopped recovered database and creates a distinct child timeline.",
+        "retire must be run only after the old runtime archive writer is quiesced; ambiguity preserves the old data.",
         "Timestamp targets are intentionally unsupported in archive v1; use an exact recovery index.",
         "Keys are raw 32-byte out-of-band files and are never accepted directly on argv.",
     ]
@@ -354,5 +462,22 @@ mod tests {
         ])
         .unwrap_err();
         assert!(error.contains("--target"));
+    }
+
+    #[test]
+    fn branch_requires_explicit_recovery_boundary() {
+        let error = run(vec!["branch".to_string()]).unwrap_err();
+        assert!(error.contains("--parent-archive"));
+    }
+
+    #[test]
+    fn retire_requires_replacement_archive() {
+        let error = run(vec![
+            "retire".into(),
+            "--archive".into(),
+            "old".into(),
+        ])
+        .unwrap_err();
+        assert!(error.contains("--replacement-archive"));
     }
 }
