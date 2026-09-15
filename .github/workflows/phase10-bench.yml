@@ -20,7 +20,7 @@ concurrency:
 jobs:
   exact-base-head-characterization:
     runs-on: ubuntu-24.04
-    timeout-minutes: 50
+    timeout-minutes: 70
     env:
       LIBCLANG_PATH: /usr/lib/llvm-18/lib
       ROCKSDB_INCLUDE_DIR: /usr/include
@@ -94,6 +94,26 @@ jobs:
           cargo test --test perf_tpch --release --locked -- bench_tpch_q1_q6_records_measurements --nocapture --test-threads=1 \
             | tee /tmp/phase10-results/base-tpch.log
 
+          scenario() {
+            local name="$1"; shift
+            local start end elapsed status
+            start=$(date +%s%N)
+            set +e
+            "$@"
+            status=$?
+            set -e
+            end=$(date +%s%N)
+            elapsed=$((end-start))
+            printf 'PHASE10_RESULT {"schema":1,"label":"baseline","commit":"%s","name":"%s","path":"existing_correctness_scenario","unit":"ns","warmup_iterations":0,"measured_iterations":1,"min":%s,"p50":%s,"p95":%s,"max":%s,"mean":%s,"extra":{"scenario_wall_time":true,"exit_status":%s}}\n' "$BASE_SHA" "$name" "$elapsed" "$elapsed" "$elapsed" "$elapsed" "$elapsed" "$status"
+            return "$status"
+          }
+          {
+            scenario snapshot_compaction_restart cargo test --test replicated_sql_snapshot_cycles --release --locked repeated_compaction_restart_and_suffix_replay_remain_safe -- --nocapture --test-threads=1
+            scenario backup_verify_restore_fresh_generation cargo test --test phase5_cluster_recovery --release --locked restored_cluster_uses_fresh_generation_and_survives_failover_and_full_restart -- --nocapture --test-threads=1
+            scenario membership_learner_catchup_promotion cargo test --test phase7_guarded_membership --release --locked guarded_admission_learner_restart_leader_loss_promotion_transfer_removal -- --nocapture --test-threads=1
+            scenario pitr_exact_target_branch_restart cargo test --test phase9_pitr_process --release --locked process_pitr_exact_target_identity_branch_and_restart -- --nocapture --test-threads=1
+          } | tee /tmp/phase10-results/base-lifecycle.log
+
       - name: Measure exact Phase-10 head
         shell: bash
         run: |
@@ -109,6 +129,26 @@ jobs:
             | tee /tmp/phase10-results/head-cluster.log
           cargo test --test perf_tpch --release --locked -- bench_tpch_q1_q6_records_measurements --nocapture --test-threads=1 \
             | tee /tmp/phase10-results/head-tpch.log
+
+          scenario() {
+            local name="$1"; shift
+            local start end elapsed status
+            start=$(date +%s%N)
+            set +e
+            "$@"
+            status=$?
+            set -e
+            end=$(date +%s%N)
+            elapsed=$((end-start))
+            printf 'PHASE10_RESULT {"schema":1,"label":"head","commit":"%s","name":"%s","path":"existing_correctness_scenario","unit":"ns","warmup_iterations":0,"measured_iterations":1,"min":%s,"p50":%s,"p95":%s,"max":%s,"mean":%s,"extra":{"scenario_wall_time":true,"exit_status":%s}}\n' "$HEAD_SHA" "$name" "$elapsed" "$elapsed" "$elapsed" "$elapsed" "$elapsed" "$status"
+            return "$status"
+          }
+          {
+            scenario snapshot_compaction_restart cargo test --test replicated_sql_snapshot_cycles --release --locked repeated_compaction_restart_and_suffix_replay_remain_safe -- --nocapture --test-threads=1
+            scenario backup_verify_restore_fresh_generation cargo test --test phase5_cluster_recovery --release --locked restored_cluster_uses_fresh_generation_and_survives_failover_and_full_restart -- --nocapture --test-threads=1
+            scenario membership_learner_catchup_promotion cargo test --test phase7_guarded_membership --release --locked guarded_admission_learner_restart_leader_loss_promotion_transfer_removal -- --nocapture --test-threads=1
+            scenario pitr_exact_target_branch_restart cargo test --test phase9_pitr_process --release --locked process_pitr_exact_target_identity_branch_and_restart -- --nocapture --test-threads=1
+          } | tee /tmp/phase10-results/head-lifecycle.log
 
       - name: Extract machine-readable results
         if: always()
