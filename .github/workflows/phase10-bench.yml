@@ -66,6 +66,7 @@ jobs:
           cp tests/perf_phase10_planning.rs /tmp/phase10-harness/
           cp tests/perf_phase10_tpch_scales.rs /tmp/phase10-harness/
           cp tests/perf_phase10_memory.rs /tmp/phase10-harness/
+          cp tests/perf_phase10_server_components.rs /tmp/phase10-harness/
 
       - name: Capture runner environment
         run: |
@@ -94,6 +95,8 @@ jobs:
             | tee /tmp/phase10-results/base-query-storage.log
           cargo test --test perf_phase10_planning --release --locked -- --ignored --nocapture --test-threads=1 \
             | tee /tmp/phase10-results/base-planning.log
+          cargo test --test perf_phase10_server_components --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/base-server-components.log
           cargo test --test perf_phase10_cluster --release --locked -- --ignored --nocapture --test-threads=1 \
             | tee /tmp/phase10-results/base-cluster.log
           cargo test --test perf_phase10_endpoint --release --locked -- --ignored --nocapture --test-threads=1 \
@@ -140,6 +143,8 @@ jobs:
             | tee /tmp/phase10-results/head-query-storage.log
           cargo test --test perf_phase10_planning --release --locked -- --ignored --nocapture --test-threads=1 \
             | tee /tmp/phase10-results/head-planning.log
+          cargo test --test perf_phase10_server_components --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/head-server-components.log
           cargo test --test perf_phase10_cluster --release --locked -- --ignored --nocapture --test-threads=1 \
             | tee /tmp/phase10-results/head-cluster.log
           cargo test --test perf_phase10_endpoint --release --locked -- --ignored --nocapture --test-threads=1 \
