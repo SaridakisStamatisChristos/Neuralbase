@@ -1,0 +1,129 @@
+name: phase10-bench
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/phase10-bench.yml'
+      - 'Makefile'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase10-bench-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  exact-base-head-characterization:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      LIBCLANG_PATH: /usr/lib/llvm-18/lib
+      ROCKSDB_INCLUDE_DIR: /usr/include
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Checkout Phase-10 head with history
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            llvm-18-dev \
+            libclang-18-dev \
+            clang-18 \
+            librocksdb-dev \
+            nasm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.88.0'
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-phase10-${{ hashFiles('Cargo.lock') }}
+
+      - name: Preserve identical Phase-10 harness
+        run: |
+          mkdir -p /tmp/phase10-harness /tmp/phase10-results
+          cp tests/perf_phase10.rs /tmp/phase10-harness/
+          cp tests/perf_phase10_cluster.rs /tmp/phase10-harness/
+
+      - name: Capture runner environment
+        run: |
+          {
+            echo "base_sha=$BASE_SHA"
+            echo "head_sha=$HEAD_SHA"
+            echo "runner_os=${RUNNER_OS}"
+            echo "kernel=$(uname -a)"
+            echo "rustc=$(rustc --version --verbose | tr '\n' ' ')"
+            echo "cpu=$(lscpu | grep -E 'Model name|CPU\(s\)|Thread|Core|Socket' | tr '\n' ';')"
+            echo "memory=$(grep MemTotal /proc/meminfo)"
+            echo "filesystem=$(df -T . | tail -1)"
+          } | tee /tmp/phase10-results/environment.txt
+
+      - name: Measure exact Phase-10 base
+        shell: bash
+        run: |
+          set -euo pipefail
+          git reset --hard
+          git clean -fd
+          git checkout --detach "$BASE_SHA"
+          cp /tmp/phase10-harness/perf_phase10.rs tests/
+          cp /tmp/phase10-harness/perf_phase10_cluster.rs tests/
+          export PHASE10_LABEL=baseline
+          export PHASE10_MEASURED_COMMIT="$BASE_SHA"
+          cargo test --test perf_phase10 --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/base-query-storage.log
+          cargo test --test perf_phase10_cluster --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/base-cluster.log
+          cargo test --test perf_tpch --release --locked -- bench_tpch_q1_q6_records_measurements --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/base-tpch.log
+
+      - name: Measure exact Phase-10 head
+        shell: bash
+        run: |
+          set -euo pipefail
+          git reset --hard
+          git clean -fd
+          git checkout --detach "$HEAD_SHA"
+          export PHASE10_LABEL=head
+          export PHASE10_MEASURED_COMMIT="$HEAD_SHA"
+          cargo test --test perf_phase10 --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/head-query-storage.log
+          cargo test --test perf_phase10_cluster --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/head-cluster.log
+          cargo test --test perf_tpch --release --locked -- bench_tpch_q1_q6_records_measurements --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/head-tpch.log
+
+      - name: Extract machine-readable results
+        if: always()
+        shell: bash
+        run: |
+          grep -h '^PHASE10_RESULT ' /tmp/phase10-results/*.log 2>/dev/null \
+            | sed 's/^PHASE10_RESULT //' \
+            > /tmp/phase10-results/results.jsonl || true
+          cat /tmp/phase10-results/results.jsonl || true
+
+      - name: Upload Phase-10 characterization artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase10-exact-base-head-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: /tmp/phase10-results
+          if-no-files-found: error
+          retention-days: 30
