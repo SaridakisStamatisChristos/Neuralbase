@@ -94,7 +94,11 @@ fn phase10_parse_bind_plan_characterization() {
         bind_samples.push(start.elapsed().as_nanos());
         black_box(plan);
     }
-    report("binder_simple_table_select", "bind_nb_statement", &bind_samples);
+    report(
+        "binder_simple_table_select",
+        "bind_nb_statement",
+        &bind_samples,
+    );
 
     let plan = bind_nb_statement(&statement, &catalog).expect("bind once for planning benchmark");
     for _ in 0..WARMUP {
