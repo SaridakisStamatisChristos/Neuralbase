@@ -130,6 +130,29 @@ fn wait_ready(process: &mut NodeProcess, port: u16) -> Client {
     }
 }
 
+fn is_leadership_not_ready(error: &postgres::Error) -> bool {
+    error
+        .as_db_error()
+        .is_some_and(|db| matches!(db.code().code(), "25006" | "57P03"))
+}
+
+fn execute_setup_mutation_when_leader(client: &mut Client, sql: &str, description: &str) {
+    let deadline = Instant::now() + START_TIMEOUT;
+    loop {
+        match client.simple_query(sql) {
+            Ok(_) => return,
+            Err(error) if is_leadership_not_ready(&error) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "endpoint never became mutation-ready while {description}: {error}"
+                );
+                std::thread::sleep(Duration::from_millis(30));
+            }
+            Err(error) => panic!("{description}: {error}"),
+        }
+    }
+}
+
 fn row_count(messages: &[SimpleQueryMessage]) -> usize {
     messages
         .iter()
@@ -176,29 +199,19 @@ fn phase10_real_endpoint_characterization() {
     let mut process = start_node(&root, sql_port, raft_port, metrics_port);
     let mut client = wait_ready(&mut process, sql_port);
 
-    // Retry mutations only while the single voter is still becoming the serving
-    // leader. Once a statement succeeds, all timed operations use the same
-    // established connection and no ambiguous retry is performed.
-    let deadline = Instant::now() + START_TIMEOUT;
-    loop {
-        match client.simple_query(
-            "CREATE TABLE phase10_endpoint_items (id BIGINT, name TEXT)",
-        ) {
-            Ok(_) => break,
-            Err(error)
-                if error
-                    .as_db_error()
-                    .is_some_and(|db| matches!(db.code().code(), "25006" | "57P03")) =>
-            {
-                assert!(Instant::now() < deadline, "endpoint never became mutation-ready");
-                std::thread::sleep(Duration::from_millis(30));
-            }
-            Err(error) => panic!("create benchmark table: {error}"),
-        }
-    }
-    client
-        .simple_query("INSERT INTO phase10_endpoint_items VALUES (1, 'baseline')")
-        .expect("seed benchmark table");
+    // Setup retries are restricted to explicit fail-closed leadership errors.
+    // Those errors occur before a mutation is accepted, so this never retries an
+    // ambiguous acknowledged write. Timed operations below are never retried.
+    execute_setup_mutation_when_leader(
+        &mut client,
+        "CREATE TABLE phase10_endpoint_items (id BIGINT, name TEXT)",
+        "create benchmark table",
+    );
+    execute_setup_mutation_when_leader(
+        &mut client,
+        "INSERT INTO phase10_endpoint_items VALUES (1, 'baseline')",
+        "seed benchmark table",
+    );
 
     measure_query(&mut client, "endpoint_local_read", "local");
     measure_query(&mut client, "endpoint_leader_read", "leader");
