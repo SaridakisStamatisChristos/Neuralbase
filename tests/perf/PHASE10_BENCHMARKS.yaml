@@ -7,6 +7,7 @@ policy:
   correctness_precedes_performance: true
   external_superiority_claims: forbidden_without_dedicated_reproducible_evidence
   normal_correctness_ci_replaced: false
+  lifecycle_scenario_wall_time_is_not_isolated_operation_latency: true
 required_environment:
   - exact_commit
   - cargo_profile
@@ -70,16 +71,22 @@ classification:
   correctness_ci: semantic/fault assertions only; no wall-clock pass threshold
   regression_ci: only low-variance measurements after variance is characterized
   manual_characterization: heavyweight cluster, recovery, large-scale and noisy timing runs
+  scenario_wall_time: full proven lifecycle scenario; useful for before/after characterization but not an isolated primitive latency
 existing_commands:
   vectorized_tpch: cargo test --test perf_tpch --release --locked -- --nocapture
   optimizer_library: cargo test --test bench_optimizer --release --locked -- --nocapture
   postgres_reference: make tpch-correctness
+  snapshot_scenario: cargo test --test replicated_sql_snapshot_cycles --release --locked repeated_compaction_restart_and_suffix_replay_remain_safe -- --nocapture --test-threads=1
+  backup_restore_scenario: cargo test --test phase5_cluster_recovery --release --locked restored_cluster_uses_fresh_generation_and_survives_failover_and_full_restart -- --nocapture --test-threads=1
+  membership_scenario: cargo test --test phase7_guarded_membership --release --locked guarded_admission_learner_restart_leader_loss_promotion_transfer_removal -- --nocapture --test-threads=1
+  pitr_scenario: cargo test --test phase9_pitr_process --release --locked process_pitr_exact_target_identity_branch_and_restart -- --nocapture --test-threads=1
 result_requirements:
   before_after_same_harness: true
   exact_before_commit: true
   exact_after_commit: true
-  warmup_required: true
-  repetitions_required: true
+  warmup_required_for_microbenchmarks: true
+  repetitions_required_for_microbenchmarks: true
+  heavyweight_scenarios_may_use_single_run_characterization: true
   report_path_identity: true
   report_persistent_vs_in_memory: true
   report_single_node_vs_clustered: true
