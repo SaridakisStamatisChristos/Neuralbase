@@ -68,8 +68,7 @@ fn measure(sql: &str, name: &str, scale: f64) {
 
     for _ in 0..WARMUP {
         black_box(
-            execute_physical_plan(&plan, &dataset, &scheduler, None)
-                .expect("TPC-H warmup execute"),
+            execute_physical_plan(&plan, &dataset, &scheduler, None).expect("TPC-H warmup execute"),
         );
     }
     let mut samples = Vec::with_capacity(REPS);
