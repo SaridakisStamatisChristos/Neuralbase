@@ -74,6 +74,16 @@ NeuralBase is currently a **pre-1.0 experimental project**. The crate version is
 - CI #315 passed the complete functional Phase-7 gate on `fb7d099c6248f18b324d8817fb2878885dbe38a8`; claim synchronization keeps `production_ready`, `production_ha` and `hpa_safe` false.
 - Arbitrary Helm/StatefulSet replica scaling, HPA, rolling-upgrade orchestration, production security and production HA remain outside the Phase-7 claim.
 
+### Archived recovery stream / exact-index PITR — Phase 9
+
+- Added versioned, checksummed and hash-linked `NBAR` archive segments for committed SQL, identity, membership and known control records.
+- Added opt-in synchronous runtime archival so confirmed Raft apply waits for required archive publication, preserving the recovery/compaction boundary.
+- Added authenticated `NBPE` archive encryption with strict raw 32-byte key-file handling and wrong-key/tamper rejection.
+- Added exact baseline/index/latest recovery into a fresh recovery generation, deterministic replay, timeline branching, conservative rollover/retirement and fail-closed target publication.
+- Added bounded archive enumeration, canonical membership-byte validation, publication/restart/corruption fault tests, convergent same-record multi-writer publication evidence, encrypted end-to-end replay, and real-process identity/branch/restart evidence.
+- Added operator CLI commands through `neuralbase-pitr`: `init`, `status`, `verify`, `targets`, `recover`, `branch`, `retire` and `diagnose`.
+- Timestamp-target PITR and automatic DR remain unsupported.
+
 ### Documentation and deployment
 
 - Audited runtime configuration and SQL/client limits against current implementation; added a complete environment/default/alias/TLS reference.
@@ -90,7 +100,7 @@ NeuralBase is currently a **pre-1.0 experimental project**. The crate version is
 
 - `Local` reads may be stale on followers; `Leader`/`Linearizable` require the current serving leader. Linearizable reads from arbitrary followers and automatic strong-read routing are not claimed.
 - The opt-in Phase-7 managed profile sequences deployment membership safely within its tested scope; the checked-in static Kubernetes/Helm assets still do not make arbitrary replica-count/HPA changes safe.
-- Manual Phase-5 backup/restore/fresh-cluster DR is implemented and tested; PITR and automatic disaster recovery remain unimplemented.
+- Manual Phase-5 backup/restore/fresh-cluster DR and Phase-9 exact committed-index PITR are implemented and tested; timestamp-target PITR and automatic disaster recovery remain unimplemented.
 - Authorization remains intentionally limited compared with a production database security model.
 - Managed rolling upgrades, hostile multi-tenant controller isolation, broad storage/network chaos certification and production performance characterization remain open.
 - These changes do **not** make NeuralBase production-ready or justify a general production-HA claim.

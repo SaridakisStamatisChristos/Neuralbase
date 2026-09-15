@@ -1,6 +1,6 @@
 # Configuration reference
 
-This reference follows the environment readers in [`src/main.rs`](../src/main.rs), [`src/auth.rs`](../src/auth.rs), [`src/server_parts/prelude.rs`](../src/server_parts/prelude.rs), [`src/tls.rs`](../src/tls.rs) and the replicated identity runtime. Defaults below are **binary defaults**; Compose and Helm override some of them.
+This reference follows the environment readers in [`src/main.rs`](../src/main.rs), [`src/auth.rs`](../src/auth.rs), [`src/server_parts/prelude.rs`](../src/server_parts/prelude.rs), [`src/tls.rs`](../src/tls.rs), [`src/pitr_runtime.rs`](../src/pitr_runtime.rs) and the replicated identity runtime. Defaults below are **binary defaults**; Compose and Helm override some of them.
 
 The server reads environment variables, not command-line configuration flags. There is no automatic `.env` loader. From the repository root, a Bash session can load the checked-in standalone example explicitly:
 
@@ -39,6 +39,18 @@ Where a `NEURALBASE_*` / legacy pair appears above or below, the primary variabl
 | `NEURALBASE_RAFT_TLS` | `false` | `1` or case-insensitive `true` selects Raft mTLS; alias `RAFT_TLS`. Requires a `tls` build; otherwise startup errors. |
 
 Peers may also be written as `host` or `host:port`, using the host as the logical ID. An omitted port inherits the local Raft bind port (or `7001` if it cannot be parsed). Prefer explicit `id=host:port` entries. Persisted finalized membership overrides bootstrap membership on restart; editing this variable is not a coordinated membership change. An empty peer list on fresh clustered storage describes one voter, not an automatically discovered cluster.
+
+## Phase-9 PITR archive runtime
+
+PITR archival is opt-in and applies only to configured clustered operation with a previously initialized/verified archive stream. The server does not create a stream implicitly. Initialize one with `neuralbase-pitr init`, then point the runtime at it.
+
+| Variable | Default | Behavior |
+|---|---|---|
+| `NEURALBASE_PITR_ARCHIVE_DIR` | unset | Enables synchronous Phase-9 archive publication into the existing stream directory. Unset leaves the historical non-PITR runtime path unchanged. |
+| `NEURALBASE_PITR_KEY_FILE` | unset | Raw 32-byte archive-encryption key file. Requires `NEURALBASE_PITR_ARCHIVE_DIR`; wrong/missing/insecure key material fails startup. |
+| `NEURALBASE_PITR_MAX_SEGMENTS` | `100000` | Positive per-stream segment limit. Values above the hard maximum `1000000`, zero or malformed text fail startup. |
+
+Archive startup verifies metadata/segments, rejects a frontier newer than durable logical state, and rejects a compacted Raft snapshot ahead of the verified archive frontier. See [PITR.md](PITR.md).
 
 ## TLS
 

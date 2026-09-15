@@ -21,6 +21,12 @@ pub mod mvcc;
 pub mod offline_backup;
 pub mod online_backup;
 pub mod optimizer;
+pub mod pitr;
+pub mod pitr_archive;
+pub mod pitr_branch;
+pub mod pitr_replay;
+pub mod pitr_retention;
+pub mod pitr_runtime;
 pub mod protocol;
 #[path = "query_executor_phase8.rs"]
 pub mod query_executor;

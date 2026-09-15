@@ -14,6 +14,7 @@ NeuralBase combines a local SQL engine with a Raft consensus subsystem and deter
 - **Read consistency is explicit.** `Local` preserves the historical local-read behavior; `Leader` and `Linearizable` require the current serving leader and a successful consensus barrier. Strong modes never silently downgrade.
 - **Operator recovery is a separate artifact lifecycle.** NBBK/NBEC backup verification and fresh-cluster restore do not reuse raw internal Raft snapshot bytes or copied consensus disks.
 - **Deployment count is not membership.** The Phase-7 managed profile creates/retires incarnations only through guarded committed-state reconciliation; static Helm/HPA replica changes remain outside the contract.
+- **PITR is an explicit archive lifecycle.** Phase-9 recovery starts from a verified operator baseline and replays a verified committed-index archive; exact Raft indexes are recovery coordinates, not wall-clock timestamps.
 
 ## High-level flow
 
@@ -110,6 +111,16 @@ Cluster rebuilding deliberately starts from that single fresh authority. Additio
 
 `OnlineBackupCoordinator` is currently an in-process runtime API rather than a standalone live-server CLI endpoint. The external `neuralbase-backup` command is the offline create/verify/restore tool.
 
+## Archived recovery stream and PITR architecture
+
+Phase 9 binds a verified NBBK/NBEC baseline to a distinct archive timeline in `stream.json`. Each post-baseline committed position is represented by one versioned `NBAR` record carrying index/term, record kind, timeline, previous-segment hash, payload hash, compatibility marker and final checksum. Optional `NBPE` wrapping provides authenticated ChaCha20-Poly1305 encryption with an out-of-band raw 32-byte key.
+
+`PitrRuntimeArchiver` is opened only when `NEURALBASE_PITR_ARCHIVE_DIR` is configured. The confirmed-apply task first performs the durable replicated state-machine apply, then publishes the required archive segment, and only then reports confirmed apply to Raft. Publication failure therefore prevents that position from advancing the confirmed apply/compaction boundary. Startup independently verifies the stream and rejects frontier/baseline/compaction relationships that would make required recovery history unavailable.
+
+`pitr_replay` restores the verified baseline into a hidden fresh target, replays records deterministically through the replicated state machine to `baseline`, `latest` or an exact committed index, reconstructs membership at that point, creates a fresh single-voter recovery generation with historical source IDs tombstoned, verifies the staged result, and only then publishes the target. `pitr_branch` creates a new timeline and baseline at an earlier recovered point so segments from the discarded future cannot join the child chain. `pitr_retention` retires a quiesced parent only after a verified replacement begins exactly at the old frontier.
+
+Archive v1 intentionally has no wall-clock timestamp target mapping and no automatic disaster-recovery controller. See [PITR.md](PITR.md).
+
 ## Read-consistency boundary
 
 `src/read_consistency.rs` defines the public/internal contract and parses the session `SET` surface. Every new connection starts in `Local` mode for backward compatibility. `src/read_barrier.rs` implements the current strong-read prerequisite.
@@ -138,9 +149,13 @@ The log barrier is intentionally stronger/more expensive than a pure authority c
 - `src/backup.rs` / `offline_backup.rs` / `online_backup.rs` — versioned operator backup contract and consistent capture.
 - `src/backup_encryption.rs` — authenticated NBEC container, key-file validation and encrypted publication.
 - `src/restore.rs` — fresh-generation staged restore and atomic target publication.
+- `src/pitr.rs` / `pitr_archive.rs` — Phase-9 archive record codec, chain verification, encryption and crash-safe publication.
+- `src/pitr_runtime.rs` — opt-in synchronous archive/confirmed-apply fence and runtime limits/metrics.
+- `src/pitr_replay.rs` / `pitr_branch.rs` / `pitr_retention.rs` — exact-index replay, child timelines and conservative rollover retirement.
+- `src/bin/neuralbase-pitr.rs` — operator PITR initialization, verification, recovery, branching and retirement CLI.
 
 ## Current acceptance boundary
 
 Standalone mode can fall back to in-memory/demo operation on a RocksDB open failure; its local DDL error handling is weaker than the fail-closed clustered path. SQL-level multi-statement transactions are not implemented despite the MVCC library. These limits are separate from the tested replicated commit/apply guarantees.
 
-Executable evidence supports replicated persistent tables, SQL-aware snapshot/recovery, coordinated membership changes, replicated SCRAM identity, the documented Phase-5 backup/restore/fresh-cluster DR model, explicit Phase-6 `Local`/`Leader`/`Linearizable` read semantics on the leader path, and the opt-in Phase-7 managed process/Kubernetes membership lifecycle. Stronger production claims still require target-environment security review, broader fault/upgrade validation, managed upgrade semantics and production performance characterization; arbitrary-follower strong-read routing, raw HPA scaling, PITR and automatic DR remain outside the claim.
+Executable evidence supports replicated persistent tables, SQL-aware snapshot/recovery, coordinated membership changes, replicated SCRAM identity, the documented Phase-5 backup/restore/fresh-cluster DR model, explicit Phase-6 `Local`/`Leader`/`Linearizable` read semantics on the leader path, and the opt-in Phase-7 managed process/Kubernetes membership lifecycle. Stronger production claims still require target-environment security review, broader fault/upgrade validation, managed upgrade semantics and production performance characterization; arbitrary-follower strong-read routing, raw HPA scaling, timestamp-target PITR and automatic DR remain outside the claim; Phase-9 exact committed-index PITR is inside the tested claim.

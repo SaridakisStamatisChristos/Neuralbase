@@ -7,7 +7,7 @@
 **NeuralBase is an experimental SQL engine in Rust** with a PostgreSQL wire endpoint, MVCC/RocksDB storage, vectorized/general execution, and Raft-replicated table mutations and SCRAM identity over TCP/TLS. It also includes an ONNX join-order optimizer for library use and benchmarks; the live SQL planner does not currently invoke it.
 
 > [!IMPORTANT]
-> NeuralBase is **pre-1.0 research/development software**. Configured clusters replicate persistent table mutations and SCRAM identity through Raft, support SQL-aware snapshot/recovery, implement learner/joint-consensus membership changes, provide the tested Phase-5 backup/restore/fresh-cluster recovery lifecycle, expose explicit session-scoped read-consistency modes, include an opt-in Phase-7 managed process/Kubernetes membership reconciliation profile, and now publish an executable Phase-8 SQL compatibility profile. Successful replicated mutations and strong read barriers wait for quorum commit plus confirmed durable local apply. This is still not a production-HA or complete PostgreSQL-compatibility claim: strong reads must be sent to the current leader, SQL transaction blocks remain unsupported, arbitrary-follower linearizable routing is not implemented, raw Helm/StatefulSet replica changes and HPA remain unsupported, PITR/automatic disaster recovery remain open, and broader SQL/security/upgrade hardening is still required.
+> NeuralBase is **pre-1.0 research/development software**. Configured clusters replicate persistent table mutations and SCRAM identity through Raft, support SQL-aware snapshot/recovery, implement learner/joint-consensus membership changes, provide the tested Phase-5 backup/restore/fresh-cluster recovery lifecycle, expose explicit session-scoped read-consistency modes, include an opt-in Phase-7 managed process/Kubernetes membership reconciliation profile, and now publish an executable Phase-8 SQL compatibility profile. Successful replicated mutations and strong read barriers wait for quorum commit plus confirmed durable local apply. This is still not a production-HA or complete PostgreSQL-compatibility claim: strong reads must be sent to the current leader, SQL transaction blocks remain unsupported, arbitrary-follower linearizable routing is not implemented, raw Helm/StatefulSet replica changes and HPA remain unsupported, timestamp-target PITR and automatic disaster recovery remain open; opt-in exact committed-index PITR is implemented, and broader SQL/security/upgrade hardening is still required.
 
 ## Current highlights
 
@@ -24,6 +24,7 @@
 - Cluster authentication from authoritative replicated RocksDB identity state.
 - Strict digest-authorized migration from legacy SCRAM `users.json`; MD5 verifier material is rejected from replication.
 - Versioned NBBK offline/online backup, independent verification, crash-safe fresh-cluster restore, and authenticated NBEC backup encryption.
+- Phase-9 opt-in archived recovery stream with exact committed-Raft-index PITR, authenticated archive encryption, timeline branching, bounded rollover/retirement, and fail-closed replay.
 - Explicit `Local`, `Leader`, and `Linearizable` read modes; strong modes use a current-term replicated barrier and confirmed local apply before query execution, with explicit follower rejection and no silent downgrade.
 - Opt-in managed process/Kubernetes membership reconciliation with guarded committed-state observations, fresh learner creation/promotion, leader transfer, finalized removal, retained storage, object UID/resource-version checks and real kind lifecycle evidence.
 - Executable [`SQL_COMPATIBILITY.yaml`](SQL_COMPATIBILITY.yaml) inventory with fail-closed anti-overclaim tests.
@@ -132,7 +133,8 @@ The selected file is parsed strictly. Duplicate users, malformed fields, MD5 cre
 | Managed process / Kubernetes membership reconciliation | **Implemented and Phase-7 lifecycle-tested** |
 | Arbitrary Helm replica scaling / HPA | **Unsupported** |
 | Backup / restore / fresh-cluster DR | **Implemented and tested to Phase-5 scope** |
-| Point-in-time recovery / automatic DR | **Not implemented** |
+| Exact committed-index point-in-time recovery | **Implemented and Phase-9 tested** |
+| Timestamp-target PITR / automatic DR | **Not implemented** |
 | Production SQL HA | **Not claimed** |
 
 ## Configuration
@@ -150,7 +152,7 @@ make tpch-correctness
 make sql-differential
 ```
 
-Green CI is evidence for the exact checked commit and tested scopes, not a production-readiness or universal PostgreSQL-compatibility claim. CI #366 passed the complete code-only Phase-8 candidate gate on `5edcfc9b8a5df383a1302f7371bc89cda08f6564`; Phase-8 milestone closure requires this synchronized claim/documentation head to pass again, followed by a green post-merge `main` run.
+Green CI is evidence for the exact checked commit and tested scopes, not a production-readiness or universal PostgreSQL-compatibility claim. Phase-9 closure additionally requires the synchronized claim/documentation head to pass the repository CI plus the explicit feature-matrix/PITR process gate, followed by a green post-merge `main` run.
 
 ## Documentation
 
@@ -161,6 +163,7 @@ Green CI is evidence for the exact checked commit and tested scopes, not a produ
 - [Deployment](docs/DEPLOYMENT.md)
 - [Configuration reference](docs/CONFIGURATION.md)
 - [Operator recovery runbook](ops/RUNBOOK.md)
+- [Phase-9 PITR operator guide](docs/PITR.md)
 - [Observability](observability/README.md)
 - [Testing and evidence](docs/TESTING.md)
 - [Threat model](docs/THREAT_MODEL.md)
@@ -169,7 +172,7 @@ Green CI is evidence for the exact checked commit and tested scopes, not a produ
 
 ## Project maturity
 
-Phases 1–8 establish the current bounded evidence surface: replicated table mutations, SQL-aware snapshot/recovery, coordinated membership, replicated identity, operator backup/restore/fresh-cluster DR, explicit tested read-consistency modes, opt-in managed process/Kubernetes membership reconciliation, and an executable SQL semantic/compatibility profile with selected PostgreSQL-16 differential and real-client extended-protocol evidence. Phase 8 does not change the project's pre-1.0 status and does not add a production-HA, full PostgreSQL compatibility, SQL transaction, HPA, PITR, or arbitrary-follower linearizability claim.
+Phases 1–9 establish the current bounded evidence surface: replicated table mutations, SQL-aware snapshot/recovery, coordinated membership, replicated identity, operator backup/restore/fresh-cluster DR, explicit tested read-consistency modes, opt-in managed process/Kubernetes membership reconciliation, and an executable SQL semantic/compatibility profile with selected PostgreSQL-16 differential and real-client extended-protocol evidence. Phase 9 does not change the project's pre-1.0 status and does not add a production-HA, full PostgreSQL compatibility, SQL transaction, HPA, timestamp-target PITR, automatic DR, or arbitrary-follower linearizability claim.
 
 ## License
 

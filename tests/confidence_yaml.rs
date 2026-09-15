@@ -102,7 +102,12 @@ fn distributed_claim_tracks_membership_identity_recovery_reads_and_managed_recon
     assert_eq!(scope["online_backup"].as_bool(), Some(true));
     assert_eq!(scope["encrypted_backup"].as_bool(), Some(true));
     assert_eq!(scope["fresh_cluster_dr"].as_bool(), Some(true));
-    assert_eq!(scope["pitr"].as_bool(), Some(false));
+    assert_eq!(scope["pitr"].as_bool(), Some(true));
+    assert_eq!(scope["pitr_target"].as_str(), Some("committed_raft_index"));
+    assert_eq!(scope["pitr_timestamp_targets"].as_bool(), Some(false));
+    assert_eq!(scope["pitr_archive_encryption"].as_bool(), Some(true));
+    assert_eq!(scope["pitr_branching"].as_bool(), Some(true));
+    assert_eq!(scope["pitr_bounded_retention"].as_bool(), Some(true));
     assert_eq!(scope["automatic_dr"].as_bool(), Some(false));
     assert_eq!(
         scope["automatic_membership_reconciliation"].as_bool(),
@@ -173,6 +178,21 @@ fn distributed_claim_tracks_membership_identity_recovery_reads_and_managed_recon
         recovery["status"].as_str(),
         Some("offline_online_encrypted_fresh_cluster_dr_tested")
     );
+
+    let pitr = artifacts
+        .iter()
+        .find(|item| item["artifact"].as_str() == Some("point_in_time_recovery"))
+        .expect("point_in_time_recovery boundary must be explicit");
+    assert_eq!(
+        pitr["status"].as_str(),
+        Some("exact_index_encrypted_archive_branch_recovery_tested")
+    );
+    let pitr_evidence = pitr["evidence"]
+        .as_sequence()
+        .expect("PITR evidence must be a list");
+    assert!(pitr_evidence
+        .iter()
+        .any(|item| item.as_str() == Some("tests/phase9_pitr_process.rs")));
 
     let reads = artifacts
         .iter()

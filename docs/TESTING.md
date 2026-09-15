@@ -92,9 +92,17 @@ The supported parameter subset is intentionally narrow. OID 0 context-sensitive 
 
 CI #366 passed the full code-only Phase-8 candidate gate on `5edcfc9b8a5df383a1302f7371bc89cda08f6564`. The synchronized claim/documentation head must pass again before merge, followed by post-merge `main` CI for milestone closure.
 
+## Phase 9 archived recovery / PITR evidence
+
+Phase 9 combines codec, storage, replay and real-process evidence instead of inferring recoverability from retained Raft logs. Unit/focused tests cover strict NBAR/NBPE decoding, unsupported format/state-machine versions, truncation/trailing ambiguity, gap/overlap/hash/timeline failures, canonical membership bytes, restart staging cleanup, corrupt finalized files, duplicate/conflicting publication, convergent same-record publication, encrypted wrong-key/tamper behavior, bounded stream enumeration, target availability, wrong baseline rejection before publication, fresh recovery generations, child-timeline old-future rejection and conservative retention retirement.
+
+`tests/phase9_pitr_process.rs` uses real server/backup/PITR binaries. It captures a baseline, archives later committed mutations, selects an exact target, proves post-target table and password changes are absent after recovery, creates a distinct child timeline before resumed service, writes a new future, restarts, and verifies the recovered identity/data plus child future persist. The replay suite also exercises encrypted end-to-end archive recovery.
+
+The Phase-9 closure gate additionally runs `cargo test` under the repository’s actual default, `tls`, `simd`, and combined `tls simd` feature surfaces, full all-feature Clippy with warnings denied, `make test`, and the targeted real-process PITR suite. Timestamp-target recovery and automatic DR are intentionally outside this evidence.
+
 ## Confidence gate
 
-`tests/confidence_yaml.rs` protects the machine-readable distributed boundary. `tests/sql_compatibility_profile.rs` separately locks the Phase-8 SQL anti-overclaim boundary. Production readiness, production HA, HPA safety, arbitrary-follower linearizable reads, automatic strong-read routing, PITR, automatic DR and full PostgreSQL compatibility remain false/not claimed.
+`tests/confidence_yaml.rs` protects the machine-readable distributed boundary. `tests/sql_compatibility_profile.rs` separately locks the Phase-8 SQL anti-overclaim boundary. Production readiness, production HA, HPA safety, arbitrary-follower linearizable reads, automatic strong-read routing, timestamp-target PITR, automatic DR and full PostgreSQL compatibility remain false/not claimed; exact committed-index PITR is the bounded Phase-9 claim.
 
 ## Lint, adversarial and PostgreSQL reference gates
 
@@ -116,6 +124,6 @@ Report which checks actually ran, including missing toolchains or Docker. A work
 
 ## What green CI means
 
-Green CI means the exact checked commit passed the repository's current executable gates. For the distributed path it supports replicated tables, SQL-aware snapshots, coordinated membership, replicated SCRAM identity, the tested Phase-5 recovery model, the Phase-6 leader-path read-consistency contract, and the explicit Phase-7 process/Kubernetes reconciliation profile under the tested scenarios. For Phase 8 it additionally supports only the capability slices recorded in `SQL_COMPATIBILITY.yaml` and their named executable evidence.
+Green CI means the exact checked commit passed the repository's current executable gates. For the distributed path it supports replicated tables, SQL-aware snapshots, coordinated membership, replicated SCRAM identity, the tested Phase-5 recovery model, the Phase-6 leader-path read-consistency contract, and the explicit Phase-7 process/Kubernetes reconciliation profile under the tested scenarios. For Phase 8 it additionally supports only the capability slices recorded in `SQL_COMPATIBILITY.yaml` and their named executable evidence. For Phase 9 it supports the exact committed-index archived recovery/PITR scope documented in `PITR.md`.
 
-It still does **not** mean production readiness, complete PostgreSQL compatibility, SQL transaction blocks/distributed transactions, linearizable arbitrary-follower reads, automatic strong-read routing, arbitrary Helm/HPA scaling, PITR or automatic DR, security certification, rolling-upgrade safety, or performance superiority outside measured workloads.
+It still does **not** mean production readiness, complete PostgreSQL compatibility, SQL transaction blocks/distributed transactions, linearizable arbitrary-follower reads, automatic strong-read routing, arbitrary Helm/HPA scaling, timestamp-target PITR or automatic DR, security certification, rolling-upgrade safety, or performance superiority outside measured workloads.
