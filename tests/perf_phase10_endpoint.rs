@@ -113,15 +113,15 @@ fn start_node(root: &TempDir, sql_port: u16, raft_port: u16, metrics_port: u16) 
     NodeProcess { child }
 }
 
-fn wait_ready(process: &mut NodeProcess, port: u16) -> Client {
+fn wait_ready(process: &mut NodeProcess, port: u16) {
     let deadline = Instant::now() + START_TIMEOUT;
     loop {
         assert!(
             process.child.try_wait().expect("query child").is_none(),
             "phase10 endpoint node exited during startup"
         );
-        if let Ok(client) = connect(port) {
-            return client;
+        if connect(port).is_ok() {
+            return;
         }
         assert!(
             Instant::now() < deadline,
@@ -137,9 +137,21 @@ fn is_leadership_not_ready(error: &postgres::Error) -> bool {
         .is_some_and(|db| matches!(db.code().code(), "25006" | "57P03"))
 }
 
-fn execute_setup_mutation_when_leader(client: &mut Client, sql: &str, description: &str) {
+fn execute_setup_mutation_when_leader(port: u16, sql: &str, description: &str) {
     let deadline = Instant::now() + START_TIMEOUT;
     loop {
+        let mut client = match connect(port) {
+            Ok(client) => client,
+            Err(error) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "endpoint did not accept a setup connection while {description}: {error}"
+                );
+                std::thread::sleep(Duration::from_millis(30));
+                continue;
+            }
+        };
+
         match client.simple_query(sql) {
             Ok(_) => return,
             Err(error) if is_leadership_not_ready(&error) => {
@@ -149,7 +161,9 @@ fn execute_setup_mutation_when_leader(client: &mut Client, sql: &str, descriptio
                 );
                 std::thread::sleep(Duration::from_millis(30));
             }
-            Err(error) => panic!("{description}: {error}"),
+            Err(error) => panic!(
+                "{description} failed after submission; outcome is uncertain and MUST NOT be retried: {error}"
+            ),
         }
     }
 }
@@ -198,22 +212,25 @@ fn phase10_real_endpoint_characterization() {
     let raft_port = reserve_port(&mut used);
     let metrics_port = reserve_port(&mut used);
     let mut process = start_node(&root, sql_port, raft_port, metrics_port);
-    let mut client = wait_ready(&mut process, sql_port);
+    wait_ready(&mut process, sql_port);
 
-    // Setup retries are restricted to explicit fail-closed leadership errors.
-    // Those errors occur before a mutation is accepted, so this never retries an
-    // ambiguous acknowledged write. Timed operations below are never retried.
+    // Setup retries are restricted to connection failures before submission and
+    // explicit fail-closed leadership errors. Each attempt uses a fresh wire
+    // connection, matching the existing process-test pattern and preventing a
+    // setup response from contaminating the next request. Timed operations below
+    // are never retried.
     execute_setup_mutation_when_leader(
-        &mut client,
+        sql_port,
         "CREATE TABLE phase10_endpoint_items (id BIGINT, name TEXT)",
         "create benchmark table",
     );
     execute_setup_mutation_when_leader(
-        &mut client,
+        sql_port,
         "INSERT INTO phase10_endpoint_items VALUES (1, 'baseline')",
         "seed benchmark table",
     );
 
+    let mut client = connect(sql_port).expect("connect measurement client after setup");
     measure_query(&mut client, "endpoint_local_read", "local");
     measure_query(&mut client, "endpoint_leader_read", "leader");
     measure_query(&mut client, "endpoint_linearizable_read", "linearizable");
