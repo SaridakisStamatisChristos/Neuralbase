@@ -90,41 +90,6 @@ impl ArchiveStreamMetadata {
         Ok(metadata)
     }
 
-    pub fn branched(
-        &self,
-        new_timeline: TimelineId,
-        branch_index: u64,
-        baseline_backup_sha256: ArchiveHash,
-        baseline_term: u64,
-        membership_generation: u64,
-        membership_config_index: u64,
-        encrypted: bool,
-        key_id: Option<KeyId>,
-    ) -> Result<Self, PitrArchiveError> {
-        if branch_index < self.baseline_index {
-            return Err(PitrArchiveError::InvalidMetadata(
-                "branch index precedes parent baseline".into(),
-            ));
-        }
-        let metadata = Self {
-            format_version: STREAM_METADATA_VERSION,
-            archive_format_version: ARCHIVE_FORMAT_VERSION,
-            state_machine_compat_version: ARCHIVE_STATE_MACHINE_COMPAT_VERSION,
-            timeline: new_timeline,
-            parent_timeline: Some(self.timeline),
-            branch_index: Some(branch_index),
-            baseline_backup_sha256,
-            baseline_index: branch_index,
-            baseline_term,
-            baseline_membership_generation: membership_generation,
-            baseline_membership_config_index: membership_config_index,
-            encrypted,
-            key_id,
-        };
-        metadata.validate()?;
-        Ok(metadata)
-    }
-
     pub fn chain_spec(&self) -> ArchiveChainSpec {
         ArchiveChainSpec {
             timeline: self.timeline,
@@ -1112,11 +1077,11 @@ mod tests {
     fn metadata_rejects_branch_aliasing_parent_timeline() {
         let backup = backup();
         let timeline = [8u8; 16];
-        let metadata =
+        let mut metadata =
             ArchiveStreamMetadata::from_backup(&backup, [3u8; 32], timeline, false, None).unwrap();
-        let error = metadata
-            .branched(timeline, 5, [3u8; 32], 2, 4, 5, false, None)
-            .unwrap_err();
+        metadata.parent_timeline = Some(timeline);
+        metadata.branch_index = Some(metadata.baseline_index);
+        let error = metadata.validate().unwrap_err();
         assert!(matches!(error, PitrArchiveError::InvalidMetadata(_)));
     }
 }
