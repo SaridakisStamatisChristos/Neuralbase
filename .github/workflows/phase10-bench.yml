@@ -20,7 +20,7 @@ concurrency:
 jobs:
   exact-base-head-characterization:
     runs-on: ubuntu-24.04
-    timeout-minutes: 70
+    timeout-minutes: 90
     env:
       LIBCLANG_PATH: /usr/lib/llvm-18/lib
       ROCKSDB_INCLUDE_DIR: /usr/include
@@ -63,6 +63,9 @@ jobs:
           cp tests/perf_phase10.rs /tmp/phase10-harness/
           cp tests/perf_phase10_cluster.rs /tmp/phase10-harness/
           cp tests/perf_phase10_endpoint.rs /tmp/phase10-harness/
+          cp tests/perf_phase10_planning.rs /tmp/phase10-harness/
+          cp tests/perf_phase10_tpch_scales.rs /tmp/phase10-harness/
+          cp tests/perf_phase10_memory.rs /tmp/phase10-harness/
 
       - name: Capture runner environment
         run: |
@@ -84,19 +87,25 @@ jobs:
           git reset --hard
           git clean -fd
           git checkout --detach "$BASE_SHA"
-          cp /tmp/phase10-harness/perf_phase10.rs tests/
-          cp /tmp/phase10-harness/perf_phase10_cluster.rs tests/
-          cp /tmp/phase10-harness/perf_phase10_endpoint.rs tests/
+          cp /tmp/phase10-harness/*.rs tests/
           export PHASE10_LABEL=baseline
           export PHASE10_MEASURED_COMMIT="$BASE_SHA"
           cargo test --test perf_phase10 --release --locked -- --ignored --nocapture --test-threads=1 \
             | tee /tmp/phase10-results/base-query-storage.log
+          cargo test --test perf_phase10_planning --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/base-planning.log
           cargo test --test perf_phase10_cluster --release --locked -- --ignored --nocapture --test-threads=1 \
             | tee /tmp/phase10-results/base-cluster.log
           cargo test --test perf_phase10_endpoint --release --locked -- --ignored --nocapture --test-threads=1 \
             | tee /tmp/phase10-results/base-endpoint.log
+          cargo test --test perf_phase10_tpch_scales --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/base-tpch-scales.log
           cargo test --test perf_tpch --release --locked -- bench_tpch_q1_q6_records_measurements --nocapture --test-threads=1 \
-            | tee /tmp/phase10-results/base-tpch.log
+            | tee /tmp/phase10-results/base-tpch-historical-bridge.log
+          for test_name in phase10_memory_join phase10_memory_sort phase10_memory_aggregate; do
+            cargo test --test perf_phase10_memory --release --locked "$test_name" -- --ignored --nocapture --test-threads=1 \
+              | tee "/tmp/phase10-results/base-${test_name}.log"
+          done
 
           scenario() {
             local name="$1"; shift
@@ -129,12 +138,20 @@ jobs:
           export PHASE10_MEASURED_COMMIT="$HEAD_SHA"
           cargo test --test perf_phase10 --release --locked -- --ignored --nocapture --test-threads=1 \
             | tee /tmp/phase10-results/head-query-storage.log
+          cargo test --test perf_phase10_planning --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/head-planning.log
           cargo test --test perf_phase10_cluster --release --locked -- --ignored --nocapture --test-threads=1 \
             | tee /tmp/phase10-results/head-cluster.log
           cargo test --test perf_phase10_endpoint --release --locked -- --ignored --nocapture --test-threads=1 \
             | tee /tmp/phase10-results/head-endpoint.log
+          cargo test --test perf_phase10_tpch_scales --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/head-tpch-scales.log
           cargo test --test perf_tpch --release --locked -- bench_tpch_q1_q6_records_measurements --nocapture --test-threads=1 \
-            | tee /tmp/phase10-results/head-tpch.log
+            | tee /tmp/phase10-results/head-tpch-historical-bridge.log
+          for test_name in phase10_memory_join phase10_memory_sort phase10_memory_aggregate; do
+            cargo test --test perf_phase10_memory --release --locked "$test_name" -- --ignored --nocapture --test-threads=1 \
+              | tee "/tmp/phase10-results/head-${test_name}.log"
+          done
 
           scenario() {
             local name="$1"; shift
