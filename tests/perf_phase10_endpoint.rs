@@ -203,6 +203,41 @@ fn measure_query(client: &mut Client, name: &str, consistency: &str) {
     );
 }
 
+fn measure_general_query(client: &mut Client) {
+    client
+        .simple_query("SET neuralbase_read_consistency = 'local'")
+        .expect("set local consistency for general query");
+    const SQL: &str =
+        "SELECT a.id, a.name FROM phase10_endpoint_items a \
+         JOIN phase10_endpoint_items b ON a.id = b.id WHERE a.id = 1";
+    for _ in 0..WARMUP {
+        let messages = client
+            .simple_query(SQL)
+            .expect("general endpoint read warmup");
+        assert_eq!(row_count(&messages), 1);
+    }
+    let mut samples = Vec::with_capacity(REPS);
+    for _ in 0..REPS {
+        let start = Instant::now();
+        let messages = client
+            .simple_query(SQL)
+            .expect("general endpoint measured read");
+        samples.push(start.elapsed().as_nanos());
+        assert_eq!(row_count(&messages), 1);
+    }
+    report(
+        "endpoint_general_user_join_local_read",
+        &samples,
+        json!({
+            "consistency": "local",
+            "topology": "single_voter_real_process",
+            "query_kind": "persistent_user_table_self_join",
+            "bound_path": "SelectQuery",
+            "includes_parse_bind_route_execute_wire": true
+        }),
+    );
+}
+
 #[test]
 #[ignore = "manual Phase-10 performance characterization"]
 fn phase10_real_endpoint_characterization() {
@@ -234,6 +269,7 @@ fn phase10_real_endpoint_characterization() {
     measure_query(&mut client, "endpoint_local_read", "local");
     measure_query(&mut client, "endpoint_leader_read", "leader");
     measure_query(&mut client, "endpoint_linearizable_read", "linearizable");
+    measure_general_query(&mut client);
 
     // Return to Local so the measured INSERT is not preceded by a read barrier;
     // mutation acknowledgement itself still retains quorum + confirmed durable
