@@ -74,6 +74,44 @@ pub fn build_physical_plan(plan: &BoundPlan) -> PhysicalPlan {
     }
 }
 
+/// Execute a physical plan when it is provably independent of the synthetic
+/// TPC-H dataset. Returns `None` when the plan must retain the historical TPC-H
+/// path (`lineitem`, Q1, or Q6).
+///
+/// This preserves the exact non-lineitem behavior of `execute_physical_plan`:
+/// the storage scanner is authoritative, projection is not applied in this
+/// layer, `TableNotFound` becomes an empty batch, and other scan errors remain
+/// errors. The server can use this to avoid constructing an unrelated SF=0.1
+/// fixture for persistent user-table reads.
+pub fn try_execute_storage_only(
+    plan: &PhysicalPlan,
+    storage: Option<&dyn TableScanner>,
+) -> Option<Result<RecordBatch, ExecError>> {
+    let PhysicalPlan::Scan {
+        table,
+        predicate,
+        limit,
+        ..
+    } = plan
+    else {
+        return None;
+    };
+
+    if table.eq_ignore_ascii_case("lineitem") {
+        return None;
+    }
+
+    Some(if let Some(scanner) = storage {
+        match scanner.scan_table(table) {
+            Ok(batch) => table_scan(&batch, predicate.as_ref(), None, *limit),
+            Err(ExecError::TableNotFound(_)) => Ok(RecordBatch::empty()),
+            Err(error) => Err(error),
+        }
+    } else {
+        Ok(RecordBatch::empty())
+    })
+}
+
 pub fn execute_physical_plan(
     plan: &PhysicalPlan,
     data: &TpchDataSet,
