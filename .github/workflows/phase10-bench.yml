@@ -62,6 +62,7 @@ jobs:
           mkdir -p /tmp/phase10-harness /tmp/phase10-results
           cp tests/perf_phase10.rs /tmp/phase10-harness/
           cp tests/perf_phase10_cluster.rs /tmp/phase10-harness/
+          cp tests/perf_phase10_endpoint.rs /tmp/phase10-harness/
 
       - name: Capture runner environment
         run: |
@@ -85,12 +86,15 @@ jobs:
           git checkout --detach "$BASE_SHA"
           cp /tmp/phase10-harness/perf_phase10.rs tests/
           cp /tmp/phase10-harness/perf_phase10_cluster.rs tests/
+          cp /tmp/phase10-harness/perf_phase10_endpoint.rs tests/
           export PHASE10_LABEL=baseline
           export PHASE10_MEASURED_COMMIT="$BASE_SHA"
           cargo test --test perf_phase10 --release --locked -- --ignored --nocapture --test-threads=1 \
             | tee /tmp/phase10-results/base-query-storage.log
           cargo test --test perf_phase10_cluster --release --locked -- --ignored --nocapture --test-threads=1 \
             | tee /tmp/phase10-results/base-cluster.log
+          cargo test --test perf_phase10_endpoint --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/base-endpoint.log
           cargo test --test perf_tpch --release --locked -- bench_tpch_q1_q6_records_measurements --nocapture --test-threads=1 \
             | tee /tmp/phase10-results/base-tpch.log
 
@@ -127,6 +131,8 @@ jobs:
             | tee /tmp/phase10-results/head-query-storage.log
           cargo test --test perf_phase10_cluster --release --locked -- --ignored --nocapture --test-threads=1 \
             | tee /tmp/phase10-results/head-cluster.log
+          cargo test --test perf_phase10_endpoint --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/head-endpoint.log
           cargo test --test perf_tpch --release --locked -- bench_tpch_q1_q6_records_measurements --nocapture --test-threads=1 \
             | tee /tmp/phase10-results/head-tpch.log
 
