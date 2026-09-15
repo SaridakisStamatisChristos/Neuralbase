@@ -38,9 +38,12 @@ const PITR_KEY_BYTES: usize = 32;
 const KEY_ID_BYTES: usize = 16;
 const NONCE_BYTES: usize = 12;
 const TAG_BYTES: usize = 16;
-const ENCRYPTED_HEADER_BYTES: usize = 4 + 1 + 1 + 2 + NONCE_BYTES + 8 + ARCHIVE_TIMELINE_BYTES + KEY_ID_BYTES;
-const MAX_PLAINTEXT_SEGMENT_BYTES: usize = 256 + MAX_ARCHIVE_PAYLOAD_BYTES + ARCHIVE_HASH_BYTES;
-const MAX_ENCRYPTED_SEGMENT_BYTES: usize = ENCRYPTED_HEADER_BYTES + MAX_PLAINTEXT_SEGMENT_BYTES + TAG_BYTES;
+const ENCRYPTED_HEADER_BYTES: usize =
+    4 + 1 + 1 + 2 + NONCE_BYTES + 8 + ARCHIVE_TIMELINE_BYTES + KEY_ID_BYTES;
+const MAX_PLAINTEXT_SEGMENT_BYTES: usize =
+    256 + MAX_ARCHIVE_PAYLOAD_BYTES + ARCHIVE_HASH_BYTES;
+const MAX_ENCRYPTED_SEGMENT_BYTES: usize =
+    ENCRYPTED_HEADER_BYTES + MAX_PLAINTEXT_SEGMENT_BYTES + TAG_BYTES;
 
 pub type KeyId = [u8; KEY_ID_BYTES];
 
@@ -134,7 +137,9 @@ impl ArchiveStreamMetadata {
 
     pub fn validate(&self) -> Result<(), PitrArchiveError> {
         if self.format_version != STREAM_METADATA_VERSION {
-            return Err(PitrArchiveError::UnsupportedMetadataVersion(self.format_version));
+            return Err(PitrArchiveError::UnsupportedMetadataVersion(
+                self.format_version,
+            ));
         }
         if self.archive_format_version != ARCHIVE_FORMAT_VERSION {
             return Err(PitrArchiveError::UnsupportedArchiveVersion(
@@ -425,10 +430,16 @@ impl PitrArchiveWriter {
         };
         for (index, path) in list_segment_files(&self.root, self.metadata.encrypted)? {
             if index < expected {
-                return Err(PitrArchiveError::Overlap { expected, actual: index });
+                return Err(PitrArchiveError::Overlap {
+                    expected,
+                    actual: index,
+                });
             }
             if index > expected {
-                return Err(PitrArchiveError::Gap { expected, actual: index });
+                return Err(PitrArchiveError::Gap {
+                    expected,
+                    actual: index,
+                });
             }
             let segment = self.read_segment_path(&path)?;
             if segment.timeline != self.metadata.timeline {
@@ -461,7 +472,11 @@ impl PitrArchiveWriter {
         if index <= self.metadata.baseline_index || index > self.frontier.index {
             return Err(PitrArchiveError::TargetUnavailable(index));
         }
-        self.read_segment_path(&segment_path(&self.root, index, self.metadata.encrypted))
+        self.read_segment_path(&segment_path(
+            &self.root,
+            index,
+            self.metadata.encrypted,
+        ))
     }
 
     pub fn verify_target(&self, target: u64) -> Result<(), PitrArchiveError> {
@@ -489,13 +504,19 @@ impl PitrArchiveWriter {
             (None, false) => plaintext,
             _ => return Err(PitrArchiveError::InvalidKeyConfiguration),
         };
-        let final_path = segment_path(&self.root, segment.record.index, self.metadata.encrypted);
+        let final_path = segment_path(
+            &self.root,
+            segment.record.index,
+            self.metadata.encrypted,
+        );
         if final_path.exists() {
             let existing = self.read_segment_path(&final_path)?;
             if existing == *segment {
                 return Ok(());
             }
-            return Err(PitrArchiveError::ConflictingDuplicate(segment.record.index));
+            return Err(PitrArchiveError::ConflictingDuplicate(
+                segment.record.index,
+            ));
         }
         let staging_path = self.root.join(STAGING_DIR).join(format!(
             ".{:020}.partial-{}-{}",
@@ -523,7 +544,9 @@ impl PitrArchiveWriter {
             match fs::hard_link(&staging_path, &final_path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                    return Err(PitrArchiveError::ConflictingDuplicate(segment.record.index))
+                    return Err(PitrArchiveError::ConflictingDuplicate(
+                        segment.record.index,
+                    ))
                 }
                 Err(error) => return Err(error.into()),
             }
@@ -654,7 +677,8 @@ fn segment_path(root: &Path, index: u64, encrypted: bool) -> PathBuf {
     } else {
         SEGMENT_SUFFIX
     };
-    root.join(SEGMENTS_DIR).join(format!("{index:020}{suffix}"))
+    root.join(SEGMENTS_DIR)
+        .join(format!("{index:020}{suffix}"))
 }
 
 fn cleanup_staging(root: &Path) -> Result<(), PitrArchiveError> {
@@ -686,7 +710,8 @@ fn encrypt_segment(
     OsRng
         .try_fill_bytes(&mut nonce)
         .map_err(|_| PitrArchiveError::RandomFailure)?;
-    let plaintext_len = u64::try_from(plaintext.len()).map_err(|_| PitrArchiveError::SegmentTooLarge)?;
+    let plaintext_len =
+        u64::try_from(plaintext.len()).map_err(|_| PitrArchiveError::SegmentTooLarge)?;
     let mut header = [0u8; ENCRYPTED_HEADER_BYTES];
     header[..4].copy_from_slice(ENCRYPTED_MAGIC);
     header[4] = ENCRYPTED_VERSION;
@@ -815,7 +840,9 @@ fn read_bounded_file(path: &Path, max: usize) -> Result<Vec<u8>, PitrArchiveErro
     {
         use std::os::unix::fs::MetadataExt;
         if metadata.dev() != opened.dev() || metadata.ino() != opened.ino() {
-            return Err(PitrArchiveError::InputChangedDuringOpen(path.to_path_buf()));
+            return Err(PitrArchiveError::InputChangedDuringOpen(
+                path.to_path_buf(),
+            ));
         }
     }
     let mut bytes = Vec::with_capacity(opened.len() as usize);
@@ -895,7 +922,10 @@ pub enum PitrArchiveError {
     #[error("archive previous hash mismatch at index {0}")]
     PreviousHashMismatch(u64),
     #[error("archive filename index {filename_index} differs from record index {record_index}")]
-    FilenameIndexMismatch { filename_index: u64, record_index: u64 },
+    FilenameIndexMismatch {
+        filename_index: u64,
+        record_index: u64,
+    },
     #[error("conflicting duplicate archive record at index {0}")]
     ConflictingDuplicate(u64),
     #[error("requested archive target {0} is unavailable")]
@@ -921,7 +951,11 @@ pub enum PitrArchiveError {
     #[error("PITR archive key must contain exactly {PITR_KEY_BYTES} raw bytes, got {actual}: {path}")]
     InvalidKeyLength { path: PathBuf, actual: usize },
     #[error("PITR archive key I/O failure for {path}: {source}")]
-    KeyIo { path: PathBuf, #[source] source: io::Error },
+    KeyIo {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("archive input is not a regular file: {0}")]
     InputNotRegularFile(PathBuf),
     #[error("archive input changed while being opened: {0}")]
@@ -960,7 +994,6 @@ pub enum PitrArchiveError {
 mod tests {
     use super::*;
     use crate::backup::NeuralBaseBackup;
-    use crate::catalog::{ColumnDef, TableSchema};
     use crate::consensus::ClusterMembership;
     use crate::replicated_identity_snapshot::ReplicatedIdentitySnapshotExtension;
     use crate::replicated_snapshot::{ReplicatedSqlSnapshot, SnapshotMetadata};
@@ -1035,7 +1068,10 @@ mod tests {
         let mut writer = PitrArchiveWriter::open(&root, None).unwrap();
         assert!(matches!(
             writer.append_committed(&entry(7)),
-            Err(PitrArchiveError::Gap { expected: 6, actual: 7 })
+            Err(PitrArchiveError::Gap {
+                expected: 6,
+                actual: 7
+            })
         ));
         writer.append_committed(&entry(6)).unwrap();
         let mut changed = entry(6);
