@@ -11,10 +11,13 @@ permissions:
 jobs:
   sync:
     if: github.actor != 'github-actions[bot]'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    env:
+      LIBCLANG_PATH: /usr/lib/llvm-18/lib
+      ROCKSDB_INCLUDE_DIR: /usr/include
     steps:
       - name: Checkout Phase 9 branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: phase9-pitr-archive-stream
           fetch-depth: 0
@@ -25,13 +28,19 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang cmake pkg-config libssl-dev
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            llvm-18-dev \
+            libclang-18-dev \
+            clang-18 \
+            librocksdb-dev \
+            nasm
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.88.0
+        uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt,clippy
+          toolchain: "1.88.0"
+          components: rustfmt, clippy
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
