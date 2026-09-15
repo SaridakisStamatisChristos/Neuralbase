@@ -4,8 +4,8 @@
 //! Archive v1 records every committed Raft position after a verified operator
 //! backup boundary. SQL and identity payloads are the already-canonical NBRM
 //! and NBRI command bytes. Membership payloads are the committed membership
-//! command bytes. Empty Raft control/no-op positions are represented explicitly
-//! so an absent index is always a detectable archive gap.
+//! command bytes. Known Raft/control positions are represented explicitly so
+//! an absent index is always a detectable archive gap.
 
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -16,6 +16,7 @@ use crate::replicated_identity::is_replicated_identity_mutation;
 use crate::replicated_sql::is_replicated_mutation;
 
 const MAGIC: &[u8; 4] = b"NBAR";
+const SQL_READINESS_BARRIER_V1: &[u8] = b"NBRB\x01";
 pub const ARCHIVE_FORMAT_VERSION: u8 = 1;
 pub const ARCHIVE_STATE_MACHINE_COMPAT_VERSION: u16 = BACKUP_STATE_MACHINE_COMPAT_VERSION;
 pub const ARCHIVE_TIMELINE_BYTES: usize = 16;
@@ -81,7 +82,7 @@ impl RecoveryRecord {
         } else if entry.command.starts_with(MEMBERSHIP_CHANGE_TAG) {
             decode_membership_payload(&entry.command)?;
             RecoveryRecordKind::Membership
-        } else if entry.command.is_empty() {
+        } else if entry.command.is_empty() || entry.command.as_slice() == SQL_READINESS_BARRIER_V1 {
             RecoveryRecordKind::Control
         } else {
             // Unknown non-empty entries are not assumed to be harmless. If a
@@ -138,7 +139,7 @@ impl RecoveryRecord {
                 decode_membership_payload(&self.payload)?;
             }
             RecoveryRecordKind::Control => {
-                if !self.payload.is_empty() {
+                if !self.payload.is_empty() && self.payload.as_slice() != SQL_READINESS_BARRIER_V1 {
                     return Err(ArchiveCodecError::RecordKindPayloadMismatch);
                 }
             }
@@ -684,9 +685,26 @@ mod tests {
         let membership = encode_membership_change(&MembershipChange::AddLearner("n4".into()));
         let entries = [
             sql_entry(11),
-            LogEntry { term: 4, index: 12, command: identity },
-            LogEntry { term: 4, index: 13, command: membership },
-            LogEntry { term: 4, index: 14, command: vec![] },
+            LogEntry {
+                term: 4,
+                index: 12,
+                command: identity,
+            },
+            LogEntry {
+                term: 4,
+                index: 13,
+                command: membership,
+            },
+            LogEntry {
+                term: 4,
+                index: 14,
+                command: vec![],
+            },
+            LogEntry {
+                term: 4,
+                index: 15,
+                command: SQL_READINESS_BARRIER_V1.to_vec(),
+            },
         ];
         let kinds: Vec<_> = entries
             .iter()
@@ -699,8 +717,36 @@ mod tests {
                 RecoveryRecordKind::Identity,
                 RecoveryRecordKind::Membership,
                 RecoveryRecordKind::Control,
+                RecoveryRecordKind::Control,
             ]
         );
+    }
+
+    #[test]
+    fn known_readiness_barrier_is_control_but_near_match_fails_closed() {
+        let record = RecoveryRecord::from_log_entry(&LogEntry {
+            term: 1,
+            index: 1,
+            command: SQL_READINESS_BARRIER_V1.to_vec(),
+        })
+        .unwrap();
+        assert_eq!(record.kind, RecoveryRecordKind::Control);
+        let bytes = ArchiveSegment::new(timeline(), 1, [0u8; 32], record)
+            .unwrap()
+            .encode()
+            .unwrap();
+        assert_eq!(
+            ArchiveSegment::decode(&bytes).unwrap().record.payload,
+            SQL_READINESS_BARRIER_V1
+        );
+
+        let error = RecoveryRecord::from_log_entry(&LogEntry {
+            term: 1,
+            index: 2,
+            command: b"NBRB\x02".to_vec(),
+        })
+        .unwrap_err();
+        assert_eq!(error, ArchiveCodecError::UnsupportedCommittedCommand);
     }
 
     #[test]
