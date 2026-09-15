@@ -1,0 +1,179 @@
+name: tcp-nodelay-experiment
+
+on:
+  pull_request:
+    paths:
+      - 'tests/perf_tcp_nodelay_probe.rs'
+      - '.github/workflows/tcp-nodelay-experiment.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tcp-nodelay-experiment-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  same-runner-ab:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      LIBCLANG_PATH: /usr/lib/llvm-18/lib
+      ROCKSDB_INCLUDE_DIR: /usr/include
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HARNESS_SHA: ${{ github.event.pull_request.head.sha }}
+
+    steps:
+      - name: Checkout experiment harness with history
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            llvm-18-dev \
+            libclang-18-dev \
+            clang-18 \
+            librocksdb-dev \
+            nasm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.88.0'
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-tcp-nodelay-${{ hashFiles('Cargo.lock') }}
+
+      - name: Preserve identical probe harness
+        run: |
+          mkdir -p /tmp/tcp-nodelay-harness /tmp/tcp-nodelay-results
+          cp tests/perf_tcp_nodelay_probe.rs /tmp/tcp-nodelay-harness/
+
+      - name: Capture runner environment
+        run: |
+          {
+            echo "base_sha=$BASE_SHA"
+            echo "harness_sha=$HARNESS_SHA"
+            echo "runner_os=${RUNNER_OS}"
+            echo "kernel=$(uname -a)"
+            echo "rustc=$(rustc --version --verbose | tr '\n' ' ')"
+            echo "cpu=$(lscpu | grep -E 'Model name|CPU\(s\)|Thread|Core|Socket' | tr '\n' ';')"
+            echo "memory=$(grep MemTotal /proc/meminfo)"
+            echo "filesystem=$(df -T . | tail -1)"
+          } | tee /tmp/tcp-nodelay-results/environment.txt
+
+      - name: Measure unchanged merged base
+        shell: bash
+        run: |
+          set -euo pipefail
+          git reset --hard
+          git clean -fd
+          git checkout --detach "$BASE_SHA"
+          cp /tmp/tcp-nodelay-harness/perf_tcp_nodelay_probe.rs tests/
+          export TCP_NODELAY_VARIANT=baseline
+          export TCP_NODELAY_BASE_SHA="$BASE_SHA"
+          cargo test --test perf_tcp_nodelay_probe --release --locked tcp_nodelay_endpoint_probe -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/tcp-nodelay-results/baseline.log
+
+      - name: Measure same base with server TCP_NODELAY only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git reset --hard
+          git clean -fd
+          git checkout --detach "$BASE_SHA"
+          cp /tmp/tcp-nodelay-harness/perf_tcp_nodelay_probe.rs tests/
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/server_parts/prelude.rs")
+          text = path.read_text()
+          needle = "        let (mut socket, peer_addr) = listener.accept().await?;\n        let peer_ip = peer_addr.ip();"
+          replacement = "        let (mut socket, peer_addr) = listener.accept().await?;\n        socket.set_nodelay(true)?;\n        let peer_ip = peer_addr.ip();"
+          count = text.count(needle)
+          if count != 1:
+              raise SystemExit(f"expected exactly one SQL accept site, found {count}")
+          path.write_text(text.replace(needle, replacement, 1))
+          PY
+          git diff --check
+          test "$(git diff --numstat -- src/server_parts/prelude.rs)" = $'1\t0\tsrc/server_parts/prelude.rs'
+          git diff -- src/server_parts/prelude.rs | tee /tmp/tcp-nodelay-results/nodelay.patch
+          export TCP_NODELAY_VARIANT=server_tcp_nodelay
+          export TCP_NODELAY_BASE_SHA="$BASE_SHA"
+          cargo test --test perf_tcp_nodelay_probe --release --locked tcp_nodelay_endpoint_probe -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/tcp-nodelay-results/nodelay.log
+
+      - name: Compare A/B results
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('/tmp/tcp-nodelay-results')
+          prefix = 'TCP_NODELAY_RESULT '
+
+          def load(path):
+              out = {}
+              if not path.exists():
+                  return out
+              for line in path.read_text().splitlines():
+                  if line.startswith(prefix):
+                      row = json.loads(line[len(prefix):])
+                      out[row['name']] = row
+              return out
+
+          base = load(root / 'baseline.log')
+          head = load(root / 'nodelay.log')
+          names = sorted(set(base) & set(head))
+          lines = [
+              '# TCP_NODELAY same-runner A/B',
+              '',
+              '| metric | baseline p50 | NODELAY p50 | p50 reduction | baseline p95 | NODELAY p95 |',
+              '|---|---:|---:|---:|---:|---:|',
+          ]
+          for name in names:
+              b50 = base[name]['p50']
+              h50 = head[name]['p50']
+              reduction = (1 - h50 / b50) * 100 if b50 else 0.0
+              lines.append(
+                  f"| {name} | {b50/1e6:.3f} ms | {h50/1e6:.3f} ms | {reduction:.2f}% | "
+                  f"{base[name]['p95']/1e6:.3f} ms | {head[name]['p95']/1e6:.3f} ms |"
+              )
+          summary = '\n'.join(lines) + '\n'
+          print(summary)
+          (root / 'comparison.md').write_text(summary)
+          with open(Path(__import__('os').environ['GITHUB_STEP_SUMMARY']), 'a') as f:
+              f.write(summary)
+          if not names:
+              raise SystemExit('no matching A/B probe results found')
+          PY
+
+      - name: Extract machine-readable results
+        if: always()
+        shell: bash
+        run: |
+          grep -h '^TCP_NODELAY_RESULT ' /tmp/tcp-nodelay-results/*.log 2>/dev/null \
+            | sed 's/^TCP_NODELAY_RESULT //' \
+            > /tmp/tcp-nodelay-results/results.jsonl || true
+          cat /tmp/tcp-nodelay-results/results.jsonl || true
+
+      - name: Upload TCP_NODELAY experiment artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tcp-nodelay-ab-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: /tmp/tcp-nodelay-results
+          if-no-files-found: error
+          retention-days: 30
