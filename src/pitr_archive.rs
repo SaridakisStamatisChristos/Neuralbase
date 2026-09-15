@@ -28,6 +28,7 @@ const SEGMENTS_DIR: &str = "segments";
 const STAGING_DIR: &str = ".staging";
 const STREAM_METADATA_VERSION: u8 = 1;
 const MAX_METADATA_BYTES: usize = 64 * 1024;
+pub const MAX_ARCHIVE_SEGMENT_FILES: usize = 1_000_000;
 const SEGMENT_SUFFIX: &str = ".nbar";
 const ENCRYPTED_SEGMENT_SUFFIX: &str = ".nbpe";
 
@@ -370,11 +371,11 @@ impl PitrArchiveWriter {
             self.frontier.segment_hash,
             record,
         )?;
-        self.publish_segment(&segment)?;
+        let published_hash = self.publish_segment(&segment)?;
         self.frontier = ArchiveFrontier {
             index: segment.record.index,
             term: segment.record.term,
-            segment_hash: segment.hash()?,
+            segment_hash: published_hash,
             segments: self.frontier.segments + 1,
         };
         Ok(segment.record.index)
@@ -458,7 +459,7 @@ impl PitrArchiveWriter {
         &self.metadata
     }
 
-    fn publish_segment(&self, segment: &ArchiveSegment) -> Result<(), PitrArchiveError> {
+    fn publish_segment(&self, segment: &ArchiveSegment) -> Result<ArchiveHash, PitrArchiveError> {
         let plaintext = segment.encode()?;
         let bytes = match (&self.key, self.metadata.encrypted) {
             (Some(key), true) => encrypt_segment(&plaintext, self.metadata.timeline, key)?,
@@ -468,8 +469,8 @@ impl PitrArchiveWriter {
         let final_path = segment_path(&self.root, segment.record.index, self.metadata.encrypted);
         if final_path.exists() {
             let existing = self.read_segment_path(&final_path)?;
-            if existing == *segment {
-                return Ok(());
+            if same_logical_segment(&existing, segment) {
+                return Ok(existing.hash()?);
             }
             return Err(PitrArchiveError::ConflictingDuplicate(segment.record.index));
         }
@@ -479,7 +480,7 @@ impl PitrArchiveWriter {
             std::process::id(),
             segment.created_unix_ms
         ));
-        let result = (|| -> Result<(), PitrArchiveError> {
+        let result = (|| -> Result<ArchiveHash, PitrArchiveError> {
             let mut options = OpenOptions::new();
             options.write(true).create_new(true);
             #[cfg(unix)]
@@ -496,17 +497,22 @@ impl PitrArchiveWriter {
             if staged != *segment {
                 return Err(PitrArchiveError::StagedVerificationMismatch);
             }
-            match fs::hard_link(&staging_path, &final_path) {
-                Ok(()) => {}
+            let published_hash = match fs::hard_link(&staging_path, &final_path) {
+                Ok(()) => segment.hash()?,
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                    return Err(PitrArchiveError::ConflictingDuplicate(segment.record.index))
+                    let existing = self.read_segment_path(&final_path)?;
+                    if same_logical_segment(&existing, segment) {
+                        existing.hash()?
+                    } else {
+                        return Err(PitrArchiveError::ConflictingDuplicate(segment.record.index));
+                    }
                 }
                 Err(error) => return Err(error.into()),
-            }
+            };
             sync_dir(&self.root.join(SEGMENTS_DIR))?;
             fs::remove_file(&staging_path)?;
             sync_dir(&self.root.join(STAGING_DIR))?;
-            Ok(())
+            Ok(published_hash)
         })();
         if result.is_err() {
             let _ = fs::remove_file(&staging_path);
@@ -588,9 +594,24 @@ fn canonical_metadata_bytes(metadata: &ArchiveStreamMetadata) -> Result<Vec<u8>,
     Ok(bytes)
 }
 
+fn same_logical_segment(left: &ArchiveSegment, right: &ArchiveSegment) -> bool {
+    left.timeline == right.timeline
+        && left.state_machine_compat_version == right.state_machine_compat_version
+        && left.previous_hash == right.previous_hash
+        && left.record == right.record
+}
+
 fn list_segment_files(
     root: &Path,
     encrypted: bool,
+) -> Result<Vec<(u64, PathBuf)>, PitrArchiveError> {
+    list_segment_files_with_limit(root, encrypted, MAX_ARCHIVE_SEGMENT_FILES)
+}
+
+fn list_segment_files_with_limit(
+    root: &Path,
+    encrypted: bool,
+    limit: usize,
 ) -> Result<Vec<(u64, PathBuf)>, PitrArchiveError> {
     let suffix = if encrypted {
         ENCRYPTED_SEGMENT_SUFFIX
@@ -618,6 +639,9 @@ fn list_segment_files(
         let index = stem
             .parse::<u64>()
             .map_err(|_| PitrArchiveError::UnexpectedArchiveEntry(entry.path()))?;
+        if out.len() >= limit {
+            return Err(PitrArchiveError::TooManySegments { limit });
+        }
         out.push((index, entry.path()));
     }
     out.sort_by_key(|(index, _)| *index);
@@ -863,6 +887,8 @@ pub enum PitrArchiveError {
     MissingStagingDirectory(PathBuf),
     #[error("unexpected entry in archive directory: {0}")]
     UnexpectedArchiveEntry(PathBuf),
+    #[error("archive contains more than the bounded limit of {limit} segment files")]
+    TooManySegments { limit: usize },
     #[error("archive chain gap: expected index {expected}, got {actual}")]
     Gap { expected: u64, actual: u64 },
     #[error("archive chain overlap: expected index {expected}, got {actual}")]
@@ -1083,5 +1109,62 @@ mod tests {
         metadata.branch_index = Some(metadata.baseline_index);
         let error = metadata.validate().unwrap_err();
         assert!(matches!(error, PitrArchiveError::InvalidMetadata(_)));
+    }
+
+    #[test]
+    fn independent_writers_converge_on_identical_logical_segment() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("archive");
+        let backup = backup();
+        let baseline = backup.encode().unwrap();
+        PitrArchiveWriter::initialize(&root, &backup, &baseline, None).unwrap();
+        let mut first = PitrArchiveWriter::open(&root, None).unwrap();
+        let mut second = PitrArchiveWriter::open(&root, None).unwrap();
+        first.append_committed(&entry(6)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        second.append_committed(&entry(6)).unwrap();
+        assert_eq!(
+            first.status().frontier.segment_hash,
+            second.status().frontier.segment_hash
+        );
+        assert_eq!(second.status().frontier.index, 6);
+    }
+
+    #[test]
+    fn restart_cleans_staging_and_rejects_corrupt_finalized_segment() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("archive");
+        let backup = backup();
+        PitrArchiveWriter::initialize(&root, &backup, &backup.encode().unwrap(), None).unwrap();
+        let staged = root.join(STAGING_DIR).join("leftover.partial");
+        fs::write(&staged, b"interrupted publication").unwrap();
+        let mut writer = PitrArchiveWriter::open(&root, None).unwrap();
+        assert!(!staged.exists());
+        writer.append_committed(&entry(6)).unwrap();
+        drop(writer);
+
+        let path = segment_path(&root, 6, false);
+        let mut bytes = fs::read(&path).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        fs::write(&path, bytes).unwrap();
+        assert!(matches!(
+            PitrArchiveWriter::open(&root, None),
+            Err(PitrArchiveError::Codec(ArchiveCodecError::ChecksumMismatch))
+        ));
+    }
+
+    #[test]
+    fn segment_directory_collection_is_hard_bounded() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("archive");
+        let backup = backup();
+        PitrArchiveWriter::initialize(&root, &backup, &backup.encode().unwrap(), None).unwrap();
+        fs::write(segment_path(&root, 6, false), b"one").unwrap();
+        fs::write(segment_path(&root, 7, false), b"two").unwrap();
+        assert!(matches!(
+            list_segment_files_with_limit(&root, false, 1),
+            Err(PitrArchiveError::TooManySegments { limit: 1 })
+        ));
     }
 }

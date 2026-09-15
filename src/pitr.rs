@@ -431,8 +431,12 @@ pub fn decode_membership_payload(bytes: &[u8]) -> Result<MembershipChange, Archi
     if !bytes.starts_with(MEMBERSHIP_CHANGE_TAG) {
         return Err(ArchiveCodecError::RecordKindPayloadMismatch);
     }
-    serde_json::from_slice(&bytes[MEMBERSHIP_CHANGE_TAG.len()..])
-        .map_err(|error| ArchiveCodecError::InvalidMembership(error.to_string()))
+    let change: MembershipChange = serde_json::from_slice(&bytes[MEMBERSHIP_CHANGE_TAG.len()..])
+        .map_err(|error| ArchiveCodecError::InvalidMembership(error.to_string()))?;
+    if crate::consensus::encode_membership_change(&change).as_slice() != bytes {
+        return Err(ArchiveCodecError::NonCanonicalMembership);
+    }
+    Ok(change)
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -475,6 +479,8 @@ pub enum ArchiveCodecError {
     InvalidIdentity(String),
     #[error("invalid archived membership mutation: {0}")]
     InvalidMembership(String),
+    #[error("archived membership mutation is not canonically encoded")]
+    NonCanonicalMembership,
     #[error("committed non-empty command has no Phase-9 recovery semantics")]
     UnsupportedCommittedCommand,
     #[error("archive chain belongs to a different timeline")]
@@ -560,6 +566,12 @@ mod tests {
         [9u8; ARCHIVE_HASH_BYTES]
     }
 
+    fn reseal_segment(bytes: &mut [u8]) {
+        let content_len = bytes.len() - CHECKSUM_BYTES;
+        let checksum: ArchiveHash = Sha256::digest(&bytes[..content_len]).into();
+        bytes[content_len..].copy_from_slice(&checksum);
+    }
+
     fn spec() -> ArchiveChainSpec {
         ArchiveChainSpec {
             timeline: timeline(),
@@ -595,6 +607,55 @@ mod tests {
                 .unwrap();
         let bytes = segment.encode().unwrap();
         assert_eq!(ArchiveSegment::decode(&bytes).unwrap(), segment);
+    }
+
+    #[test]
+    fn version_compatibility_and_extra_bytes_fail_with_valid_checksum() {
+        let record = RecoveryRecord::from_log_entry(&sql_entry(11)).unwrap();
+        let segment =
+            ArchiveSegment::new(timeline(), 1234, spec().baseline_anchor().unwrap(), record)
+                .unwrap();
+        let bytes = segment.encode().unwrap();
+
+        let mut wrong_version = bytes.clone();
+        wrong_version[4] = ARCHIVE_FORMAT_VERSION + 1;
+        reseal_segment(&mut wrong_version);
+        assert_eq!(
+            ArchiveSegment::decode(&wrong_version).unwrap_err(),
+            ArchiveCodecError::UnsupportedVersion(ARCHIVE_FORMAT_VERSION + 1)
+        );
+
+        let mut wrong_state_machine = bytes.clone();
+        let incompatible = ARCHIVE_STATE_MACHINE_COMPAT_VERSION + 1;
+        wrong_state_machine[8..10].copy_from_slice(&incompatible.to_be_bytes());
+        reseal_segment(&mut wrong_state_machine);
+        assert_eq!(
+            ArchiveSegment::decode(&wrong_state_machine).unwrap_err(),
+            ArchiveCodecError::UnsupportedStateMachineVersion(incompatible)
+        );
+
+        let mut trailing = bytes;
+        let checksum_offset = trailing.len() - CHECKSUM_BYTES;
+        trailing.insert(checksum_offset, 0xA5);
+        reseal_segment(&mut trailing);
+        assert!(matches!(
+            ArchiveSegment::decode(&trailing),
+            Err(ArchiveCodecError::LengthMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn membership_payload_must_be_canonical() {
+        let canonical = encode_membership_change(&MembershipChange::AddLearner("n4".into()));
+        let mut noncanonical = canonical;
+        noncanonical.insert(MEMBERSHIP_CHANGE_TAG.len(), b' ');
+        let error = RecoveryRecord::from_log_entry(&LogEntry {
+            term: 4,
+            index: 11,
+            command: noncanonical,
+        })
+        .unwrap_err();
+        assert_eq!(error, ArchiveCodecError::NonCanonicalMembership);
     }
 
     #[test]

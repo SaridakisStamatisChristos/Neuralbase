@@ -450,7 +450,7 @@ mod tests {
     use super::*;
     use crate::backup::NeuralBaseBackup;
     use crate::consensus::{encode_membership_change, ClusterMembership};
-    use crate::pitr_archive::PitrArchiveWriter;
+    use crate::pitr_archive::{PitrArchiveKey, PitrArchiveWriter};
     use crate::replicated_identity::{ReplicatedIdentityMutation, ReplicatedScramCredential};
     use crate::replicated_identity_snapshot::ReplicatedIdentitySnapshotExtension;
     use crate::replicated_snapshot::{ReplicatedSqlSnapshot, SnapshotMetadata};
@@ -667,6 +667,68 @@ mod tests {
                 "old-a"
             ),
             Err(PitrReplayError::ReusedRecoveryNodeId(_))
+        ));
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn encrypted_archive_replays_end_to_end() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("archive");
+        let backup = baseline();
+        let bytes = backup.encode().unwrap();
+        PitrArchiveWriter::initialize(
+            &root,
+            &backup,
+            &bytes,
+            Some(PitrArchiveKey::from_bytes([7u8; 32])),
+        )
+        .unwrap();
+        let mut archive =
+            PitrArchiveWriter::open(&root, Some(PitrArchiveKey::from_bytes([7u8; 32]))).unwrap();
+        archive
+            .append_committed(&crate::consensus::LogEntry {
+                term: 3,
+                index: 6,
+                command: vec![],
+            })
+            .unwrap();
+        let target = temp.path().join("encrypted-recovered");
+        let report = recover_verified_new_cluster(
+            &backup,
+            &bytes,
+            &archive,
+            RecoveryTarget::Latest,
+            &target,
+            "fresh-encrypted",
+        )
+        .unwrap();
+        assert_eq!(report.target_index, 6);
+        assert_eq!(report.replayed_records, 1);
+        assert!(target.is_dir());
+    }
+
+    #[test]
+    fn wrong_baseline_artifact_fails_before_publication() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("archive");
+        let backup = baseline();
+        let bytes = backup.encode().unwrap();
+        PitrArchiveWriter::initialize(&root, &backup, &bytes, None).unwrap();
+        let archive = PitrArchiveWriter::open(&root, None).unwrap();
+        let target = temp.path().join("wrong-baseline-target");
+        let mut wrong = bytes;
+        wrong.push(0);
+        assert!(matches!(
+            recover_verified_new_cluster(
+                &backup,
+                &wrong,
+                &archive,
+                RecoveryTarget::Baseline,
+                &target,
+                "fresh-baseline-check"
+            ),
+            Err(PitrReplayError::BaselineHashMismatch)
         ));
         assert!(!target.exists());
     }

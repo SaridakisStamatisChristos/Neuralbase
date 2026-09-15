@@ -72,10 +72,14 @@ impl PitrRuntimeArchiver {
         let key = key_file
             .map(|path| load_pitr_archive_key(Path::new(&path)).map_err(io::Error::other))
             .transpose()?;
-        let writer = PitrArchiveWriter::open(Path::new(&archive_dir), key)
-            .map_err(|error| io::Error::other(format!("open PITR archive stream: {error}")))?;
+        let writer = PitrArchiveWriter::open(Path::new(&archive_dir), key).map_err(|error| {
+            metrics::counter!("neuralbase_pitr_startup_rejections_total", "reason" => "archive_open")
+                .increment(1);
+            io::Error::other(format!("open PITR archive stream: {error}"))
+        })?;
         let status = writer.status();
         if status.frontier.segments > max_segments {
+            metrics::counter!("neuralbase_pitr_startup_rejections_total", "reason" => "segment_limit").increment(1);
             return Err(io::Error::other(format!(
                 "PITR stream already has {} segments, above configured limit {max_segments}",
                 status.frontier.segments
@@ -85,12 +89,14 @@ impl PitrRuntimeArchiver {
             io::Error::other(format!("read durable apply state for PITR: {error}"))
         })?;
         if status.metadata.baseline_index > durable.last_applied_index {
+            metrics::counter!("neuralbase_pitr_startup_rejections_total", "reason" => "baseline_ahead").increment(1);
             return Err(io::Error::other(format!(
                 "PITR baseline index {} is newer than durable state-machine apply index {}",
                 status.metadata.baseline_index, durable.last_applied_index
             )));
         }
         if status.frontier.index > durable.last_applied_index {
+            metrics::counter!("neuralbase_pitr_startup_rejections_total", "reason" => "frontier_ahead").increment(1);
             return Err(io::Error::other(format!(
                 "PITR archive frontier {} is newer than durable state-machine apply index {}",
                 status.frontier.index, durable.last_applied_index
@@ -103,6 +109,7 @@ impl PitrRuntimeArchiver {
             .map_err(|error| io::Error::other(format!("read Raft state for PITR: {error}")))?
         {
             if persistent.snapshot_index > status.frontier.index {
+                metrics::counter!("neuralbase_pitr_startup_rejections_total", "reason" => "compaction_ahead").increment(1);
                 return Err(io::Error::other(format!(
                     "PITR archive frontier {} is behind compacted Raft snapshot index {}; required recovery history is unavailable",
                     status.frontier.index, persistent.snapshot_index
@@ -110,6 +117,8 @@ impl PitrRuntimeArchiver {
             }
         }
 
+        metrics::gauge!("neuralbase_pitr_archive_frontier_index").set(status.frontier.index as f64);
+        metrics::gauge!("neuralbase_pitr_archive_segment_limit").set(max_segments as f64);
         Ok(Some(Self {
             writer,
             max_segments,
@@ -126,20 +135,28 @@ impl PitrRuntimeArchiver {
         }
         let status = self.writer.status();
         if entry.index > status.frontier.index && status.frontier.segments >= self.max_segments {
+            metrics::counter!("neuralbase_pitr_archive_failures_total", "reason" => "segment_limit").increment(1);
             return Err(format!(
                 "PITR archive segment limit {} reached at durable frontier {}; create a verified rollover baseline/branch before further writes",
                 self.max_segments, status.frontier.index
             ));
         }
-        self.writer
-            .append_committed(entry)
-            .map(|_| ())
-            .map_err(|error| {
-                format!(
+        match self.writer.append_committed(entry) {
+            Ok(_) => {
+                metrics::counter!("neuralbase_pitr_archive_appends_total").increment(1);
+                metrics::gauge!("neuralbase_pitr_archive_frontier_index")
+                    .set(self.writer.status().frontier.index as f64);
+                Ok(())
+            }
+            Err(error) => {
+                metrics::counter!("neuralbase_pitr_archive_failures_total", "reason" => "publication")
+                    .increment(1);
+                Err(format!(
                     "PITR archive publication failed at index {}: {error}",
                     entry.index
-                )
-            })
+                ))
+            }
+        }
     }
 
     pub fn durable_frontier(&self) -> u64 {

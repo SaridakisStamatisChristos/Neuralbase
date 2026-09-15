@@ -292,4 +292,40 @@ mod tests {
             Err(PitrBranchError::BaselineIndexMismatch { .. })
         ));
     }
+
+    #[test]
+    fn branch_rejects_injected_parent_future_segment() {
+        let temp = TempDir::new().unwrap();
+        let parent_root = temp.path().join("parent");
+        let parent_backup = backup(5, 2, "old", 2);
+        let parent_bytes = parent_backup.encode().unwrap();
+        PitrArchiveWriter::initialize(&parent_root, &parent_backup, &parent_bytes, None).unwrap();
+        let mut parent = PitrArchiveWriter::open(&parent_root, None).unwrap();
+        for index in [6, 7] {
+            parent
+                .append_committed(&LogEntry {
+                    term: 3,
+                    index,
+                    command: vec![],
+                })
+                .unwrap();
+        }
+
+        let child_backup = backup(6, 3, "fresh", 4);
+        let child_bytes = child_backup.encode().unwrap();
+        let child_root = temp.path().join("child");
+        initialize_branch_stream(&child_root, &parent, 6, &child_backup, &child_bytes, None)
+            .unwrap();
+
+        let name = format!("{:020}.nbar", 7);
+        fs::copy(
+            parent_root.join(SEGMENTS_DIR).join(&name),
+            child_root.join(SEGMENTS_DIR).join(&name),
+        )
+        .unwrap();
+        assert!(matches!(
+            PitrArchiveWriter::open(&child_root, None),
+            Err(PitrArchiveError::WrongTimeline(7))
+        ));
+    }
 }
