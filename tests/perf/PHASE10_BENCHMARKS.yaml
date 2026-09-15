@@ -1,0 +1,86 @@
+version: 1
+phase: 10
+purpose: reproducible_performance_contract
+baseline_commit: e8a4f1c7f5865c6e04f51f6e0658f0c2c81475db
+policy:
+  optimization_requires_before_measurement: true
+  correctness_precedes_performance: true
+  external_superiority_claims: forbidden_without_dedicated_reproducible_evidence
+  normal_correctness_ci_replaced: false
+required_environment:
+  - exact_commit
+  - cargo_profile
+  - cargo_features
+  - rust_version
+  - os
+  - kernel
+  - cpu_model
+  - logical_cpu_count
+  - memory_bytes
+  - storage_description
+  - filesystem_when_relevant
+  - dataset_or_scale
+  - topology
+  - warmup_iterations
+  - measured_iterations
+  - concurrency
+  - summary_statistic
+  - variance_or_percentiles_when_meaningful
+workload_classes:
+  query:
+    - simple_local_read
+    - row_executor_filter_projection
+    - row_executor_join
+    - row_executor_aggregate_sort
+    - vectorized_tpch_q1
+    - vectorized_tpch_q6
+    - persistent_rocksdb_scan
+  read_consistency:
+    - local_read
+    - leader_read
+    - linearizable_read
+    - concurrent_strong_reads
+    - quorum_loss_strong_read_failure
+  writes:
+    - replicated_single_mutation
+    - replicated_sustained_mutations
+    - mixed_reads_writes
+    - replicated_mutations_pitr_disabled
+    - replicated_mutations_pitr_enabled
+  lifecycle:
+    - snapshot_create
+    - snapshot_install
+    - backup_create
+    - backup_verify
+    - backup_restore
+    - learner_catchup
+    - learner_promotion
+    - failover
+    - pitr_archive_append
+    - pitr_recover_to_index
+  resources:
+    - join_memory
+    - sort_memory
+    - aggregate_memory
+    - cpu_profile
+    - storage_io
+    - durability_cost
+    - network_transport_cost
+classification:
+  correctness_ci: semantic/fault assertions only; no wall-clock pass threshold
+  regression_ci: only low-variance measurements after variance is characterized
+  manual_characterization: heavyweight cluster, recovery, large-scale and noisy timing runs
+existing_commands:
+  vectorized_tpch: cargo test --test perf_tpch --release --locked -- --nocapture
+  optimizer_library: cargo test --test bench_optimizer --release --locked -- --nocapture
+  postgres_reference: make tpch-correctness
+result_requirements:
+  before_after_same_harness: true
+  exact_before_commit: true
+  exact_after_commit: true
+  warmup_required: true
+  repetitions_required: true
+  report_path_identity: true
+  report_persistent_vs_in_memory: true
+  report_single_node_vs_clustered: true
+  report_endpoint_vs_library: true
