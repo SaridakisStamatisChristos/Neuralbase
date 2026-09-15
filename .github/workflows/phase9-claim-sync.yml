@@ -8,71 +8,144 @@ on:
 permissions:
   contents: write
 
+env:
+  LIBCLANG_PATH: /usr/lib/llvm-18/lib
+  ROCKSDB_INCLUDE_DIR: /usr/include
+
 jobs:
-  sync:
+  claim:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
-    env:
-      LIBCLANG_PATH: /usr/lib/llvm-18/lib
-      ROCKSDB_INCLUDE_DIR: /usr/include
     steps:
-      - name: Checkout Phase 9 branch
-        uses: actions/checkout@v5
-        with:
-          ref: phase9-pitr-archive-stream
-          fetch-depth: 0
-          persist-credentials: true
-
+      - uses: actions/checkout@v5
       - name: Apply synchronized claims
         run: |
           python3 .github/phase9_claim_sync.py
-          python3 -c 'from pathlib import Path; p=Path("docs/TESTING.md"); s=p.read_text(); old="The Phase-9 closure gate additionally runs `cargo test` under default, `tls`, `io_uring`, and combined `tls io_uring` features, full all-feature Clippy with warnings denied, `make test`, and the targeted real-process PITR suite."; new="The Phase-9 closure gate additionally runs `cargo test` under the repository\u2019s actual default, `tls`, `simd`, and combined `tls simd` feature surfaces, full all-feature Clippy with warnings denied, `make test`, and the targeted real-process PITR suite."; assert s.count(old)==1, s.count(old); p.write_text(s.replace(old,new,1))'
-
-      - name: Install system dependencies
+          python3 -c 'from pathlib import Path; p=Path("docs/TESTING.md"); s=p.read_text(); old="The Phase-9 closure gate additionally runs `cargo test` under default, `tls`, `io_uring`, and combined `tls io_uring` features, full all-feature Clippy with warnings denied, `make test`, and the targeted real-process PITR suite."; new="The Phase-9 closure gate additionally runs `cargo test` under the repository’s actual default, `tls`, `simd`, and combined `tls simd` feature surfaces, full all-feature Clippy with warnings denied, `make test`, and the targeted real-process PITR suite."; assert s.count(old)==1, s.count(old); p.write_text(s.replace(old,new,1))'
+      - name: Install native dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y \
-            llvm-18-dev \
-            libclang-18-dev \
-            clang-18 \
-            librocksdb-dev \
-            nasm
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+          sudo apt-get install -y llvm-18-dev libclang-18-dev clang-18 librocksdb-dev nasm
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.88.0"
           components: rustfmt, clippy
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Validate formatting and confidence
+      - uses: Swatinem/rust-cache@v2
+      - name: Validate synchronized claims
         run: |
           cargo fmt --all -- --check
           cargo test --test confidence_yaml --locked
+          git diff --check
 
-      - name: Validate feature matrix
+  feature:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: default
+            features: ""
+          - label: tls
+            features: tls
+          - label: simd
+            features: simd
+          - label: tls-simd
+            features: "tls simd"
+    name: feature-${{ matrix.label }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install native dependencies
         run: |
-          cargo test --locked
-          cargo test --features tls --locked
-          cargo test --features simd --locked
-          cargo test --features "tls simd" --locked
-          cargo clippy --all-targets --all-features --locked -- -D warnings
-          make test
+          sudo apt-get update -qq
+          sudo apt-get install -y llvm-18-dev libclang-18-dev clang-18 librocksdb-dev nasm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88.0"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: phase9-${{ matrix.label }}
+      - name: Test feature surface
+        run: |
+          if [ -z "${{ matrix.features }}" ]; then
+            cargo test --locked
+          else
+            cargo test --features "${{ matrix.features }}" --locked
+          fi
 
-      - name: Validate Phase 9 process recovery
+  clippy:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y llvm-18-dev libclang-18-dev clang-18 librocksdb-dev nasm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88.0"
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: phase9-clippy-all
+      - run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+  make-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y llvm-18-dev libclang-18-dev clang-18 librocksdb-dev nasm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88.0"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: phase9-make-test
+      - run: make test
+
+  process:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y llvm-18-dev libclang-18-dev clang-18 librocksdb-dev nasm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88.0"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: phase9-process
+      - name: Validate real Phase 9 recovery
         run: cargo test --test phase9_pitr_process --features tls --locked -- --nocapture --test-threads=1
 
-      - name: Commit clean synchronized head
+  publish:
+    if: github.actor != 'github-actions[bot]'
+    needs: [claim, feature, clippy, make-test, process]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact validated head
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Apply synchronized claims
+        run: |
+          python3 .github/phase9_claim_sync.py
+          python3 -c 'from pathlib import Path; p=Path("docs/TESTING.md"); s=p.read_text(); old="The Phase-9 closure gate additionally runs `cargo test` under default, `tls`, `io_uring`, and combined `tls io_uring` features, full all-feature Clippy with warnings denied, `make test`, and the targeted real-process PITR suite."; new="The Phase-9 closure gate additionally runs `cargo test` under the repository’s actual default, `tls`, `simd`, and combined `tls simd` feature surfaces, full all-feature Clippy with warnings denied, `make test`, and the targeted real-process PITR suite."; assert s.count(old)==1, s.count(old); p.write_text(s.replace(old,new,1))'
+      - name: Publish clean synchronized head
         run: |
           git rm .github/phase9_claim_sync.py .github/workflows/phase9-claim-sync.yml
           git add -A
           git diff --cached --check
-          if git diff --cached --quiet; then
-            echo "No claim synchronization changes to commit"
-            exit 1
-          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "docs(pitr): synchronize Phase 9 claim and evidence"
