@@ -84,9 +84,7 @@ fn report(name: &str, samples: &[u128], extra: serde_json::Value) {
 
 fn connect(port: u16) -> Result<Client, postgres::Error> {
     Client::connect(
-        &format!(
-            "host=127.0.0.1 port={port} user=postgres dbname=postgres connect_timeout=1"
-        ),
+        &format!("host=127.0.0.1 port={port} user=postgres dbname=postgres connect_timeout=1"),
         NoTls,
     )
 }
@@ -125,7 +123,10 @@ fn wait_ready(process: &mut NodeProcess, port: u16) -> Client {
         if let Ok(client) = connect(port) {
             return client;
         }
-        assert!(Instant::now() < deadline, "phase10 endpoint startup timed out");
+        assert!(
+            Instant::now() < deadline,
+            "phase10 endpoint startup timed out"
+        );
         std::thread::sleep(Duration::from_millis(30));
     }
 }
@@ -215,11 +216,7 @@ fn phase10_real_endpoint_characterization() {
 
     measure_query(&mut client, "endpoint_local_read", "local");
     measure_query(&mut client, "endpoint_leader_read", "leader");
-    measure_query(
-        &mut client,
-        "endpoint_linearizable_read",
-        "linearizable",
-    );
+    measure_query(&mut client, "endpoint_linearizable_read", "linearizable");
 
     // Return to Local so the measured INSERT is not preceded by a read barrier;
     // mutation acknowledgement itself still retains quorum + confirmed durable
