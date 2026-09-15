@@ -99,7 +99,10 @@ fn measure_query(
         let result = execute_select_query(&query, catalog).expect("phase10 measured query");
         let elapsed = start.elapsed().as_nanos();
         if expected_non_empty {
-            assert!(!result.rows.is_empty(), "{name} unexpectedly returned no rows");
+            assert!(
+                !result.rows.is_empty(),
+                "{name} unexpectedly returned no rows"
+            );
         }
         black_box(result.rows.len());
         samples.push(elapsed);
@@ -200,11 +203,7 @@ fn phase10_persistent_rocksdb_scan_characterization() {
     let txn_mgr = Arc::new(TransactionManager::new(engine.clone(), clock));
     let catalog = Arc::new(InMemoryCatalog::default());
     catalog.create_table(bench_schema());
-    let executor = StorageExecutor::new(
-        engine,
-        txn_mgr,
-        Arc::clone(&catalog) as Arc<dyn Catalog>,
-    );
+    let executor = StorageExecutor::new(engine, txn_mgr, Arc::clone(&catalog) as Arc<dyn Catalog>);
 
     const ROWS: usize = 1024;
     for i in 0..ROWS {
