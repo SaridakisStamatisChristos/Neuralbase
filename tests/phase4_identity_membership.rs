@@ -256,6 +256,35 @@ async fn change_member(
         .await
 }
 
+fn retryable_guarded_membership_error(error: &str) -> bool {
+    error.contains("not leader; redirect to")
+        || error.contains("stale operator leadership/membership guard")
+}
+
+async fn change_member_on_current_leader(
+    nodes: &[MemberNode],
+    voter_count: usize,
+    change: MembershipChange,
+    guarded: bool,
+) -> Result<u64, String> {
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    loop {
+        let leader = leader_index(nodes, voter_count).await;
+        match change_member(&nodes[leader], change.clone(), guarded).await {
+            Ok(index) => return Ok(index),
+            Err(error) if guarded && retryable_guarded_membership_error(&error) => {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(format!(
+                        "guarded membership leadership never stabilized: {error}"
+                    ));
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 async fn membership_lifecycle(guarded: bool) {
     let bus = ChannelTransport::new_bus();
     let mut nodes = Vec::new();
@@ -283,9 +312,9 @@ async fn membership_lifecycle(guarded: bool) {
     );
 
     nodes.push(spawn_member(Arc::clone(&bus), LEARNER, true).await);
-    let leader = leader_index(&nodes, 3).await;
-    change_member(
-        &nodes[leader],
+    change_member_on_current_leader(
+        &nodes,
+        3,
         MembershipChange::AddLearner(LEARNER.to_string()),
         guarded,
     )
@@ -300,9 +329,9 @@ async fn membership_lifecycle(guarded: bool) {
 
     let promotion_deadline = tokio::time::Instant::now() + TIMEOUT;
     loop {
-        let leader = leader_index(&nodes, 3).await;
-        match change_member(
-            &nodes[leader],
+        match change_member_on_current_leader(
+            &nodes,
+            3,
             MembershipChange::PromoteLearner(LEARNER.to_string()),
             guarded,
         )
@@ -347,9 +376,9 @@ async fn membership_lifecycle(guarded: bool) {
         wait_identity(node, &after).await;
     }
 
-    let leader = leader_index(&nodes, 4).await;
-    change_member(
-        &nodes[leader],
+    change_member_on_current_leader(
+        &nodes,
+        4,
         MembershipChange::RemoveNode(LEARNER.to_string()),
         guarded,
     )
