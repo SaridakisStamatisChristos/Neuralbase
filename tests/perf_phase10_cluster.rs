@@ -124,7 +124,8 @@ async fn spawn_node(id: &str, bus: Bus, blocked: Blocks, election_ms: u64) -> Te
         }
     });
 
-    let mut raft = RaftNode::new(id.to_string(), peers, transport).with_confirmed_apply_tx(apply_tx);
+    let mut raft =
+        RaftNode::new(id.to_string(), peers, transport).with_confirmed_apply_tx(apply_tx);
     raft.set_election_timeout_ms(election_ms);
     let (client_tx, shared, handle) = raft.spawn();
     TestNode {
@@ -241,11 +242,7 @@ fn report(name: &str, samples: &[u128], extra: serde_json::Value) {
     println!("PHASE10_RESULT {payload}");
 }
 
-async fn measure_strong_reads(
-    node: &TestNode,
-    mode: ReadConsistency,
-    name: &str,
-) -> Vec<u128> {
+async fn measure_strong_reads(node: &TestNode, mode: ReadConsistency, name: &str) -> Vec<u128> {
     let gateway = node.gateway();
     for _ in 0..WARMUP {
         prepare_read_with_timeout(Some(&gateway), mode, WAIT)
@@ -346,7 +343,10 @@ async fn phase10_failover_and_stale_leader_failure_characterization() {
     )
     .await;
     let stale_failure_ns = stale_start.elapsed().as_nanos();
-    assert!(stale_result.is_err(), "isolated former leader served a strong read");
+    assert!(
+        stale_result.is_err(),
+        "isolated former leader served a strong read"
+    );
     report(
         "stale_leader_strong_read_fail_closed",
         &[stale_failure_ns],
