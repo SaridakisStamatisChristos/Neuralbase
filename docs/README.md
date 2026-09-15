@@ -15,6 +15,7 @@ This directory contains the technical documentation for NeuralBase. The root `RE
 | [THREAT_MODEL.md](THREAT_MODEL.md) | Threats, trust boundaries and residual risks |
 | [PHASE7_OPERATOR.md](PHASE7_OPERATOR.md) | Opt-in managed process/Kubernetes membership reconciliation profile |
 | [PHASE7_CLOSURE.md](PHASE7_CLOSURE.md) | Phase-7 PR-head evidence and final closure conditions |
+| [PITR.md](PITR.md) | Phase-9 archived recovery stream, exact-index recovery, encryption, branching and retention |
 | [`../ops/RUNBOOK.md`](../ops/RUNBOOK.md) | Tested backup/restore, strong-read validation and disaster-recovery operator procedure |
 | [TSAN.md](TSAN.md) | ThreadSanitizer workflow and caveats |
 | [`../observability/README.md`](../observability/README.md) | Metrics actually emitted, development services and tracing limitations |
@@ -25,7 +26,7 @@ Repository-level material includes [`../ROADMAP.md`](../ROADMAP.md), [`../CONFID
 
 ## Current distributed claim in one sentence
 
-Configured clusters replicate persistent table mutations and SCRAM identity through Raft with quorum commit + confirmed durable local apply before success; SQL-aware snapshots preserve both table and identity state; learner/joint-consensus membership transitions, Phase-5 operator backup/restore/fresh-cluster DR, Phase-6 leader-path `Local`/`Leader`/`Linearizable` read modes, and the opt-in Phase-7 managed process/Kubernetes membership reconciliation profile are implemented and tested within their documented scopes; this still excludes linearizable reads from arbitrary followers, automatic strong-read routing, PITR/automatic DR, arbitrary Helm/HPA scaling, rolling-upgrade orchestration, and production-HA claims.
+Configured clusters replicate persistent table mutations and SCRAM identity through Raft with quorum commit + confirmed durable local apply before success; SQL-aware snapshots preserve both table and identity state; learner/joint-consensus membership transitions, Phase-5 operator backup/restore/fresh-cluster DR, Phase-6 leader-path `Local`/`Leader`/`Linearizable` read modes, the opt-in Phase-7 managed process/Kubernetes membership reconciliation profile, and Phase-9 exact committed-index archived recovery/PITR are implemented and tested within their documented scopes; this still excludes linearizable reads from arbitrary followers, automatic strong-read routing, timestamp-target PITR/automatic DR, arbitrary Helm/HPA scaling, rolling-upgrade orchestration, and production-HA claims.
 
 ## Documentation rule
 

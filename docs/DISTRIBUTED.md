@@ -1,6 +1,6 @@
 # Distributed semantics
 
-NeuralBase has tested Raft paths for persistent table replication, SQL-aware snapshot/recovery, coordinated membership changes, strongly consistent clustered identity, and explicit Phase-6 read-consistency modes. This document defines those guarantees and the remaining boundaries.
+NeuralBase has tested Raft paths for persistent table replication, SQL-aware snapshot/recovery, coordinated membership changes, strongly consistent clustered identity, explicit Phase-6 read-consistency modes, and Phase-9 exact committed-index archived recovery. This document defines those guarantees and the remaining boundaries.
 
 ## Clustered startup
 
@@ -71,6 +71,16 @@ Restore is fresh-target-only. It creates one fresh single-voter recovery generat
 
 Interrupted restore remnants remain hidden non-authoritative stages and are never automatically resumed. A retry constructs a fresh stage. The operator procedure and compatibility/key rules are in `ops/RUNBOOK.md`.
 
+## Phase-9 archived recovery stream and exact-index PITR
+
+A Phase-9 stream starts from a verified operator backup baseline and a unique timeline. Committed post-baseline positions are archived as strict versioned records containing their exact Raft index/term and hash-linked history. SQL, replicated identity, membership transitions and known control entries are represented explicitly; unknown committed command families fail closed. Optional authenticated archive encryption is selected by an out-of-band key file.
+
+When archival is enabled, the local replicated state machine applies durably first, the corresponding archive record is then durably published, and only then does the confirmed-apply channel report success to Raft. An archive publication error therefore blocks confirmed apply and prevents compaction from legitimately advancing beyond the missing recovery position. Startup rejects a stream whose baseline/frontier is inconsistent with durable logical state or whose frontier trails an already compacted Raft snapshot.
+
+Recovery accepts `baseline`, `latest` or an exact committed index. It verifies the baseline and complete required archive chain, replays deterministically into a hidden fresh target, reconstructs selected historical membership, creates a new single-voter recovery generation with fresh node identity and source tombstones, verifies the complete staged state, then publishes atomically. Branching creates a distinct child timeline at an earlier recovered point; parent future records cannot join it. Retention retirement is conservative and preserves the parent on ambiguity.
+
+Archive v1 does **not** map wall-clock timestamps to recovery positions and does not perform automatic disaster detection/recovery. Operator details are in [PITR.md](PITR.md).
+
 ## Deployment boundary
 
 The existing Compose/Kubernetes/Helm examples still describe static bootstrap topology and reject HPA. The separate [Phase-7 managed controller](PHASE7_OPERATOR.md) sequences explicit desired topology through authoritative observation, learner catch-up, joint promotion/removal and tombstone-guarded retirement. Its local process and per-member StatefulSet adapters require their dedicated managed storage/configuration; they do not adopt existing deployments. Phase-7 validation remains in progress.
@@ -108,6 +118,7 @@ Arbitrary-follower linearizable reads and automatic follower-to-leader strong-re
 - stale removed-node protection;
 - replicated SCRAM identity, strict migration, failover rotation/drop and process-level authentication convergence;
 - versioned offline/online backup, independent verification, authenticated encrypted backup, fresh-target restore and fresh-generation cluster recovery;
+- Phase-9 hash-linked archived recovery, authenticated archive encryption, exact-index replay, branch lineage, bounded retention and real-process PITR recovery;
 - explicit `Local`/`Leader`/`Linearizable` read modes, including immediate read-after-write, stale-former-leader partition rejection, follower rejection, leadership transfer, learner/promotion membership transitions, recovery readiness, restart, restored-cluster bootstrap and real-process concurrent read/write evidence.
 
-Still open before stronger production claims: validated operation of the managed operator profile, arbitrary-follower strong-read routing/optimization, PITR and automatic DR, broader authorization/security, upgrade/storage-chaos evidence and production performance characterization.
+Still open before stronger production claims: validated operation of the managed operator profile, arbitrary-follower strong-read routing/optimization, timestamp-target PITR and automatic DR, broader authorization/security, upgrade/storage-chaos evidence and production performance characterization.

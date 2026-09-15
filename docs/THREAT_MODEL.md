@@ -14,6 +14,7 @@ This is a risk inventory, not a security certification.
 - standalone credential files and clustered legacy migration files;
 - TLS private keys/CA material;
 - NBBK/NBEC operator backups and their separately managed encryption keys;
+- Phase-9 NBAR/NBPE archive streams, timeline metadata and separately managed archive keys;
 - managed-controller desired topology, durable controller state and Kubernetes object ownership metadata;
 - metrics and diagnostics.
 
@@ -69,6 +70,14 @@ NBBK is integrity-protected but plaintext. NBEC v1 adds authenticated ChaCha20-P
 
 NBEC v1 does not carry a key identifier. External key inventory/rotation is therefore an operator responsibility. Old keys must remain available while backups encrypted under them are retained. RocksDB databases and internal Raft logs remain outside this backup-container encryption boundary and are not transparently encrypted at rest.
 
+## PITR archive security and recovery risk
+
+Phase-9 archive streams contain deterministic committed SQL effects, SCRAM verifier identity material, membership transitions and control positions. Plain NBAR streams are integrity-protected but not confidential. NBPE adds authenticated ChaCha20-Poly1305 protection with a raw 32-byte out-of-band key; the key file is treated as sensitive and insecure/wrong key material fails closed. Archive encryption does not encrypt RocksDB, internal Raft state or the baseline unless the baseline itself is NBEC.
+
+The runtime archive fence is fail-closed: a required archive publication failure prevents confirmed apply from advancing. Operators must therefore provision durable writable archive storage and monitor archive failures/segment limits. A full stream also blocks further archive-required progress until rollover is performed; deleting segments to bypass the limit destroys the recovery chain and is unsupported.
+
+Branching is a history fork, not an in-place rewind. A recovered earlier point must use a distinct child timeline before new future writes. The archive verifier rejects parent-future injection into that child. Timestamp recovery is not supported; selecting an application time requires external mapping to a known committed index. Automatic DR, remote archive replication and key lifecycle automation remain operator responsibilities.
+
 ## Read-consistency risk
 
 The default `Local` mode intentionally performs no consensus coordination and may lag on a follower. Applications requiring the Phase-6 strong-read contract must select `Leader` or `Linearizable` and connect to the current serving Raft leader.
@@ -85,7 +94,7 @@ The Phase-7 local-process adapter is a trusted-host development profile and uses
 
 ## Current production blockers
 
-Stronger production claims require secure-by-default deployment profiles, certificate/secret lifecycle, richer authorization/auditability, broader network/storage/upgrade chaos testing, managed upgrade/rollback semantics, controller-principal hardening, and production resource/performance characterization. Arbitrary Helm/HPA scaling remains unsupported even though the explicit Phase-7 managed profile is lifecycle-tested. Arbitrary-follower strong-read routing and lower-overhead ReadIndex/lease optimization remain unimplemented. PITR and automatic DR remain unimplemented; Phase-5 backup encryption does not imply general database-at-rest encryption.
+Stronger production claims require secure-by-default deployment profiles, certificate/secret lifecycle, richer authorization/auditability, broader network/storage/upgrade chaos testing, managed upgrade/rollback semantics, controller-principal hardening, and production resource/performance characterization. Arbitrary Helm/HPA scaling remains unsupported even though the explicit Phase-7 managed profile is lifecycle-tested. Arbitrary-follower strong-read routing and lower-overhead ReadIndex/lease optimization remain unimplemented. Exact committed-index PITR is implemented through the explicit Phase-9 archive workflow, but timestamp-target PITR and automatic DR remain unimplemented; Phase-5/9 artifact encryption does not imply general database-at-rest encryption.
 
 ## Evidence references
 
@@ -99,5 +108,6 @@ Stronger production claims require secure-by-default deployment profiles, certif
 - `tests/phase4_identity*.rs` — identity failover/recovery/membership/process evidence.
 - `tests/raft_persistence_fail_closed.rs` and replicated SQL snapshot/process suites — durability/failure evidence.
 - `src/backup*.rs`, `src/offline_backup.rs`, `src/online_backup.rs`, `src/restore.rs` and `tests/phase5_*` — operator recovery/security evidence.
+- `src/pitr*.rs`, `src/bin/neuralbase-pitr.rs` and `tests/phase9_pitr_process.rs` — archived recovery, encryption, replay, branch/retention and real-process PITR evidence.
 - `src/operator.rs`, `src/consensus/operator_control.rs`, `src/operator_admin.rs`, `ops/neuralbase_operator.py`, `ops/neuralbase_kubernetes.py` and `tests/phase7_*` — guarded managed membership/deployment evidence.
 - `CONFIDENCE.md` / `CONFIDENCE.yaml` — machine-readable claim boundary.

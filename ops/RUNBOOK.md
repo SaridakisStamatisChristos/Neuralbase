@@ -1,6 +1,6 @@
 # NeuralBase development and disaster-recovery runbook
 
-This runbook documents the **tested pre-1.0 operator recovery model** plus the Phase-6 read-consistency controls relevant to validation after failover/recovery. It is not a production-HA or automatic-disaster-recovery guarantee. `Local` reads may lag, strong reads require the current serving leader, membership reconciliation requires the explicit managed profile, and PITR is not implemented.
+This runbook documents the **tested pre-1.0 operator recovery model** plus the Phase-6 read-consistency controls relevant to validation after failover/recovery. It is not a production-HA or automatic-disaster-recovery guarantee. `Local` reads may lag, strong reads require the current serving leader, membership reconciliation requires the explicit managed profile, and Phase-9 PITR is limited to exact committed Raft indexes from an explicitly managed archive stream.
 
 ## Safety rules
 
@@ -11,7 +11,7 @@ This runbook documents the **tested pre-1.0 operator recovery model** plus the P
 - Never reuse a historical source node ID as the designated recovery node ID.
 - Never point restore at an existing directory. Restore is intentionally fresh-target-only.
 - Never manually rename a `.restore-partial-*` directory into service.
-- Do not infer PITR, automatic DR, production HA, or linearizable arbitrary-follower reads from this runbook.
+- Do not infer timestamp-target PITR, automatic DR, production HA, or linearizable arbitrary-follower reads from this runbook. Exact committed-index PITR requires the explicit Phase-9 archive workflow below.
 - Do not treat a failed `Leader`/`Linearizable` read on a follower as permission to serve a local fallback; route/retry through an application/operator-controlled current-leader path.
 
 ## Build the operator tool
@@ -158,6 +158,114 @@ A retry must ignore all of them, construct a new verified stage, and publish onl
 
 After a successful retry and after confirming the final target is healthy, stale `.restore-partial-*` directories may be removed manually. Never rename or serve one directly.
 
+## Phase-9 exact-index point-in-time recovery
+
+Phase 9 adds an **opt-in** archived recovery stream. The recovery coordinate is an exact committed Raft index. Wall-clock timestamp targets are intentionally unsupported in archive v1. Build the PITR tool with:
+
+```bash
+cargo build --release --locked --bin neuralbase-pitr
+```
+
+### 1. Initialize a stream from a verified baseline
+
+Create or select a verified NBBK/NBEC baseline and initialize a distinct archive directory. For a plaintext baseline/archive:
+
+```bash
+target/release/neuralbase-pitr init \
+  --backup /backups/base.nbbk \
+  --archive /archive/neuralbase-pitr
+```
+
+For encrypted inputs, pass key **file paths**, never raw key bytes:
+
+```bash
+target/release/neuralbase-pitr init \
+  --backup /backups/base.nbec \
+  --backup-key-file /secure/backup.key \
+  --archive /archive/neuralbase-pitr \
+  --archive-key-file /secure/pitr.key
+```
+
+The PITR archive key is exactly 32 raw bytes and is managed out of band. On Unix, keep key files mode `0600` or stricter. The stream metadata binds the baseline hash/index/term, state-machine compatibility, source membership metadata, encryption mode and a unique timeline.
+
+### 2. Enable synchronous runtime archival
+
+Start the clustered server with the already initialized stream:
+
+```bash
+export NEURALBASE_PITR_ARCHIVE_DIR=/archive/neuralbase-pitr
+export NEURALBASE_PITR_KEY_FILE=/secure/pitr.key   # omit for plaintext NBAR
+export NEURALBASE_PITR_MAX_SEGMENTS=100000        # optional; default shown
+```
+
+With PITR enabled, a committed entry is durably applied to the replicated state machine, its required archive segment is durably published and verified, and only then is confirmed apply reported back to Raft. Archive publication failure therefore fails closed rather than allowing the confirmed apply/compaction frontier to pass the missing recovery position. The historical runtime path is unchanged when `NEURALBASE_PITR_ARCHIVE_DIR` is unset.
+
+### 3. Inspect and verify recoverable targets
+
+```bash
+target/release/neuralbase-pitr status --archive /archive/neuralbase-pitr --archive-key-file /secure/pitr.key
+target/release/neuralbase-pitr verify --archive /archive/neuralbase-pitr --archive-key-file /secure/pitr.key
+target/release/neuralbase-pitr targets --archive /archive/neuralbase-pitr --archive-key-file /secure/pitr.key
+```
+
+`targets` reports the baseline, latest frontier and exact inclusive committed-index range. Do not invent a timestamp target. An application/operator that needs time-oriented recovery must maintain its own trustworthy mapping from application time/event to a committed Raft index.
+
+### 4. Recover to an exact point
+
+Fence the old topology and choose a **fresh** recovery node ID. The target directory must not exist:
+
+```bash
+target/release/neuralbase-pitr recover \
+  --backup /backups/base.nbbk \
+  --archive /archive/neuralbase-pitr \
+  --target 4242 \
+  --target-dir /var/lib/neuralbase/recovery-pitr \
+  --node-id recovery-pitr \
+  --archive-key-file /secure/pitr.key
+```
+
+`--target` also accepts `baseline` or `latest`. Recovery verifies the baseline and required archive chain before authority publication, restores into a hidden staging target, deterministically replays through the selected index, reconstructs selected historical membership, creates a fresh single-voter recovery generation with historical source IDs tombstoned, independently reopens/verifies the staged database, and only then atomically publishes the target. A wrong baseline, missing/corrupt segment, incompatible version or unavailable target fails before the requested target becomes serving authority.
+
+### 5. Branch before creating a new future
+
+After recovery to an earlier point, keep the recovered database **stopped** while creating its new child timeline. This is important because starting Raft can append a new current-term control position.
+
+```bash
+target/release/neuralbase-pitr branch \
+  --parent-archive /archive/neuralbase-pitr \
+  --parent-archive-key-file /secure/pitr.key \
+  --branch-target 4242 \
+  --db /var/lib/neuralbase/recovery-pitr \
+  --baseline-out /backups/branch-4242.nbbk \
+  --archive /archive/neuralbase-pitr-branch
+```
+
+The child receives a new timeline and records the parent timeline/branch index. Old parent segments after the branch point are not valid child history. Start the recovered server with the **child** archive directory before accepting new writes.
+
+### 6. Rollover and conservative retirement
+
+`NEURALBASE_PITR_MAX_SEGMENTS` bounds one runtime stream. Before the limit is reached, quiesce the old archive writer and create a verified replacement child whose baseline/branch is exactly the old durable frontier. Only then retire the parent:
+
+```bash
+target/release/neuralbase-pitr retire \
+  --archive /archive/neuralbase-pitr \
+  --replacement-archive /archive/neuralbase-pitr-next \
+  --archive-key-file /secure/pitr.key \
+  --replacement-archive-key-file /secure/pitr-next.key
+```
+
+Retirement is deliberately conservative: mismatched lineage, boundary, term, segment sequence/count or staging ambiguity preserves the old data. Never delete archive segments manually to bypass the configured limit.
+
+### Phase-9 failure boundary
+
+- Unknown committed command encodings, unsupported archive/state-machine versions, gaps, overlaps, bad links, corrupt finalized segments, wrong timelines and wrong keys fail closed.
+- Staging leftovers are not authoritative and are cleaned/revalidated on open; an interrupted publication never advertises an unverified target.
+- Archive verification is bounded by per-payload and per-stream limits.
+- Phase 9 does not provide remote object-store replication, automatic archive copying, timestamp target mapping, automatic disaster detection/failover, or a measured RPO/RTO SLA.
+- `neuralbase_pitr_*` metrics expose runtime publication/frontier/limit/rejection signals; operators still need their own durable storage, alerting, retention and key-lifecycle policy.
+
+See [`docs/PITR.md`](../docs/PITR.md) for the format and contract summary.
+
 ## Complete cluster loss
 
 Use this workflow only when recovery from the healthy existing quorum is no longer possible.
@@ -281,7 +389,7 @@ CI also validates deployment manifests. Exact-head green CI is evidence only for
 
 This runbook does **not** provide or claim:
 
-- point-in-time recovery or archived WAL/Raft-log replay;
+- wall-clock/timestamp-target point-in-time recovery;
 - automatic disaster detection/failover/recovery;
 - adoption/replacement of unmanaged nodes or automatic disaster replacement;
 - arbitrary StatefulSet replica changes or HPA safety;

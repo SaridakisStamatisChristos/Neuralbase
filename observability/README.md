@@ -26,8 +26,13 @@ The instrumented call sites in `server_parts/prelude.rs`, `server_parts/session.
 | `rejected_connections_per_user_total` | Per-user admission rejections after startup/authentication |
 | `neuralbase_reads_total{consistency}` | Reads reaching the consistency prerequisite successfully; labels `local`, `leader`, `linearizable`. Not completed-query counts: later binding/execution can fail. |
 | `neuralbase_strong_read_rejections_total{reason}` | Instrumented `not_leader` and `timeout` failures; not every possible strong-read error |
+| `neuralbase_pitr_archive_appends_total` | Successful Phase-9 archive publication calls while PITR runtime archival is enabled |
+| `neuralbase_pitr_archive_failures_total{reason}` | Archive publication or configured segment-limit failures |
+| `neuralbase_pitr_startup_rejections_total{reason}` | PITR-enabled startup rejected because archive/open/frontier/compaction invariants failed |
+| `neuralbase_pitr_archive_frontier_index` | Verified/published archive recovery frontier for the running PITR stream |
+| `neuralbase_pitr_archive_segment_limit` | Configured per-stream runtime segment limit |
 
-Metrics may be absent until their code path runs. There is currently no emitted strong-read latency histogram, Raft quorum/lag gauge set, backup-age metric or automatic SLO alert policy.
+Metrics may be absent until their code path runs. There is currently no emitted strong-read latency histogram, Raft quorum/lag gauge set, backup/archive-age metric or automatic SLO alert policy. PITR metrics exist only when the relevant startup/archive paths execute.
 
 The repository includes `ops/prometheus.yml` and the Compose topology includes Prometheus/Grafana-oriented development wiring.
 

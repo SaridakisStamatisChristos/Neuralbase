@@ -1,8 +1,8 @@
 # Confidence Report
 
-**Updated:** 2026-09-14
+**Updated:** 2026-09-15
 
-NeuralBase remains pre-1.0 research/development software. The evidence boundary includes replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated Raft membership changes, strongly consistent replicated SCRAM identity, the documented Phase-5 operator backup/restore/fresh-cluster DR model, explicit Phase-6 read-consistency modes on the leader path, the opt-in Phase-7 managed process/Kubernetes membership reconciliation profile, and the bounded Phase-8 SQL compatibility profile. It remains deliberately narrower than a production-HA or complete PostgreSQL-compatibility claim.
+NeuralBase remains pre-1.0 research/development software. The evidence boundary includes replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated Raft membership changes, strongly consistent replicated SCRAM identity, the documented Phase-5 operator backup/restore/fresh-cluster DR model, explicit Phase-6 read-consistency modes on the leader path, the opt-in Phase-7 managed process/Kubernetes membership reconciliation profile, the bounded Phase-8 SQL compatibility profile, and Phase-9 exact committed-index archived recovery/PITR. It remains deliberately narrower than a production-HA or complete PostgreSQL-compatibility claim.
 
 ## Strongest evidence
 
@@ -27,6 +27,8 @@ NeuralBase remains pre-1.0 research/development software. The evidence boundary 
 - The extended protocol supports a bounded typed parameter subset with NULL, text and selected binary scalar encodings, statement parameter descriptions and lifecycle handling. A real Rust `postgres` client reuses a typed prepared statement against the live server.
 - Typed parameter materialization is deterministic before the established parser/binder and replicated mutation path; this is not a distributed transaction claim.
 - PostgreSQL 16 TPC-H Q1-Q22 reference comparison remains part of CI at a deterministic small scale.
+- Phase 9 adds strict hash-linked archived committed records, authenticated archive encryption, synchronous archive-before-confirmed-apply fencing, exact baseline/index/latest recovery into a fresh verified generation, child timeline branching and conservative retention retirement.
+- Phase-9 evidence includes corruption/version/gap/overlap/publication/restart/branch/encryption faults plus a real OS-process exact-target recovery that rolls back both SQL data and replicated SCRAM identity, creates a new future, and survives restart.
 
 ## Phase-8 SQL compatibility scope
 
@@ -81,6 +83,14 @@ The Phase-7 managed profile connects explicit desired topology to that protocol.
 
 This does **not** mean arbitrary changes to the checked-in static Helm/Compose/StatefulSet replica counts are safe. The managed Kubernetes profile uses separate per-incarnation StatefulSets/PVCs and must be driven through its controller. HPA remains disabled. Rolling-upgrade orchestration, automatic version/image migration, hostile multi-tenant controller isolation and production deployment certification are not part of the claim.
 
+## Phase-9 PITR scope
+
+The promoted PITR claim is deliberately narrower than generic time-based recovery. A verified NBBK/NBEC baseline anchors one archive timeline. Each required committed position after the baseline is represented by a strict hash-linked NBAR/NBPE record. When runtime archival is enabled, archive publication is part of the confirmed-apply fence, and startup refuses stream/durable-state/compaction relationships that would invalidate the recovery history.
+
+Recovery accepts `baseline`, `latest` or an exact committed Raft index. It replays into a hidden fresh target, reconstructs state and membership at that exact boundary, establishes a fresh recovery authority, verifies the completed target and only then publishes it. Recovery to an earlier point must branch into a distinct child timeline before new future writes.
+
+This claim does **not** include timestamp-to-index mapping, automatic DR/failover, remote archive replication/object storage, production retention guarantees or a measured RPO/RTO SLA.
+
 ## What the confidence claim still excludes
 
 - `production_ready: true` or production SQL HA;
@@ -91,7 +101,7 @@ This does **not** mean arbitrary changes to the checked-in static Helm/Compose/S
 - linearizable reads from arbitrary followers or automatic strong-read routing;
 - arbitrary Helm/StatefulSet replica scaling or HPA safety outside the explicit managed Phase-7 controller;
 - managed rolling-upgrade/version orchestration;
-- PITR or automatic disaster recovery beyond the documented manual fresh-cluster Phase-5 procedure;
+- timestamp-target PITR or automatic disaster recovery; exact committed-index PITR is the bounded Phase-9 capability;
 - live-server ONNX join-order planning or distributed query exchange;
 - production-grade authorization/audit policy;
 - broad upgrade/storage/network chaos certification.

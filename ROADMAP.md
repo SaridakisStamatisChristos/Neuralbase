@@ -69,9 +69,20 @@ Single-node mode deliberately keeps the historical local `users.json` behavior f
 
 Internal Raft snapshot catch-up remains distinct from operator backup. The standalone backup CLI is offline; online backup is currently an in-process coordinator API.
 
-### Later recovery extension — PITR
+## Completed Phase 9 — archived recovery stream and exact-index PITR
 
-Archived replicated-log/WAL-equivalent streaming and point-in-time recovery remain separate future work. Phase 5 does not infer PITR from retained Raft logs.
+- [x] Versioned `NBAR` archive segments with explicit committed Raft index/term, timeline, previous-hash link, payload hash, checksum, state-machine compatibility marker and strict fail-closed decoding.
+- [x] Canonical archived SQL, replicated identity, membership and known control records; unknown committed command families fail closed.
+- [x] Opt-in synchronous runtime archive fence: durable logical apply is followed by durable archive publication before confirmed Raft apply completes.
+- [x] Crash-safe staged segment publication, restart verification, gap/overlap/duplicate/conflict detection, bounded stream enumeration and compaction-frontier startup guards.
+- [x] Authenticated `NBPE` ChaCha20-Poly1305 archive encryption with strict out-of-band raw key-file handling and wrong-key/tamper rejection.
+- [x] Exact baseline/index/latest recovery into a fresh single-voter recovery generation with historical source-ID tombstones and independent staged verification before target publication.
+- [x] Timeline branching after earlier-point recovery so old future segments cannot join the new history.
+- [x] Conservative verified rollover/retirement that preserves the parent on ambiguity and requires a child baseline at the old durable frontier.
+- [x] Real OS-process evidence for exact target recovery, replicated identity rollback, branched future writes and restart persistence, plus encrypted replay and archive fault tests.
+- [x] Runtime archive frontier/append/failure/startup-rejection metrics and explicit stream segment limits.
+
+Phase 9 deliberately targets exact committed Raft **indexes**, not wall-clock timestamps. Timestamp-to-index mapping, automatic disaster detection/recovery, remote archive replication/object storage, and production-HA claims remain out of scope.
 
 ## Completed Phase 6 — explicit read consistency modes
 

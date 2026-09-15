@@ -34,6 +34,9 @@ Setting `NEURALBASE_NODE_ID` enables replicated state and requires durable Rocks
 | `NEURALBASE_AUTH_REQUIRED` | Require PostgreSQL authentication |
 | `NEURALBASE_USERS_FILE` | Standalone registry path, or clustered **legacy migration source** path |
 | `NEURALBASE_IDENTITY_MIGRATION_SHA256` | Exact SHA-256 authorizing the selected clustered legacy registry |
+| `NEURALBASE_PITR_ARCHIVE_DIR` | Existing verified Phase-9 archive stream; opt-in synchronous archival |
+| `NEURALBASE_PITR_KEY_FILE` | Optional raw 32-byte archive-encryption key file |
+| `NEURALBASE_PITR_MAX_SEGMENTS` | Bounded per-stream archive segment limit |
 
 Defaults, legacy aliases, admission limits, TLS activation/precedence and fixed execution limits are specified in [CONFIGURATION.md](CONFIGURATION.md).
 
@@ -122,6 +125,12 @@ The leader-coordinated online backup implementation is currently an in-process `
 
 Restored clusters begin from exactly one fresh recovery authority. Additional members must be fresh learners admitted/caught-up/promoted through the consensus membership API. Do not clone the restored PVC/directory into multiple voters.
 
+### Phase-9 exact-index PITR
+
+The separate `neuralbase-pitr` tool initializes and verifies an archive stream from a verified NBBK/NBEC baseline, lists exact recoverable committed-index targets, recovers into a fresh target, creates a new child timeline after earlier-point recovery, and retires a quiesced parent only after a replacement child is independently verified at the parent frontier. Runtime archival is enabled only with `NEURALBASE_PITR_ARCHIVE_DIR`; optional `NEURALBASE_PITR_KEY_FILE` selects authenticated archive encryption.
+
+This is an operator-managed recovery path, not automatic DR. Timestamp targets are intentionally unsupported in archive v1; the recovery coordinate is an exact committed Raft index. Deployment automation must provision/archive the baseline, archive directory and key material explicitly. See [PITR.md](PITR.md) and the [runbook](../ops/RUNBOOK.md).
+
 ## Membership and scaling
 
 The consensus API supports adding a learner, catch-up, promotion, joint-consensus voter changes, removal and leadership transfer. The static chart does not reconcile these operations when `replicaCount` changes, so that value remains a bootstrap topology setting and HPA is rejected.
@@ -136,4 +145,4 @@ Build with `--features tls`. SQL TLS and Raft mTLS remain configuration-dependen
 
 ## Operational readiness boundary
 
-Current manifests demonstrate packaging for the tested replicated-table/snapshot/membership/identity engine. Phase-5 manual backup/restore/fresh-cluster DR is tested separately from deployment automation. Phase-6 strong read modes are implemented on the leader path. Phase 7 adds tested opt-in managed process/Kubernetes membership reconciliation, but production readiness still requires target-environment security review, broader fault/upgrade validation, managed upgrade/rollback semantics and production performance characterization. PITR, automatic DR, arbitrary Helm/HPA scaling and production HA remain unimplemented or unclaimed.
+Current manifests demonstrate packaging for the tested replicated-table/snapshot/membership/identity engine. Phase-5 manual backup/restore/fresh-cluster DR is tested separately from deployment automation. Phase-6 strong read modes are implemented on the leader path. Phase 7 adds tested opt-in managed process/Kubernetes membership reconciliation, but production readiness still requires target-environment security review, broader fault/upgrade validation, managed upgrade/rollback semantics and production performance characterization. Timestamp-target PITR, automatic DR, arbitrary Helm/HPA scaling and production HA remain unimplemented or unclaimed; exact committed-index PITR is implemented only through the explicit Phase-9 archive workflow.
