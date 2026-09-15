@@ -1,0 +1,68 @@
+name: phase9-claim-sync
+
+on:
+  push:
+    branches:
+      - phase9-pitr-archive-stream
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Phase 9 branch
+        uses: actions/checkout@v4
+        with:
+          ref: phase9-pitr-archive-stream
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Apply synchronized claims
+        run: python3 .github/phase9_claim_sync.py
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake pkg-config libssl-dev
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: rustfmt,clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Validate formatting and confidence
+        run: |
+          cargo fmt --all -- --check
+          cargo test --test confidence_yaml --locked
+
+      - name: Validate feature matrix
+        run: |
+          cargo test --locked
+          cargo test --features tls --locked
+          cargo test --features io_uring --locked
+          cargo test --features "tls io_uring" --locked
+          cargo clippy --all-targets --all-features --locked -- -D warnings
+          make test
+
+      - name: Validate Phase 9 process recovery
+        run: cargo test --test phase9_pitr_process --features tls --locked -- --nocapture --test-threads=1
+
+      - name: Commit clean synchronized head
+        run: |
+          git rm .github/phase9_claim_sync.py .github/workflows/phase9-claim-sync.yml
+          git add -A
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "No claim synchronization changes to commit"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "docs(pitr): synchronize Phase 9 claim and evidence"
+          git push origin HEAD:phase9-pitr-archive-stream
