@@ -111,7 +111,10 @@ fn publish_metadata(root: &Path, metadata: &ArchiveStreamMetadata) -> Result<(),
     let mut bytes = serde_json::to_vec(metadata)
         .map_err(|error| PitrBranchError::MetadataEncoding(error.to_string()))?;
     bytes.push(b'\n');
-    let staged = root.join(format!(".{METADATA_FILE}.branch-partial-{}", std::process::id()));
+    let staged = root.join(format!(
+        ".{METADATA_FILE}.branch-partial-{}",
+        std::process::id()
+    ));
     let result = (|| -> Result<(), PitrBranchError> {
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
@@ -245,17 +248,14 @@ mod tests {
         let child_backup = backup(6, 3, "fresh", 4);
         let child_bytes = child_backup.encode().unwrap();
         let child_root = temp.path().join("child");
-        let status = initialize_branch_stream(
-            &child_root,
-            &parent,
-            6,
-            &child_backup,
-            &child_bytes,
-            None,
-        )
-        .unwrap();
+        let status =
+            initialize_branch_stream(&child_root, &parent, 6, &child_backup, &child_bytes, None)
+                .unwrap();
         assert_ne!(status.metadata.timeline, parent.metadata().timeline);
-        assert_eq!(status.metadata.parent_timeline, Some(parent.metadata().timeline));
+        assert_eq!(
+            status.metadata.parent_timeline,
+            Some(parent.metadata().timeline)
+        );
         assert_eq!(status.metadata.branch_index, Some(6));
         assert_eq!(status.frontier.index, 6);
 

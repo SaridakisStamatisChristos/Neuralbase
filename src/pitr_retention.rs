@@ -106,10 +106,7 @@ fn validate_replacement(
     Ok(())
 }
 
-fn verify_moved_stream(
-    root: &Path,
-    expected: &ArchiveStatus,
-) -> Result<(), PitrRetentionError> {
+fn verify_moved_stream(root: &Path, expected: &ArchiveStatus) -> Result<(), PitrRetentionError> {
     let metadata = read_metadata(root).map_err(|error| {
         PitrRetentionError::MovedVerification(format!("read moved metadata: {error}"))
     })?;
@@ -161,9 +158,7 @@ fn verify_moved_stream(
             )));
         }
         indexes.push(stem.parse::<u64>().map_err(|_| {
-            PitrRetentionError::MovedVerification(format!(
-                "invalid retired segment index: {text}"
-            ))
+            PitrRetentionError::MovedVerification(format!("invalid retired segment index: {text}"))
         })?);
     }
     indexes.sort_unstable();
@@ -188,7 +183,10 @@ fn verify_moved_stream(
             )));
         }
     }
-    if indexes.last().copied().unwrap_or(expected.metadata.baseline_index)
+    if indexes
+        .last()
+        .copied()
+        .unwrap_or(expected.metadata.baseline_index)
         != expected.frontier.index
     {
         return Err(PitrRetentionError::MovedVerification(format!(
@@ -268,8 +266,8 @@ mod tests {
     use super::*;
     use crate::backup::NeuralBaseBackup;
     use crate::consensus::{ClusterMembership, LogEntry};
-    use crate::pitr_branch::initialize_branch_stream;
     use crate::pitr_archive::PitrArchiveWriter;
+    use crate::pitr_branch::initialize_branch_stream;
     use crate::replicated_identity_snapshot::ReplicatedIdentitySnapshotExtension;
     use crate::replicated_snapshot::{ReplicatedSqlSnapshot, SnapshotMetadata};
     use tempfile::TempDir;
@@ -314,15 +312,8 @@ mod tests {
         let child_backup = backup(6, 3, "fresh", 4);
         let child_bytes = child_backup.encode().unwrap();
         let child_root = temp.path().join("child");
-        initialize_branch_stream(
-            &child_root,
-            &parent,
-            6,
-            &child_backup,
-            &child_bytes,
-            None,
-        )
-        .unwrap();
+        initialize_branch_stream(&child_root, &parent, 6, &child_backup, &child_bytes, None)
+            .unwrap();
         let child = PitrArchiveWriter::open(&child_root, None).unwrap();
         let report = retire_replaced_stream(&parent_root, &parent, &child).unwrap();
         assert_eq!(report.retired_frontier, 6);
@@ -341,15 +332,8 @@ mod tests {
         let child_backup = backup(5, 2, "fresh", 3);
         let child_bytes = child_backup.encode().unwrap();
         let child_root = temp.path().join("child");
-        initialize_branch_stream(
-            &child_root,
-            &parent,
-            5,
-            &child_backup,
-            &child_bytes,
-            None,
-        )
-        .unwrap();
+        initialize_branch_stream(&child_root, &parent, 5, &child_backup, &child_bytes, None)
+            .unwrap();
         let child = PitrArchiveWriter::open(&child_root, None).unwrap();
         parent
             .append_committed(&LogEntry {

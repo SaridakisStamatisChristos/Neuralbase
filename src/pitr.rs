@@ -23,7 +23,17 @@ pub const ARCHIVE_TIMELINE_BYTES: usize = 16;
 pub const ARCHIVE_HASH_BYTES: usize = 32;
 pub const MAX_ARCHIVE_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 const CHECKSUM_BYTES: usize = ARCHIVE_HASH_BYTES;
-const HEADER_BYTES: usize = 4 + 1 + 1 + 1 + 1 + 2 + ARCHIVE_TIMELINE_BYTES + 8 + 8 + 8 + 8
+const HEADER_BYTES: usize = 4
+    + 1
+    + 1
+    + 1
+    + 1
+    + 2
+    + ARCHIVE_TIMELINE_BYTES
+    + 8
+    + 8
+    + 8
+    + 8
     + ARCHIVE_HASH_BYTES
     + ARCHIVE_HASH_BYTES
     + 4;
@@ -580,8 +590,9 @@ mod tests {
     #[test]
     fn segment_roundtrip_is_canonical() {
         let record = RecoveryRecord::from_log_entry(&sql_entry(11)).unwrap();
-        let segment = ArchiveSegment::new(timeline(), 1234, spec().baseline_anchor().unwrap(), record)
-            .unwrap();
+        let segment =
+            ArchiveSegment::new(timeline(), 1234, spec().baseline_anchor().unwrap(), record)
+                .unwrap();
         let bytes = segment.encode().unwrap();
         assert_eq!(ArchiveSegment::decode(&bytes).unwrap(), segment);
     }
@@ -589,8 +600,9 @@ mod tests {
     #[test]
     fn truncation_and_corruption_fail_closed() {
         let record = RecoveryRecord::from_log_entry(&sql_entry(11)).unwrap();
-        let segment = ArchiveSegment::new(timeline(), 1234, spec().baseline_anchor().unwrap(), record)
-            .unwrap();
+        let segment =
+            ArchiveSegment::new(timeline(), 1234, spec().baseline_anchor().unwrap(), record)
+                .unwrap();
         let bytes = segment.encode().unwrap();
         assert!(matches!(
             ArchiveSegment::decode(&bytes[..bytes.len() - 1]),
@@ -624,7 +636,8 @@ mod tests {
         )
         .unwrap();
         let second_bytes = second.encode().unwrap();
-        let frontier = verify_archive_chain(&s, &[first_bytes.clone(), second_bytes.clone()]).unwrap();
+        let frontier =
+            verify_archive_chain(&s, &[first_bytes.clone(), second_bytes.clone()]).unwrap();
         assert_eq!(frontier.index, 12);
 
         let gap = ArchiveSegment::new(
@@ -636,11 +649,17 @@ mod tests {
         .unwrap();
         assert!(matches!(
             verify_archive_chain(&s, &[first_bytes.clone(), gap.encode().unwrap()]),
-            Err(ArchiveCodecError::Gap { expected: 12, actual: 13 })
+            Err(ArchiveCodecError::Gap {
+                expected: 12,
+                actual: 13
+            })
         ));
         assert!(matches!(
             verify_archive_chain(&s, &[first_bytes.clone(), first_bytes.clone()]),
-            Err(ArchiveCodecError::Overlap { expected: 12, actual: 11 })
+            Err(ArchiveCodecError::Overlap {
+                expected: 12,
+                actual: 11
+            })
         ));
 
         let bad_link = ArchiveSegment::new(

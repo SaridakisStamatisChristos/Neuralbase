@@ -211,8 +211,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let archive = required_flag(&args[1..], "--archive")?;
             let replacement_archive = required_flag(&args[1..], "--replacement-archive")?;
             let archive_key_file = optional_flag(&args[1..], "--archive-key-file")?;
-            let replacement_key_file =
-                optional_flag(&args[1..], "--replacement-archive-key-file")?;
+            let replacement_key_file = optional_flag(&args[1..], "--replacement-archive-key-file")?;
             reject_unknown_flags(
                 &args[1..],
                 &[
@@ -262,10 +261,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
     }
 }
 
-fn open_archive(
-    path: &Path,
-    archive_key_file: Option<&str>,
-) -> Result<PitrArchiveWriter, String> {
+fn open_archive(path: &Path, archive_key_file: Option<&str>) -> Result<PitrArchiveWriter, String> {
     let key = load_archive_key(archive_key_file)?;
     PitrArchiveWriter::open(path, key).map_err(|error| error.to_string())
 }
@@ -293,10 +289,16 @@ fn read_baseline_artifact(path: &Path) -> Result<Vec<u8>, String> {
     let max = MAX_BACKUP_BYTES.max(MAX_ENCRYPTED_BACKUP_BYTES);
     let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
     if !metadata.file_type().is_file() {
-        return Err(format!("baseline backup is not a regular file: {}", path.display()));
+        return Err(format!(
+            "baseline backup is not a regular file: {}",
+            path.display()
+        ));
     }
     if metadata.len() > max as u64 {
-        return Err(format!("baseline backup exceeds bounded size: {}", path.display()));
+        return Err(format!(
+            "baseline backup exceeds bounded size: {}",
+            path.display()
+        ));
     }
     let file = File::open(path).map_err(|error| error.to_string())?;
     let opened = file.metadata().map_err(|error| error.to_string())?;
@@ -304,7 +306,10 @@ fn read_baseline_artifact(path: &Path) -> Result<Vec<u8>, String> {
     {
         use std::os::unix::fs::MetadataExt;
         if metadata.dev() != opened.dev() || metadata.ino() != opened.ino() {
-            return Err(format!("baseline backup changed while opening: {}", path.display()));
+            return Err(format!(
+                "baseline backup changed while opening: {}",
+                path.display()
+            ));
         }
     }
     let mut bytes = Vec::with_capacity(opened.len() as usize);
@@ -312,7 +317,10 @@ fn read_baseline_artifact(path: &Path) -> Result<Vec<u8>, String> {
         .read_to_end(&mut bytes)
         .map_err(|error| error.to_string())?;
     if bytes.len() > max {
-        return Err(format!("baseline backup exceeds bounded size: {}", path.display()));
+        return Err(format!(
+            "baseline backup exceeds bounded size: {}",
+            path.display()
+        ));
     }
     Ok(bytes)
 }
@@ -321,10 +329,9 @@ fn parse_target(raw: &str) -> Result<RecoveryTarget, String> {
     match raw {
         "baseline" => Ok(RecoveryTarget::Baseline),
         "latest" => Ok(RecoveryTarget::Latest),
-        _ => raw
-            .parse::<u64>()
-            .map(RecoveryTarget::Index)
-            .map_err(|_| "--target must be baseline, latest, or an exact u64 recovery index".to_string()),
+        _ => raw.parse::<u64>().map(RecoveryTarget::Index).map_err(|_| {
+            "--target must be baseline, latest, or an exact u64 recovery index".to_string()
+        }),
     }
 }
 
@@ -338,7 +345,9 @@ fn resolve_branch_target(raw: &str, parent: &PitrArchiveWriter) -> Result<u64, S
                 "--branch-target must be baseline, latest, or an exact u64 recovery index"
                     .to_string()
             })?;
-            parent.verify_target(index).map_err(|error| error.to_string())?;
+            parent
+                .verify_target(index)
+                .map_err(|error| error.to_string())?;
             Ok(index)
         }
     }
@@ -472,12 +481,7 @@ mod tests {
 
     #[test]
     fn retire_requires_replacement_archive() {
-        let error = run(vec![
-            "retire".into(),
-            "--archive".into(),
-            "old".into(),
-        ])
-        .unwrap_err();
+        let error = run(vec!["retire".into(), "--archive".into(), "old".into()]).unwrap_err();
         assert!(error.contains("--replacement-archive"));
     }
 }

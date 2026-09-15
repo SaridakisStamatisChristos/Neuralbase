@@ -181,7 +181,11 @@ fn wait_ready(node: &mut NodeProcess, auth_required: bool, password: &str) {
 fn wait_auth(node: &mut NodeProcess, password: &str) {
     let deadline = Instant::now() + START_TIMEOUT;
     loop {
-        assert!(node.is_running(), "{} exited while waiting for auth", node.spec.id);
+        assert!(
+            node.is_running(),
+            "{} exited while waiting for auth",
+            node.spec.id
+        );
         if connect_auth(node.spec.sql_port, password).is_ok() {
             return;
         }
@@ -207,12 +211,7 @@ enum MutationAttempt {
     TimedOut,
 }
 
-fn mutation_attempt(
-    port: u16,
-    auth_required: bool,
-    password: &str,
-    sql: &str,
-) -> MutationAttempt {
+fn mutation_attempt(port: u16, auth_required: bool, password: &str, sql: &str) -> MutationAttempt {
     let sql = sql.to_string();
     let password = password.to_string();
     let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
@@ -237,12 +236,7 @@ fn mutation_attempt(
         .unwrap_or(MutationAttempt::TimedOut)
 }
 
-fn mutate_when_ready(
-    node: &mut NodeProcess,
-    auth_required: bool,
-    password: &str,
-    sql: &str,
-) {
+fn mutate_when_ready(node: &mut NodeProcess, auth_required: bool, password: &str, sql: &str) {
     let deadline = Instant::now() + MUTATION_TIMEOUT;
     loop {
         assert!(node.is_running(), "{} exited before mutation", node.spec.id);
@@ -297,7 +291,9 @@ fn read_rows(port: u16, password: &str) -> BTreeSet<(String, String)> {
 }
 
 fn run_cli(command: &mut Command, name: &str) -> Output {
-    let output = command.output().unwrap_or_else(|error| panic!("run {name}: {error}"));
+    let output = command
+        .output()
+        .unwrap_or_else(|error| panic!("run {name}: {error}"));
     assert!(
         output.status.success(),
         "{name} failed: stdout={} stderr={}",
@@ -399,7 +395,10 @@ fn process_pitr_exact_target_identity_branch_and_restart() {
         "INSERT INTO pitr_items VALUES (3, 'after-target')",
     );
     let source_latest = archive_frontier(&source_archive);
-    assert!(source_latest > target, "later source history must extend the archive");
+    assert!(
+        source_latest > target,
+        "later source history must extend the archive"
+    );
     source.kill();
 
     run_cli(
@@ -451,7 +450,10 @@ fn process_pitr_exact_target_identity_branch_and_restart() {
     let mut recovery = NodeProcess::new(recovery_spec.clone());
     recovery.start(true, Some(&branch_archive));
     wait_ready(&mut recovery, true, OLD_PASSWORD);
-    assert_eq!(read_rows(recovery.spec.sql_port, OLD_PASSWORD), expected_target);
+    assert_eq!(
+        read_rows(recovery.spec.sql_port, OLD_PASSWORD),
+        expected_target
+    );
     assert!(
         connect_auth(recovery.spec.sql_port, NEW_PASSWORD).is_err(),
         "password rotation after the selected target must be excluded"
@@ -464,28 +466,42 @@ fn process_pitr_exact_target_identity_branch_and_restart() {
         "INSERT INTO pitr_items VALUES (4, 'branched-future')",
     );
     let branch_frontier = archive_frontier(&branch_archive);
-    assert!(branch_frontier > target, "new branch must archive its own future");
+    assert!(
+        branch_frontier > target,
+        "new branch must archive its own future"
+    );
     let expected_branch = BTreeSet::from([
         ("1".to_string(), "baseline".to_string()),
         ("2".to_string(), "at-target".to_string()),
         ("4".to_string(), "branched-future".to_string()),
     ]);
-    assert_eq!(read_rows(recovery.spec.sql_port, OLD_PASSWORD), expected_branch);
+    assert_eq!(
+        read_rows(recovery.spec.sql_port, OLD_PASSWORD),
+        expected_branch
+    );
 
     recovery.kill();
     recovery.start(true, Some(&branch_archive));
     wait_ready(&mut recovery, true, OLD_PASSWORD);
-    assert_eq!(read_rows(recovery.spec.sql_port, OLD_PASSWORD), expected_branch);
+    assert_eq!(
+        read_rows(recovery.spec.sql_port, OLD_PASSWORD),
+        expected_branch
+    );
     recovery.kill();
 
-    let source_writer = PitrArchiveWriter::open(&source_archive, None).expect("open source archive");
-    let branch_writer = PitrArchiveWriter::open(&branch_archive, None).expect("open branch archive");
+    let source_writer =
+        PitrArchiveWriter::open(&source_archive, None).expect("open source archive");
+    let branch_writer =
+        PitrArchiveWriter::open(&branch_archive, None).expect("open branch archive");
     assert_eq!(
         branch_writer.metadata().parent_timeline,
         Some(source_writer.metadata().timeline)
     );
     assert_eq!(branch_writer.metadata().branch_index, Some(target));
-    assert_ne!(branch_writer.metadata().timeline, source_writer.metadata().timeline);
+    assert_ne!(
+        branch_writer.metadata().timeline,
+        source_writer.metadata().timeline
+    );
 
     // Inspect only after the real process has released RocksDB's lock.
     let engine = Arc::new(StorageEngine::open(&recovery_spec.db_path).expect("open PITR disk"));

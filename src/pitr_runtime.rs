@@ -81,9 +81,9 @@ impl PitrRuntimeArchiver {
                 status.frontier.segments
             )));
         }
-        let durable = state_machine
-            .durable_state()
-            .map_err(|error| io::Error::other(format!("read durable apply state for PITR: {error}")))?;
+        let durable = state_machine.durable_state().map_err(|error| {
+            io::Error::other(format!("read durable apply state for PITR: {error}"))
+        })?;
         if status.metadata.baseline_index > durable.last_applied_index {
             return Err(io::Error::other(format!(
                 "PITR baseline index {} is newer than durable state-machine apply index {}",
@@ -134,7 +134,12 @@ impl PitrRuntimeArchiver {
         self.writer
             .append_committed(entry)
             .map(|_| ())
-            .map_err(|error| format!("PITR archive publication failed at index {}: {error}", entry.index))
+            .map_err(|error| {
+                format!(
+                    "PITR archive publication failed at index {}: {error}",
+                    entry.index
+                )
+            })
     }
 
     pub fn durable_frontier(&self) -> u64 {

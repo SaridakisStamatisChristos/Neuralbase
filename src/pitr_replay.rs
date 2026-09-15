@@ -68,13 +68,7 @@ pub fn recover_verified_new_cluster(
 
     let staging = allocate_staging_path(destination)?;
     fs::create_dir(&staging)?;
-    let result = recover_into_staging(
-        backup,
-        archive,
-        target_index,
-        &staging,
-        recovery_node_id,
-    );
+    let result = recover_into_staging(backup, archive, target_index, &staging, recovery_node_id);
     let report = match result {
         Ok(report) => report,
         Err(error) => {
@@ -422,7 +416,11 @@ pub enum PitrReplayError {
     #[error("could not allocate a unique PITR staging directory")]
     StagingPathExhausted,
     #[error("PITR target {target} is unavailable; baseline={baseline}, frontier={frontier}")]
-    TargetUnavailable { baseline: u64, frontier: u64, target: u64 },
+    TargetUnavailable {
+        baseline: u64,
+        frontier: u64,
+        target: u64,
+    },
     #[error("PITR baseline artifact SHA-256 does not match archive stream")]
     BaselineHashMismatch,
     #[error("PITR baseline manifest/membership does not match archive stream")]
@@ -553,7 +551,10 @@ mod tests {
         let store = RocksDbRaftPersistenceStore::new(engine);
         let (persistent, _) = store.load().unwrap().unwrap();
         assert_eq!(persistent.snapshot_index, 7);
-        assert_eq!(persistent.membership.unwrap().voters, BTreeSet::from(["fresh-r1".into()]));
+        assert_eq!(
+            persistent.membership.unwrap().voters,
+            BTreeSet::from(["fresh-r1".into()])
+        );
     }
 
     #[test]
