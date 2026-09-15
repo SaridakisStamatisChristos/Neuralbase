@@ -163,9 +163,15 @@ where
         }
         BoundPlan::SelectFromTable { .. } => {
             let physical_plan = build_physical_plan(&plan);
-            let dataset = generate_tpch_data(0.1);
-            let scheduler = MorselScheduler::new(16_384);
-            match execute_physical_plan(&physical_plan, &dataset, &scheduler, storage) {
+            let execution = if let Some(result) = try_execute_storage_only(&physical_plan, storage)
+            {
+                result
+            } else {
+                let dataset = generate_tpch_data(0.1);
+                let scheduler = MorselScheduler::new(16_384);
+                execute_physical_plan(&physical_plan, &dataset, &scheduler, storage)
+            };
+            match execution {
                 Ok(batch) => write_batch(socket, &batch).await?,
                 Err(err) => write_error_and_ready(socket, &err.to_string(), "22000").await?,
             }
