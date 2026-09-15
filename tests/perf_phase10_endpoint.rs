@@ -207,8 +207,7 @@ fn measure_general_query(client: &mut Client) {
     client
         .simple_query("SET neuralbase_read_consistency = 'local'")
         .expect("set local consistency for general query");
-    const SQL: &str =
-        "SELECT a.id, a.name FROM phase10_endpoint_items a \
+    const SQL: &str = "SELECT a.id, a.name FROM phase10_endpoint_items a \
          JOIN phase10_endpoint_items b ON a.id = b.id WHERE a.id = 1";
     for _ in 0..WARMUP {
         let messages = client
