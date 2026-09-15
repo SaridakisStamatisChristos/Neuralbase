@@ -175,8 +175,8 @@ mod phase10_query_fast_path_tests {
     }
 
     fn assert_same_result(
-        fast: crate::query_executor::QueryResult,
-        reference: crate::query_executor::QueryResult,
+        fast: &crate::query_executor::QueryResult,
+        reference: &crate::query_executor::QueryResult,
     ) {
         assert_eq!(fast.columns, reference.columns);
         assert_eq!(fast.rows, reference.rows);
@@ -206,7 +206,7 @@ mod phase10_query_fast_path_tests {
             Some(&reference_scanner),
         )
         .expect("historical reference path");
-        assert_same_result(fast, reference);
+        assert_same_result(&fast, &reference);
     }
 
     #[test]
@@ -225,7 +225,7 @@ mod phase10_query_fast_path_tests {
             Some(&reference_scanner),
         )
         .expect("historical reference path");
-        assert_same_result(fast, reference);
+        assert_same_result(&fast, &reference);
     }
 
     #[test]
@@ -247,7 +247,7 @@ mod phase10_query_fast_path_tests {
             Some(&reference_scanner),
         )
         .expect("historical reference path");
-        assert_same_result(fast, reference);
+        assert_same_result(&fast, &reference);
     }
 
     #[test]
@@ -269,7 +269,7 @@ mod phase10_query_fast_path_tests {
             Some(&reference_scanner),
         )
         .expect("historical reference path");
-        assert_same_result(fast, reference);
+        assert_same_result(&fast, &reference);
         assert!(fast.rows.iter().flatten().all(|value| {
             value != &ScalarVal::Text("CUSTOM".to_string())
         }));
