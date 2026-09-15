@@ -12,7 +12,8 @@ use crate::auth::{
 use crate::binder::{bind_nb_statement, BoundPlan};
 use crate::catalog::{Catalog, InMemoryCatalog, MutableCatalog};
 use crate::execution::{
-    batch_to_pg_rows, build_physical_plan, execute_physical_plan, mock_const_batch, TableScanner,
+    batch_to_pg_rows, build_physical_plan, execute_physical_plan, mock_const_batch,
+    try_execute_storage_only, TableScanner,
 };
 use crate::index_advisor::{DdlResult, IndexAdvisor, IndexDecision, IndexExecutor, QueryPattern};
 use crate::protocol::{

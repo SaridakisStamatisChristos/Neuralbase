@@ -1,0 +1,93 @@
+version: 1
+phase: 10
+purpose: reproducible_performance_contract
+baseline_commit: e8a4f1c7f5865c6e04f51f6e0658f0c2c81475db
+policy:
+  optimization_requires_before_measurement: true
+  correctness_precedes_performance: true
+  external_superiority_claims: forbidden_without_dedicated_reproducible_evidence
+  normal_correctness_ci_replaced: false
+  lifecycle_scenario_wall_time_is_not_isolated_operation_latency: true
+required_environment:
+  - exact_commit
+  - cargo_profile
+  - cargo_features
+  - rust_version
+  - os
+  - kernel
+  - cpu_model
+  - logical_cpu_count
+  - memory_bytes
+  - storage_description
+  - filesystem_when_relevant
+  - dataset_or_scale
+  - topology
+  - warmup_iterations
+  - measured_iterations
+  - concurrency
+  - summary_statistic
+  - variance_or_percentiles_when_meaningful
+workload_classes:
+  query:
+    - simple_local_read
+    - row_executor_filter_projection
+    - row_executor_join
+    - row_executor_aggregate_sort
+    - vectorized_tpch_q1
+    - vectorized_tpch_q6
+    - persistent_rocksdb_scan
+  read_consistency:
+    - local_read
+    - leader_read
+    - linearizable_read
+    - concurrent_strong_reads
+    - quorum_loss_strong_read_failure
+  writes:
+    - replicated_single_mutation
+    - replicated_sustained_mutations
+    - mixed_reads_writes
+    - replicated_mutations_pitr_disabled
+    - replicated_mutations_pitr_enabled
+  lifecycle:
+    - snapshot_create
+    - snapshot_install
+    - backup_create
+    - backup_verify
+    - backup_restore
+    - learner_catchup
+    - learner_promotion
+    - failover
+    - pitr_archive_append
+    - pitr_recover_to_index
+  resources:
+    - join_memory
+    - sort_memory
+    - aggregate_memory
+    - cpu_profile
+    - storage_io
+    - durability_cost
+    - network_transport_cost
+classification:
+  correctness_ci: semantic/fault assertions only; no wall-clock pass threshold
+  regression_ci: only low-variance measurements after variance is characterized
+  manual_characterization: heavyweight cluster, recovery, large-scale and noisy timing runs
+  scenario_wall_time: full proven lifecycle scenario; useful for before/after characterization but not an isolated primitive latency
+existing_commands:
+  vectorized_tpch: cargo test --test perf_tpch --release --locked -- --nocapture
+  optimizer_library: cargo test --test bench_optimizer --release --locked -- --nocapture
+  postgres_reference: make tpch-correctness
+  snapshot_scenario: cargo test --test replicated_sql_snapshot_cycles --release --locked repeated_compaction_restart_and_suffix_replay_remain_safe -- --nocapture --test-threads=1
+  backup_restore_scenario: cargo test --test phase5_cluster_recovery --release --locked restored_cluster_uses_fresh_generation_and_survives_failover_and_full_restart -- --nocapture --test-threads=1
+  membership_scenario: cargo test --test phase7_guarded_membership --release --locked guarded_admission_learner_restart_leader_loss_promotion_transfer_removal -- --nocapture --test-threads=1
+  pitr_scenario: cargo test --test phase9_pitr_process --release --locked process_pitr_exact_target_identity_branch_and_restart -- --nocapture --test-threads=1
+result_requirements:
+  before_after_same_harness: true
+  exact_before_commit: true
+  exact_after_commit: true
+  warmup_required_for_microbenchmarks: true
+  repetitions_required_for_microbenchmarks: true
+  heavyweight_scenarios_may_use_single_run_characterization: true
+  report_path_identity: true
+  report_persistent_vs_in_memory: true
+  report_single_node_vs_clustered: true
+  report_endpoint_vs_library: true

@@ -1,0 +1,197 @@
+name: phase10-bench
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/phase10-bench.yml'
+      - 'Makefile'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase10-bench-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  exact-base-head-characterization:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      LIBCLANG_PATH: /usr/lib/llvm-18/lib
+      ROCKSDB_INCLUDE_DIR: /usr/include
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Checkout Phase-10 head with history
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            llvm-18-dev \
+            libclang-18-dev \
+            clang-18 \
+            librocksdb-dev \
+            nasm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.88.0'
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-phase10-${{ hashFiles('Cargo.lock') }}
+
+      - name: Preserve identical Phase-10 harness
+        run: |
+          mkdir -p /tmp/phase10-harness /tmp/phase10-results
+          cp tests/perf_phase10.rs /tmp/phase10-harness/
+          cp tests/perf_phase10_cluster.rs /tmp/phase10-harness/
+          cp tests/perf_phase10_endpoint.rs /tmp/phase10-harness/
+          cp tests/perf_phase10_planning.rs /tmp/phase10-harness/
+          cp tests/perf_phase10_tpch_scales.rs /tmp/phase10-harness/
+          cp tests/perf_phase10_memory.rs /tmp/phase10-harness/
+          cp tests/perf_phase10_server_components.rs /tmp/phase10-harness/
+
+      - name: Capture runner environment
+        run: |
+          {
+            echo "base_sha=$BASE_SHA"
+            echo "head_sha=$HEAD_SHA"
+            echo "runner_os=${RUNNER_OS}"
+            echo "kernel=$(uname -a)"
+            echo "rustc=$(rustc --version --verbose | tr '\n' ' ')"
+            echo "cpu=$(lscpu | grep -E 'Model name|CPU\(s\)|Thread|Core|Socket' | tr '\n' ';')"
+            echo "memory=$(grep MemTotal /proc/meminfo)"
+            echo "filesystem=$(df -T . | tail -1)"
+          } | tee /tmp/phase10-results/environment.txt
+
+      - name: Measure exact Phase-10 base
+        shell: bash
+        run: |
+          set -euo pipefail
+          git reset --hard
+          git clean -fd
+          git checkout --detach "$BASE_SHA"
+          cp /tmp/phase10-harness/*.rs tests/
+          export PHASE10_LABEL=baseline
+          export PHASE10_MEASURED_COMMIT="$BASE_SHA"
+          cargo test --test perf_phase10 --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/base-query-storage.log
+          cargo test --test perf_phase10_planning --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/base-planning.log
+          cargo test --test perf_phase10_server_components --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/base-server-components.log
+          cargo test --test perf_phase10_cluster --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/base-cluster.log
+          cargo test --test perf_phase10_endpoint --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/base-endpoint.log
+          cargo test --test perf_phase10_tpch_scales --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/base-tpch-scales.log
+          cargo test --test perf_tpch --release --locked -- bench_tpch_q1_q6_records_measurements --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/base-tpch-historical-bridge.log
+          for test_name in phase10_memory_join phase10_memory_sort phase10_memory_aggregate; do
+            cargo test --test perf_phase10_memory --release --locked "$test_name" -- --ignored --nocapture --test-threads=1 \
+              | tee "/tmp/phase10-results/base-${test_name}.log"
+          done
+
+          scenario() {
+            local name="$1"; shift
+            local start end elapsed status
+            start=$(date +%s%N)
+            set +e
+            "$@"
+            status=$?
+            set -e
+            end=$(date +%s%N)
+            elapsed=$((end-start))
+            printf 'PHASE10_RESULT {"schema":1,"label":"baseline","commit":"%s","name":"%s","path":"existing_correctness_scenario","unit":"ns","warmup_iterations":0,"measured_iterations":1,"min":%s,"p50":%s,"p95":%s,"max":%s,"mean":%s,"extra":{"scenario_wall_time":true,"exit_status":%s}}\n' "$BASE_SHA" "$name" "$elapsed" "$elapsed" "$elapsed" "$elapsed" "$elapsed" "$status"
+            return "$status"
+          }
+          {
+            scenario snapshot_compaction_restart cargo test --test replicated_sql_snapshot_cycles --release --locked repeated_compaction_restart_and_suffix_replay_remain_safe -- --nocapture --test-threads=1
+            scenario backup_verify_restore_fresh_generation cargo test --test phase5_cluster_recovery --release --locked restored_cluster_uses_fresh_generation_and_survives_failover_and_full_restart -- --nocapture --test-threads=1
+            scenario membership_learner_catchup_promotion cargo test --test phase7_guarded_membership --release --locked guarded_admission_learner_restart_leader_loss_promotion_transfer_removal -- --nocapture --test-threads=1
+            scenario pitr_exact_target_branch_restart cargo test --test phase9_pitr_process --release --locked process_pitr_exact_target_identity_branch_and_restart -- --nocapture --test-threads=1
+          } | tee /tmp/phase10-results/base-lifecycle.log
+
+      - name: Measure exact Phase-10 head
+        shell: bash
+        run: |
+          set -euo pipefail
+          git reset --hard
+          git clean -fd
+          git checkout --detach "$HEAD_SHA"
+          export PHASE10_LABEL=head
+          export PHASE10_MEASURED_COMMIT="$HEAD_SHA"
+          cargo test --test perf_phase10 --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/head-query-storage.log
+          cargo test --test perf_phase10_planning --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/head-planning.log
+          cargo test --test perf_phase10_server_components --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/head-server-components.log
+          cargo test --test perf_phase10_cluster --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/head-cluster.log
+          cargo test --test perf_phase10_endpoint --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/head-endpoint.log
+          cargo test --test perf_phase10_tpch_scales --release --locked -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/head-tpch-scales.log
+          cargo test --test perf_tpch --release --locked -- bench_tpch_q1_q6_records_measurements --nocapture --test-threads=1 \
+            | tee /tmp/phase10-results/head-tpch-historical-bridge.log
+          for test_name in phase10_memory_join phase10_memory_sort phase10_memory_aggregate; do
+            cargo test --test perf_phase10_memory --release --locked "$test_name" -- --ignored --nocapture --test-threads=1 \
+              | tee "/tmp/phase10-results/head-${test_name}.log"
+          done
+
+          scenario() {
+            local name="$1"; shift
+            local start end elapsed status
+            start=$(date +%s%N)
+            set +e
+            "$@"
+            status=$?
+            set -e
+            end=$(date +%s%N)
+            elapsed=$((end-start))
+            printf 'PHASE10_RESULT {"schema":1,"label":"head","commit":"%s","name":"%s","path":"existing_correctness_scenario","unit":"ns","warmup_iterations":0,"measured_iterations":1,"min":%s,"p50":%s,"p95":%s,"max":%s,"mean":%s,"extra":{"scenario_wall_time":true,"exit_status":%s}}\n' "$HEAD_SHA" "$name" "$elapsed" "$elapsed" "$elapsed" "$elapsed" "$elapsed" "$status"
+            return "$status"
+          }
+          {
+            scenario snapshot_compaction_restart cargo test --test replicated_sql_snapshot_cycles --release --locked repeated_compaction_restart_and_suffix_replay_remain_safe -- --nocapture --test-threads=1
+            scenario backup_verify_restore_fresh_generation cargo test --test phase5_cluster_recovery --release --locked restored_cluster_uses_fresh_generation_and_survives_failover_and_full_restart -- --nocapture --test-threads=1
+            scenario membership_learner_catchup_promotion cargo test --test phase7_guarded_membership --release --locked guarded_admission_learner_restart_leader_loss_promotion_transfer_removal -- --nocapture --test-threads=1
+            scenario pitr_exact_target_branch_restart cargo test --test phase9_pitr_process --release --locked process_pitr_exact_target_identity_branch_and_restart -- --nocapture --test-threads=1
+          } | tee /tmp/phase10-results/head-lifecycle.log
+
+      - name: Extract machine-readable results
+        if: always()
+        shell: bash
+        run: |
+          grep -h '^PHASE10_RESULT ' /tmp/phase10-results/*.log 2>/dev/null \
+            | sed 's/^PHASE10_RESULT //' \
+            > /tmp/phase10-results/results.jsonl || true
+          cat /tmp/phase10-results/results.jsonl || true
+
+      - name: Upload Phase-10 characterization artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase10-exact-base-head-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: /tmp/phase10-results
+          if-no-files-found: error
+          retention-days: 30

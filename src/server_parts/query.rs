@@ -163,26 +163,21 @@ where
         }
         BoundPlan::SelectFromTable { .. } => {
             let physical_plan = build_physical_plan(&plan);
-            let dataset = generate_tpch_data(0.1);
-            let scheduler = MorselScheduler::new(16_384);
-            match execute_physical_plan(&physical_plan, &dataset, &scheduler, storage) {
+            let execution = if let Some(result) = try_execute_storage_only(&physical_plan, storage)
+            {
+                result
+            } else {
+                let dataset = generate_tpch_data(0.1);
+                let scheduler = MorselScheduler::new(16_384);
+                execute_physical_plan(&physical_plan, &dataset, &scheduler, storage)
+            };
+            match execution {
                 Ok(batch) => write_batch(socket, &batch).await?,
                 Err(err) => write_error_and_ready(socket, &err.to_string(), "22000").await?,
             }
         }
         BoundPlan::SelectQuery(query) => {
-            let dataset = generate_tpch_data(0.1);
-            let mut qcat = QueryCatalog::from_tpch(&dataset);
-            for schema in catalog.all_tables() {
-                if !qcat.tables.contains_key(&schema.name.to_lowercase()) {
-                    if let Some(scanner) = storage {
-                        if let Ok(batch) = scanner.scan_table(&schema.name) {
-                            qcat.add_batch(&schema.name, &batch);
-                        }
-                    }
-                }
-            }
-            match crate::query_executor::execute_select_query(&query, &qcat) {
+            match execute_select_query_with_persistent_fast_path(&query, catalog, storage) {
                 Ok(result) => write_batch(socket, &query_result_to_batch(result)).await?,
                 Err(err) => write_error_and_ready(socket, &err.to_string(), "22000").await?,
             }
@@ -244,7 +239,7 @@ where
                         let count = ack.affected_rows.unwrap_or(0);
                         socket
                             .write_all(&build_command_complete(&format!("INSERT 0 {count}")))
-                            .await?;
+                            .await?
                     }
                     Err(error) => write_replicated_error(socket, &error).await?,
                 }
@@ -293,7 +288,7 @@ where
                         let count = ack.affected_rows.unwrap_or(0);
                         socket
                             .write_all(&build_command_complete(&format!("UPDATE {count}")))
-                            .await?;
+                            .await?
                     }
                     Err(error) => write_replicated_error(socket, &error).await?,
                 }
@@ -333,7 +328,7 @@ where
                         let count = ack.affected_rows.unwrap_or(0);
                         socket
                             .write_all(&build_command_complete(&format!("DELETE {count}")))
-                            .await?;
+                            .await?
                     }
                     Err(error) => write_replicated_error(socket, &error).await?,
                 }
