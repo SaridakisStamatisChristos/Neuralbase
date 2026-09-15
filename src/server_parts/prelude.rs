@@ -283,6 +283,7 @@ pub async fn run(
 
     loop {
         let (mut socket, peer_addr) = listener.accept().await?;
+        socket.set_nodelay(true)?;
         let peer_ip = peer_addr.ip();
         if !ip_tracker.try_acquire(peer_ip) {
             counter!("rejected_connections_ip_total").increment(1);
