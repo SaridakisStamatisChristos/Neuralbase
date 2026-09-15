@@ -24,7 +24,9 @@ jobs:
           persist-credentials: true
 
       - name: Apply synchronized claims
-        run: python3 .github/phase9_claim_sync.py
+        run: |
+          python3 .github/phase9_claim_sync.py
+          python3 -c 'from pathlib import Path; p=Path("docs/TESTING.md"); s=p.read_text(); old="The Phase-9 closure gate additionally runs `cargo test` under default, `tls`, `io_uring`, and combined `tls io_uring` features, full all-feature Clippy with warnings denied, `make test`, and the targeted real-process PITR suite."; new="The Phase-9 closure gate additionally runs `cargo test` under the repository\u2019s actual default, `tls`, `simd`, and combined `tls simd` feature surfaces, full all-feature Clippy with warnings denied, `make test`, and the targeted real-process PITR suite."; assert s.count(old)==1, s.count(old); p.write_text(s.replace(old,new,1))'
 
       - name: Install system dependencies
         run: |
@@ -54,8 +56,8 @@ jobs:
         run: |
           cargo test --locked
           cargo test --features tls --locked
-          cargo test --features io_uring --locked
-          cargo test --features "tls io_uring" --locked
+          cargo test --features simd --locked
+          cargo test --features "tls simd" --locked
           cargo clippy --all-targets --all-features --locked -- -D warnings
           make test
 
