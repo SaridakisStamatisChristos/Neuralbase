@@ -402,8 +402,7 @@ async fn seed_rows(cluster: &mut Cluster, start: usize, end: usize) -> Result<()
             .map(|id| format!("({id}, {})", id * 3 + 7))
             .collect::<Vec<_>>()
             .join(",");
-        find_mutation_leader(cluster, &format!("INSERT INTO p11_items VALUES {values}"))
-            .await?;
+        find_mutation_leader(cluster, &format!("INSERT INTO p11_items VALUES {values}")).await?;
     }
     Ok(())
 }
