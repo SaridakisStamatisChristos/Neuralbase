@@ -101,15 +101,14 @@ pub async fn prepare_read_with_timeout(
             let request_started = Instant::now();
             let gateway_id = gateway as *const ReplicatedSqlGateway as usize;
 
-            let mut state = match tokio::time::timeout(timeout, strong_read_barrier_state().lock())
-                .await
-            {
-                Ok(state) => state,
-                Err(_) => {
-                    record_timeout_rejection();
-                    return Err(ReadBarrierError::Timeout);
-                }
-            };
+            let mut state =
+                match tokio::time::timeout(timeout, strong_read_barrier_state().lock()).await {
+                    Ok(state) => state,
+                    Err(_) => {
+                        record_timeout_rejection();
+                        return Err(ReadBarrierError::Timeout);
+                    }
+                };
 
             if reusable_barrier(state.last_success, gateway_id, request_started) {
                 counter!("neuralbase_reads_total", "consistency" => label).increment(1);
