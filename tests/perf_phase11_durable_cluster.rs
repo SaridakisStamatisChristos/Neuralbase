@@ -383,11 +383,8 @@ async fn seed_rows(cluster: &mut Cluster, start: usize, end: usize) -> Result<u1
             .collect::<Vec<_>>()
             .join(",");
         leader = Some(
-            find_mutation_leader(
-                cluster,
-                &format!("INSERT INTO p11_items VALUES {values}"),
-            )
-            .await?,
+            find_mutation_leader(cluster, &format!("INSERT INTO p11_items VALUES {values}"))
+                .await?,
         );
     }
     leader.ok_or_else(|| "seed range must contain at least one row".to_string())
