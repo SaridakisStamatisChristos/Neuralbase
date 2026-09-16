@@ -267,7 +267,7 @@ async fn spawn_cluster(scenario: &str) -> Result<Cluster, String> {
                 cluster._root.path().join(format!("node{index}-users.json")),
             )
             .env("NEURALBASE_METRICS_PORT", metrics.to_string())
-            .env("NEURALBASE_RAFT_ELECTION_TIMEOUT_MS", "300")
+            .env("NEURALBASE_RAFT_ELECTION_TIMEOUT_MS", "1000")
             .env("NEURALBASE_AUTH_REQUIRED", "0")
             .env("NEURALBASE_RAFT_TLS", "0")
             .env("RUST_LOG", "warn")
@@ -374,17 +374,23 @@ async fn wait_replicated_rows(
     }
 }
 
-async fn seed_rows(port: u16, start: usize, end: usize) -> Result<(), String> {
-    let client = connect(port).await?;
+async fn seed_rows(cluster: &mut Cluster, start: usize, end: usize) -> Result<u16, String> {
+    let mut leader = None;
     for batch_start in (start..end).step_by(SEED_BATCH_ROWS) {
         let batch_end = (batch_start + SEED_BATCH_ROWS).min(end);
         let values = (batch_start..batch_end)
             .map(|id| format!("({id}, {})", id * 3 + 7))
             .collect::<Vec<_>>()
             .join(",");
-        execute_mutation(&client, &format!("INSERT INTO p11_items VALUES {values}")).await?;
+        leader = Some(
+            find_mutation_leader(
+                cluster,
+                &format!("INSERT INTO p11_items VALUES {values}"),
+            )
+            .await?,
+        );
     }
-    Ok(())
+    leader.ok_or_else(|| "seed range must contain at least one row".to_string())
 }
 
 fn item_rows(count: usize) -> Rows {
@@ -626,7 +632,7 @@ fn emit_memory(cluster: &Cluster, scenario: &str) {
 
 async fn characterize() -> Result<(), String> {
     let mut cluster = spawn_cluster("dataset").await?;
-    let port = find_mutation_leader(
+    let mut port = find_mutation_leader(
         &mut cluster,
         "CREATE TABLE p11_items (id BIGINT, value BIGINT)",
     )
@@ -638,7 +644,7 @@ async fn characterize() -> Result<(), String> {
             json!({"name": "seed", "dataset_rows": rows, "status": "started"}),
         );
         let start = Instant::now();
-        seed_rows(port, current_rows, rows).await?;
+        port = seed_rows(&mut cluster, current_rows, rows).await?;
         let seed_ns = start.elapsed().as_nanos() as u64;
         current_rows = rows;
         wait_replicated_rows(&mut cluster, "p11_items", &item_rows(rows)).await?;
@@ -660,9 +666,8 @@ async fn characterize() -> Result<(), String> {
             .await?;
         }
     }
-    let client = connect(port).await?;
-    execute_mutation(
-        &client,
+    port = find_mutation_leader(
+        &mut cluster,
         "CREATE TABLE p11_write_load (id BIGINT, value BIGINT)",
     )
     .await?;
@@ -717,7 +722,6 @@ async fn characterize() -> Result<(), String> {
     }
     emit_memory(&cluster, "dataset");
     cluster.succeeded = true;
-    drop(client);
     drop(cluster);
     characterize_noise().await?;
     emit("PHASE11_COMPLETE", json!({"result_count": 27}));
@@ -727,14 +731,13 @@ async fn characterize() -> Result<(), String> {
 async fn characterize_noise() -> Result<(), String> {
     // A fresh cluster makes zero unrelated tables an actual zero-table baseline.
     let mut cluster = spawn_cluster("noise").await?;
-    let port = find_mutation_leader(
+    let mut port = find_mutation_leader(
         &mut cluster,
         "CREATE TABLE p11_target (id BIGINT, value BIGINT)",
     )
     .await?;
-    let client = connect(port).await?;
-    execute_mutation(
-        &client,
+    port = find_mutation_leader(
+        &mut cluster,
         "INSERT INTO p11_target VALUES (0,10),(1,11),(2,12),(3,13)",
     )
     .await?;
@@ -747,8 +750,8 @@ async fn characterize_noise() -> Result<(), String> {
     let mut existing = 0;
     for total in [0, 16, 64] {
         for table in existing..total {
-            execute_mutation(
-                &client,
+            port = find_mutation_leader(
+                &mut cluster,
                 &format!("CREATE TABLE p11_noise_{table:02} (id BIGINT)"),
             )
             .await?;
@@ -756,8 +759,8 @@ async fn characterize_noise() -> Result<(), String> {
                 .map(|row| format!("({row})"))
                 .collect::<Vec<_>>()
                 .join(",");
-            execute_mutation(
-                &client,
+            port = find_mutation_leader(
+                &mut cluster,
                 &format!("INSERT INTO p11_noise_{table:02} VALUES {values}"),
             )
             .await?;
@@ -779,7 +782,7 @@ async fn three_durable_voters_dataset_and_concurrency_characterization() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn three_voters_smoke() {
     let mut cluster = spawn_cluster("smoke").await.expect("cluster startup");
-    let port = find_mutation_leader(
+    let mut port = find_mutation_leader(
         &mut cluster,
         "CREATE TABLE p11_write_load (id BIGINT, value BIGINT)",
     )
@@ -796,20 +799,22 @@ async fn three_voters_smoke() {
     );
     // The expected query error closes this NeuralBase protocol session.
     drop(client);
-    // Force the readiness probe to see missing schema before DDL and data arrive.
-    let create = async {
-        sleep(Duration::from_millis(100)).await;
-        let ddl = connect(port).await?;
-        execute_mutation(&ddl, "CREATE TABLE p11_items (id BIGINT, value BIGINT)").await?;
-        seed_rows(port, 0, 100).await
-    };
+    // Let the missing-schema condition be observable, then refresh leadership for
+    // every untimed setup mutation. Timed benchmark operations are never retried.
+    sleep(Duration::from_millis(100)).await;
+    port = find_mutation_leader(
+        &mut cluster,
+        "CREATE TABLE p11_items (id BIGINT, value BIGINT)",
+    )
+    .await
+    .expect("create smoke table");
+    port = seed_rows(&mut cluster, 0, 100)
+        .await
+        .expect("seed smoke rows");
     let expected = item_rows(100);
-    let (created, visible) = tokio::join!(
-        create,
-        wait_replicated_rows(&mut cluster, "p11_items", &expected)
-    );
-    created.expect("seed smoke rows");
-    visible.expect("all three voters caught up");
+    wait_replicated_rows(&mut cluster, "p11_items", &expected)
+        .await
+        .expect("all three voters caught up");
     for consistency in ["local", "leader", "linearizable"] {
         let workload = Workload::Read {
             consistency,
@@ -855,6 +860,10 @@ fn setup_retry_is_restricted_to_expected_schema() {
     error.message = "table not found: p11_items".to_string();
     error.code = Some("42P01".to_string());
     assert!(error.setup_catch_up("p11_items"));
+    error.code = Some("25006".to_string());
+    assert!(error.pre_submit_leadership());
+    error.code = Some("57P03".to_string());
+    assert!(error.pre_submit_leadership());
     error.code = Some("XX000".to_string());
     assert!(!error.setup_catch_up("p11_items"));
     assert!(!error.pre_submit_leadership());
