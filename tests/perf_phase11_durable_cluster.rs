@@ -132,7 +132,7 @@ impl SqlFailure {
 
     fn setup_catch_up(&self, table: &str) -> bool {
         self.code.as_deref() == Some("57P03")
-            || (self.code.as_deref() == Some("42P01")
+            || (matches!(self.code.as_deref(), Some("22000" | "42P01"))
                 && self.message == format!("table not found: {table}"))
     }
 }
@@ -839,7 +839,7 @@ async fn worker_connection_failure_does_not_hang_start_gate() {
 #[test]
 fn setup_retry_is_restricted_to_expected_schema() {
     let mut error = SqlFailure {
-        code: Some("42P01".to_string()),
+        code: Some("22000".to_string()),
         message: "table not found: p11_items".to_string(),
         context: "test".to_string(),
     };
@@ -847,6 +847,9 @@ fn setup_retry_is_restricted_to_expected_schema() {
     assert!(!error.setup_catch_up("other_table"));
     error.message = "column not found: missing".to_string();
     assert!(!error.setup_catch_up("p11_items"));
+    error.message = "table not found: p11_items".to_string();
+    error.code = Some("42P01".to_string());
+    assert!(error.setup_catch_up("p11_items"));
     error.code = Some("XX000".to_string());
     assert!(!error.setup_catch_up("p11_items"));
     assert!(!error.pre_submit_leadership());
