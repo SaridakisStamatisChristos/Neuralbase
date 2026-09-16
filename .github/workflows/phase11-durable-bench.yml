@@ -1,0 +1,104 @@
+name: phase11-durable-bench
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/perf_phase11_durable_cluster.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/phase11-durable-bench.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase11-durable-bench-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  three-durable-voters:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      LIBCLANG_PATH: /usr/lib/llvm-18/lib
+      ROCKSDB_INCLUDE_DIR: /usr/include
+      PHASE11_LABEL: head
+      PHASE11_MEASURED_COMMIT: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Checkout benchmark head
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            llvm-18-dev \
+            libclang-18-dev \
+            clang-18 \
+            librocksdb-dev \
+            nasm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.88.0'
+
+      - name: Cache cargo build
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-phase11-${{ hashFiles('Cargo.lock') }}
+
+      - name: Capture runner environment
+        run: |
+          mkdir -p /tmp/phase11-results
+          {
+            echo "commit=${PHASE11_MEASURED_COMMIT}"
+            echo "runner_os=${RUNNER_OS}"
+            echo "kernel=$(uname -a)"
+            echo "rustc=$(rustc --version --verbose | tr '\n' ' ')"
+            echo "cpu=$(lscpu | grep -E 'Model name|CPU\(s\)|Thread|Core|Socket' | tr '\n' ';')"
+            echo "memory=$(grep MemTotal /proc/meminfo)"
+            echo "filesystem=$(df -T . | tail -1)"
+          } | tee /tmp/phase11-results/environment.txt
+
+      - name: Run three-voter durable benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --test perf_phase11_durable_cluster --release --locked \
+            three_durable_voters_dataset_and_concurrency_characterization \
+            -- --ignored --nocapture --test-threads=1 \
+            | tee /tmp/phase11-results/durable-cluster.log
+
+      - name: Extract machine-readable results
+        if: always()
+        shell: bash
+        run: |
+          grep '^PHASE11_RESULT ' /tmp/phase11-results/durable-cluster.log 2>/dev/null \
+            | sed 's/^PHASE11_RESULT //' \
+            > /tmp/phase11-results/results.jsonl || true
+          grep '^PHASE11_MEMORY ' /tmp/phase11-results/durable-cluster.log 2>/dev/null \
+            | sed 's/^PHASE11_MEMORY //' \
+            > /tmp/phase11-results/memory.jsonl || true
+          grep '^PHASE11_SETUP ' /tmp/phase11-results/durable-cluster.log 2>/dev/null \
+            | sed 's/^PHASE11_SETUP //' \
+            > /tmp/phase11-results/setup.jsonl || true
+          cat /tmp/phase11-results/results.jsonl || true
+          cat /tmp/phase11-results/memory.jsonl || true
+
+      - name: Upload Phase-11 characterization artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase11-three-durable-voters-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: /tmp/phase11-results
+          if-no-files-found: error
+          retention-days: 30
