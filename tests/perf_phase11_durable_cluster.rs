@@ -25,6 +25,7 @@ const DATASET_SIZES: &[usize] = &[100, 1_000, 10_000, 25_000];
 const CONCURRENCY_LEVELS: &[usize] = &[1, 8, 32, 64];
 const READS_PER_CLIENT: usize = 16;
 const WRITES_PER_CLIENT: usize = 8;
+const SEED_BATCH_ROWS: usize = 256;
 const NOISE_ROWS_PER_TABLE: usize = 128;
 
 #[derive(Clone)]
@@ -168,7 +169,11 @@ fn spawn_cluster() -> Cluster {
 }
 
 fn sql_ports(cluster: &Cluster) -> Vec<u16> {
-    cluster.nodes.iter().map(|node| node.spec.sql_port).collect()
+    cluster
+        .nodes
+        .iter()
+        .map(|node| node.spec.sql_port)
+        .collect()
 }
 
 fn find_mutation_leader(ports: &[u16], sql: &str) -> u16 {
@@ -184,7 +189,10 @@ fn find_mutation_leader(ports: &[u16], sql: &str) -> u16 {
                 Err(error) => panic!("leader probe mutation failed on {port}: {error}; SQL={sql}"),
             }
         }
-        assert!(Instant::now() < deadline, "three-voter cluster never elected a writable leader");
+        assert!(
+            Instant::now() < deadline,
+            "three-voter cluster never elected a writable leader"
+        );
         thread::sleep(Duration::from_millis(30));
     }
 }
@@ -232,32 +240,22 @@ fn wait_replicated_row(ports: &[u16], id: usize) {
     }
 }
 
-fn seed_rows(leader_port: u16, start: usize, end: usize, workers: usize) {
+fn seed_rows(leader_port: u16, start: usize, end: usize) {
     if start >= end {
         return;
     }
-    let count = end - start;
-    let workers = workers.min(count).max(1);
-    let chunk = count.div_ceil(workers);
-    let mut handles = Vec::with_capacity(workers);
-    for worker in 0..workers {
-        let from = start + worker * chunk;
-        let to = (from + chunk).min(end);
-        if from >= to {
-            continue;
-        }
-        handles.push(thread::spawn(move || {
-            let mut client = connect(leader_port).expect("seed client connect");
-            for id in from..to {
-                execute_mutation(
-                    &mut client,
-                    &format!("INSERT INTO p11_items VALUES ({id}, {})", id * 3 + 7),
-                );
-            }
-        }));
-    }
-    for handle in handles {
-        handle.join().expect("seed worker");
+
+    let mut client = connect(leader_port).expect("seed client connect");
+    for batch_start in (start..end).step_by(SEED_BATCH_ROWS) {
+        let batch_end = (batch_start + SEED_BATCH_ROWS).min(end);
+        let values = (batch_start..batch_end)
+            .map(|id| format!("({id}, {})", id * 3 + 7))
+            .collect::<Vec<_>>()
+            .join(",");
+        execute_mutation(
+            &mut client,
+            &format!("INSERT INTO p11_items VALUES {values}"),
+        );
     }
 }
 
@@ -274,7 +272,8 @@ fn emit_latency_result(name: &str, path: &str, samples: &[u64], extra: &str) {
     let sum: u128 = sorted.iter().map(|value| *value as u128).sum();
     let mean = (sum / sorted.len() as u128) as u64;
     let label = std::env::var("PHASE11_LABEL").unwrap_or_else(|_| "head".to_string());
-    let commit = std::env::var("PHASE11_MEASURED_COMMIT").unwrap_or_else(|_| "unknown".to_string());
+    let commit =
+        std::env::var("PHASE11_MEASURED_COMMIT").unwrap_or_else(|_| "unknown".to_string());
     println!(
         "PHASE11_RESULT {{\"schema\":1,\"label\":\"{}\",\"commit\":\"{}\",\"name\":\"{}\",\"path\":\"{}\",\"unit\":\"ns\",\"warmup_iterations\":{},\"measured_iterations\":{},\"min\":{},\"p50\":{},\"p95\":{},\"p99\":{},\"max\":{},\"mean\":{},\"extra\":{}}}",
         label,
@@ -293,13 +292,7 @@ fn emit_latency_result(name: &str, path: &str, samples: &[u64], extra: &str) {
     );
 }
 
-fn measure_query(
-    port: u16,
-    consistency: &str,
-    sql: &str,
-    name: &str,
-    extra: &str,
-) {
+fn measure_query(port: u16, consistency: &str, sql: &str, name: &str, extra: &str) {
     let mut client = connect(port).expect("benchmark client connect");
     set_consistency(&mut client, consistency);
     for _ in 0..WARMUP {
@@ -408,35 +401,14 @@ fn add_noise_tables(port: u16, from: usize, to: usize) {
             &mut client,
             &format!("CREATE TABLE p11_noise_{table:02} (id BIGINT)"),
         );
-    }
-
-    let table_count = to.saturating_sub(from);
-    if table_count == 0 {
-        return;
-    }
-    let workers = 8.min(table_count).max(1);
-    let chunk = table_count.div_ceil(workers);
-    let mut handles = Vec::with_capacity(workers);
-    for worker in 0..workers {
-        let table_from = from + worker * chunk;
-        let table_to = (table_from + chunk).min(to);
-        if table_from >= table_to {
-            continue;
-        }
-        handles.push(thread::spawn(move || {
-            let mut client = connect(port).expect("noise seed connect");
-            for table in table_from..table_to {
-                for row in 0..NOISE_ROWS_PER_TABLE {
-                    execute_mutation(
-                        &mut client,
-                        &format!("INSERT INTO p11_noise_{table:02} VALUES ({row})"),
-                    );
-                }
-            }
-        }));
-    }
-    for handle in handles {
-        handle.join().expect("noise seed worker");
+        let values = (0..NOISE_ROWS_PER_TABLE)
+            .map(|row| format!("({row})"))
+            .collect::<Vec<_>>()
+            .join(",");
+        execute_mutation(
+            &mut client,
+            &format!("INSERT INTO p11_noise_{table:02} VALUES {values}"),
+        );
     }
 }
 
@@ -453,7 +425,8 @@ fn process_memory_bytes(pid: u32, field: &str) -> Option<u64> {
 
 fn emit_memory(cluster: &Cluster) {
     let label = std::env::var("PHASE11_LABEL").unwrap_or_else(|_| "head".to_string());
-    let commit = std::env::var("PHASE11_MEASURED_COMMIT").unwrap_or_else(|_| "unknown".to_string());
+    let commit =
+        std::env::var("PHASE11_MEASURED_COMMIT").unwrap_or_else(|_| "unknown".to_string());
     for node in &cluster.nodes {
         let pid = node.child.id();
         let rss = process_memory_bytes(pid, "VmRSS:").unwrap_or(0);
@@ -471,17 +444,21 @@ fn three_durable_voters_dataset_and_concurrency_characterization() {
     let cluster = spawn_cluster();
     let ports = sql_ports(&cluster);
 
-    let leader_port = find_mutation_leader(
-        &ports,
-        "CREATE TABLE p11_leader_probe (value BIGINT)",
-    );
+    let leader_port =
+        find_mutation_leader(&ports, "CREATE TABLE p11_leader_probe (value BIGINT)");
     let mut leader = connect(leader_port).expect("leader setup connect");
-    execute_mutation(&mut leader, "CREATE TABLE p11_items (id BIGINT, value BIGINT)");
+    execute_mutation(
+        &mut leader,
+        "CREATE TABLE p11_items (id BIGINT, value BIGINT)",
+    );
     execute_mutation(
         &mut leader,
         "CREATE TABLE p11_write_load (id BIGINT, value BIGINT)",
     );
-    execute_mutation(&mut leader, "CREATE TABLE p11_target (id BIGINT, value BIGINT)");
+    execute_mutation(
+        &mut leader,
+        "CREATE TABLE p11_target (id BIGINT, value BIGINT)",
+    );
     for id in 0..4 {
         execute_mutation(
             &mut leader,
@@ -493,13 +470,13 @@ fn three_durable_voters_dataset_and_concurrency_characterization() {
     let mut current_rows = 0;
     for &target_rows in DATASET_SIZES {
         let seed_start = Instant::now();
-        seed_rows(leader_port, current_rows, target_rows, 8);
+        seed_rows(leader_port, current_rows, target_rows);
         let seed_ns = seed_start.elapsed().as_nanos() as u64;
         current_rows = target_rows;
         wait_replicated_row(&ports, target_rows - 1);
 
         println!(
-            "PHASE11_SETUP {{\"dataset_rows\":{target_rows},\"incremental_seed_ns\":{seed_ns},\"voters\":3}}"
+            "PHASE11_SETUP {{\"dataset_rows\":{target_rows},\"incremental_seed_ns\":{seed_ns},\"seed_batch_rows\":{SEED_BATCH_ROWS},\"voters\":3}}"
         );
         let point_sql = format!(
             "SELECT id, value FROM p11_items WHERE id = {}",
@@ -523,13 +500,7 @@ fn three_durable_voters_dataset_and_concurrency_characterization() {
         current_rows - 1
     );
     for &clients in CONCURRENCY_LEVELS {
-        run_concurrent_reads(
-            leader_port,
-            clients,
-            "local",
-            &point_sql,
-            current_rows,
-        );
+        run_concurrent_reads(leader_port, clients, "local", &point_sql, current_rows);
         run_concurrent_reads(
             leader_port,
             clients,
@@ -540,7 +511,8 @@ fn three_durable_voters_dataset_and_concurrency_characterization() {
         run_concurrent_writes(leader_port, clients, 1_000_000 + clients * 10_000);
     }
 
-    let general_query = "SELECT a.id, a.value FROM p11_target a JOIN p11_target b ON a.id = b.id WHERE a.id = 1";
+    let general_query =
+        "SELECT a.id, a.value FROM p11_target a JOIN p11_target b ON a.id = b.id WHERE a.id = 1";
     measure_query(
         leader_port,
         "local",
@@ -569,7 +541,6 @@ fn three_durable_voters_dataset_and_concurrency_characterization() {
         ),
     );
 
-    // Confirm the largest dataset row remains visible from every durable voter.
     wait_replicated_row(&ports, current_rows - 1);
     emit_memory(&cluster);
 }
