@@ -283,6 +283,14 @@ pub async fn run(
 
     loop {
         let (mut socket, peer_addr) = listener.accept().await?;
+        if let Err(error) = socket.set_nodelay(true) {
+            tracing::warn!(
+                %peer_addr,
+                %error,
+                "failed to enable TCP_NODELAY; dropping connection"
+            );
+            continue;
+        }
         let peer_ip = peer_addr.ip();
         if !ip_tracker.try_acquire(peer_ip) {
             counter!("rejected_connections_ip_total").increment(1);
