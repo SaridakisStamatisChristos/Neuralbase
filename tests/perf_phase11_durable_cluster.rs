@@ -192,13 +192,6 @@ async fn set_consistency(client: &SqlClient, mode: &str) -> Result<(), String> {
     Ok(())
 }
 
-async fn execute_mutation(client: &SqlClient, sql: &str) -> Result<(), String> {
-    query(client, sql)
-        .await
-        .map_err(|error| error.diagnostic())?;
-    Ok(())
-}
-
 fn decode_rows(messages: Vec<SimpleQueryMessage>) -> Result<Rows, String> {
     let mut rows = Vec::new();
     for message in messages {
@@ -320,6 +313,29 @@ async fn find_mutation_leader(cluster: &mut Cluster, sql: &str) -> Result<u16, S
         .map_err(|_| "leader discovery timed out; mutation outcome may be ambiguous".to_string())?
 }
 
+// Refresh the current leader with a read-only, untimed probe immediately before a
+// strong-read or write benchmark case. Once a timed case starts, it is never retried.
+async fn find_read_leader(cluster: &mut Cluster, sql: &str) -> Result<u16, String> {
+    let probe = async {
+        loop {
+            cluster.check_alive()?;
+            for port in cluster.ports() {
+                let client = connect(port).await?;
+                set_consistency(&client, "leader").await?;
+                match query(&client, sql).await {
+                    Ok(_) => return Ok(port),
+                    Err(error) if error.pre_submit_leadership() => {}
+                    Err(error) => return Err(error.diagnostic()),
+                }
+            }
+            sleep(Duration::from_millis(30)).await;
+        }
+    };
+    timeout(START_TIMEOUT, probe)
+        .await
+        .map_err(|_| "read-only leader discovery timed out".to_string())?
+}
+
 fn is_replication_subset(rows: &[(i64, i64)], expected: &[(i64, i64)]) -> bool {
     rows.windows(2).all(|pair| pair[0] != pair[1])
         && rows.iter().all(|row| expected.binary_search(row).is_ok())
@@ -348,7 +364,9 @@ async fn wait_replicated_rows(
                             break;
                         }
                         if !is_replication_subset(&rows, expected) {
-                            return Err(format!("unexpected replicated values: port={port} table={table} rows={rows:?}"));
+                            return Err(format!(
+                                "unexpected replicated values: port={port} table={table} rows={rows:?}"
+                            ));
                         }
                         last = format!(
                             "port={port} table={table}: {} of {} rows applied",
@@ -374,20 +392,20 @@ async fn wait_replicated_rows(
     }
 }
 
-async fn seed_rows(cluster: &mut Cluster, start: usize, end: usize) -> Result<u16, String> {
-    let mut leader = None;
+async fn seed_rows(cluster: &mut Cluster, start: usize, end: usize) -> Result<(), String> {
+    if start >= end {
+        return Err("seed range must contain at least one row".to_string());
+    }
     for batch_start in (start..end).step_by(SEED_BATCH_ROWS) {
         let batch_end = (batch_start + SEED_BATCH_ROWS).min(end);
         let values = (batch_start..batch_end)
             .map(|id| format!("({id}, {})", id * 3 + 7))
             .collect::<Vec<_>>()
             .join(",");
-        leader = Some(
-            find_mutation_leader(cluster, &format!("INSERT INTO p11_items VALUES {values}"))
-                .await?,
-        );
+        find_mutation_leader(cluster, &format!("INSERT INTO p11_items VALUES {values}"))
+            .await?;
     }
-    leader.ok_or_else(|| "seed range must contain at least one row".to_string())
+    Ok(())
 }
 
 fn item_rows(count: usize) -> Rows {
@@ -629,7 +647,8 @@ fn emit_memory(cluster: &Cluster, scenario: &str) {
 
 async fn characterize() -> Result<(), String> {
     let mut cluster = spawn_cluster("dataset").await?;
-    let mut port = find_mutation_leader(
+    let local_port = cluster.ports()[0];
+    find_mutation_leader(
         &mut cluster,
         "CREATE TABLE p11_items (id BIGINT, value BIGINT)",
     )
@@ -641,7 +660,7 @@ async fn characterize() -> Result<(), String> {
             json!({"name": "seed", "dataset_rows": rows, "status": "started"}),
         );
         let start = Instant::now();
-        port = seed_rows(&mut cluster, current_rows, rows).await?;
+        seed_rows(&mut cluster, current_rows, rows).await?;
         let seed_ns = start.elapsed().as_nanos() as u64;
         current_rows = rows;
         wait_replicated_rows(&mut cluster, "p11_items", &item_rows(rows)).await?;
@@ -649,12 +668,18 @@ async fn characterize() -> Result<(), String> {
             "PHASE11_SETUP",
             json!({"dataset_rows": rows, "incremental_seed_ns": seed_ns, "seed_batch_rows": SEED_BATCH_ROWS, "voters": 3}),
         );
+        let read_sql = format!("SELECT id, value FROM p11_items WHERE id = {}", rows - 1);
         for consistency in ["local", "leader", "linearizable"] {
+            let case_port = if consistency == "local" {
+                local_port
+            } else {
+                find_read_leader(&mut cluster, &read_sql).await?
+            };
             measure_query(
-                port,
+                case_port,
                 Workload::Read {
                     consistency,
-                    sql: format!("SELECT id, value FROM p11_items WHERE id = {}", rows - 1),
+                    sql: read_sql.clone(),
                     expected: ((rows - 1) as i64, ((rows - 1) * 3 + 7) as i64),
                 },
                 &format!("scan_filter_read_{consistency}_{rows}_rows"),
@@ -663,29 +688,35 @@ async fn characterize() -> Result<(), String> {
             .await?;
         }
     }
-    port = find_mutation_leader(
+    find_mutation_leader(
         &mut cluster,
         "CREATE TABLE p11_write_load (id BIGINT, value BIGINT)",
     )
     .await?;
     let mut writes = Vec::new();
+    let read_sql = format!(
+        "SELECT id, value FROM p11_items WHERE id = {}",
+        current_rows - 1
+    );
     for &clients in CONCURRENCY_LEVELS {
         for consistency in ["local", "linearizable"] {
             let name = format!("concurrent_{consistency}_read_c{clients}");
             emit("PHASE11_PHASE", json!({"name": name, "status": "started"}));
             let workload = Workload::Read {
                 consistency,
-                sql: format!(
-                    "SELECT id, value FROM p11_items WHERE id = {}",
-                    current_rows - 1
-                ),
+                sql: read_sql.clone(),
                 expected: (
                     (current_rows - 1) as i64,
                     ((current_rows - 1) * 3 + 7) as i64,
                 ),
             };
+            let case_port = if consistency == "local" {
+                local_port
+            } else {
+                find_read_leader(&mut cluster, &read_sql).await?
+            };
             let (samples, wall_ns) =
-                run_concurrent(port, clients, workload, WARMUP, READS_PER_CLIENT).await?;
+                run_concurrent(case_port, clients, workload, WARMUP, READS_PER_CLIENT).await?;
             emit_latency(
                 &name,
                 &samples,
@@ -696,8 +727,9 @@ async fn characterize() -> Result<(), String> {
         let name = format!("concurrent_replicated_insert_c{clients}");
         emit("PHASE11_PHASE", json!({"name": name, "status": "started"}));
         let base = 1_000_000 + clients * 10_000;
+        let write_port = find_read_leader(&mut cluster, &read_sql).await?;
         let (samples, wall_ns) = run_concurrent(
-            port,
+            write_port,
             clients,
             Workload::Write { id_base: base },
             WARMUP,
@@ -728,12 +760,12 @@ async fn characterize() -> Result<(), String> {
 async fn characterize_noise() -> Result<(), String> {
     // A fresh cluster makes zero unrelated tables an actual zero-table baseline.
     let mut cluster = spawn_cluster("noise").await?;
-    let mut port = find_mutation_leader(
+    find_mutation_leader(
         &mut cluster,
         "CREATE TABLE p11_target (id BIGINT, value BIGINT)",
     )
     .await?;
-    port = find_mutation_leader(
+    find_mutation_leader(
         &mut cluster,
         "INSERT INTO p11_target VALUES (0,10),(1,11),(2,12),(3,13)",
     )
@@ -744,10 +776,11 @@ async fn characterize_noise() -> Result<(), String> {
         &[(0, 10), (1, 11), (2, 12), (3, 13)],
     )
     .await?;
+    let local_port = cluster.ports()[0];
     let mut existing = 0;
     for total in [0, 16, 64] {
         for table in existing..total {
-            port = find_mutation_leader(
+            find_mutation_leader(
                 &mut cluster,
                 &format!("CREATE TABLE p11_noise_{table:02} (id BIGINT)"),
             )
@@ -756,14 +789,14 @@ async fn characterize_noise() -> Result<(), String> {
                 .map(|row| format!("({row})"))
                 .collect::<Vec<_>>()
                 .join(",");
-            port = find_mutation_leader(
+            find_mutation_leader(
                 &mut cluster,
                 &format!("INSERT INTO p11_noise_{table:02} VALUES {values}"),
             )
             .await?;
         }
         existing = total;
-        measure_query(port, Workload::Read { consistency: "local", sql: "SELECT a.id, a.value FROM p11_target a JOIN p11_target b ON a.id = b.id WHERE a.id = 1".to_string(), expected: (1, 11) }, &format!("general_query_with_{total}_unrelated_tables"), json!({"voters": 3, "target_rows": 4, "unrelated_tables": total, "rows_per_unrelated_table": NOISE_ROWS_PER_TABLE})).await?;
+        measure_query(local_port, Workload::Read { consistency: "local", sql: "SELECT a.id, a.value FROM p11_target a JOIN p11_target b ON a.id = b.id WHERE a.id = 1".to_string(), expected: (1, 11) }, &format!("general_query_with_{total}_unrelated_tables"), json!({"voters": 3, "target_rows": 4, "unrelated_tables": total, "rows_per_unrelated_table": NOISE_ROWS_PER_TABLE})).await?;
     }
     emit_memory(&cluster, "noise");
     cluster.succeeded = true;
@@ -779,13 +812,13 @@ async fn three_durable_voters_dataset_and_concurrency_characterization() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn three_voters_smoke() {
     let mut cluster = spawn_cluster("smoke").await.expect("cluster startup");
-    let mut port = find_mutation_leader(
+    let initial_port = find_mutation_leader(
         &mut cluster,
         "CREATE TABLE p11_write_load (id BIGINT, value BIGINT)",
     )
     .await
     .expect("leader election");
-    let client = connect(port).await.expect("leader connect");
+    let client = connect(initial_port).await.expect("leader connect");
     let missing = query(&client, "SELECT id, value FROM p11_items")
         .await
         .expect_err("table not yet created");
@@ -799,30 +832,42 @@ async fn three_voters_smoke() {
     // Let the missing-schema condition be observable, then refresh leadership for
     // every untimed setup mutation. Timed benchmark operations are never retried.
     sleep(Duration::from_millis(100)).await;
-    port = find_mutation_leader(
+    find_mutation_leader(
         &mut cluster,
         "CREATE TABLE p11_items (id BIGINT, value BIGINT)",
     )
     .await
     .expect("create smoke table");
-    port = seed_rows(&mut cluster, 0, 100)
+    seed_rows(&mut cluster, 0, 100)
         .await
         .expect("seed smoke rows");
     let expected = item_rows(100);
     wait_replicated_rows(&mut cluster, "p11_items", &expected)
         .await
         .expect("all three voters caught up");
+    let local_port = cluster.ports()[0];
+    let read_sql = "SELECT id, value FROM p11_items WHERE id = 99";
     for consistency in ["local", "leader", "linearizable"] {
         let workload = Workload::Read {
             consistency,
-            sql: "SELECT id, value FROM p11_items WHERE id = 99".to_string(),
+            sql: read_sql.to_string(),
             expected: (99, 304),
         };
-        run_concurrent(port, 4, workload, 1, 2)
+        let case_port = if consistency == "local" {
+            local_port
+        } else {
+            find_read_leader(&mut cluster, read_sql)
+                .await
+                .expect("refresh smoke read leader")
+        };
+        run_concurrent(case_port, 4, workload, 1, 2)
             .await
             .expect("concurrent smoke reads");
     }
-    run_concurrent(port, 4, Workload::Write { id_base: 1000 }, 1, 2)
+    let write_port = find_read_leader(&mut cluster, read_sql)
+        .await
+        .expect("refresh smoke write leader");
+    run_concurrent(write_port, 4, Workload::Write { id_base: 1000 }, 1, 2)
         .await
         .expect("concurrent smoke writes");
     let writes: Rows = (1000..1012).map(|id| (id, id * 5 + 1)).collect();
