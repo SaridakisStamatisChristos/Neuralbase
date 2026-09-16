@@ -334,11 +334,13 @@ async fn wait_replicated_rows(
     let mut last = String::from("no probe completed");
     let wait = async {
         for port in cluster.ports() {
-            let client = connect(port).await?;
-            set_consistency(&client, "local").await?;
             let mut reported = false;
             loop {
                 cluster.check_alive()?;
+                // NeuralBase closes a PostgreSQL session after a query error, so each
+                // setup probe gets a fresh connection. Timed operations are unaffected.
+                let client = connect(port).await?;
+                set_consistency(&client, "local").await?;
                 match query(&client, &sql).await {
                     Ok(messages) => {
                         let rows = decode_rows(messages)?;
@@ -792,10 +794,13 @@ async fn three_voters_smoke() {
         "{}",
         missing.diagnostic()
     );
+    // The expected query error closes this NeuralBase protocol session.
+    drop(client);
     // Force the readiness probe to see missing schema before DDL and data arrive.
     let create = async {
         sleep(Duration::from_millis(100)).await;
-        execute_mutation(&client, "CREATE TABLE p11_items (id BIGINT, value BIGINT)").await?;
+        let ddl = connect(port).await?;
+        execute_mutation(&ddl, "CREATE TABLE p11_items (id BIGINT, value BIGINT)").await?;
         seed_rows(port, 0, 100).await
     };
     let expected = item_rows(100);
