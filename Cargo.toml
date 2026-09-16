@@ -56,6 +56,8 @@ serde_yaml = "0.9.34"
 tempfile = "=3.10.1"
 proptest = "=1.4.0"
 postgres = "=0.19.12"
+# Already present transitively; async test clients provide cancellable query deadlines.
+tokio-postgres = "=0.7.16"
 
 [[test]]
 name = "tpch_correctness"

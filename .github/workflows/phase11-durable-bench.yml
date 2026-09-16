@@ -23,6 +23,7 @@ jobs:
     env:
       LIBCLANG_PATH: /usr/lib/llvm-18/lib
       ROCKSDB_INCLUDE_DIR: /usr/include
+      PHASE11_RESULTS_DIR: /tmp/phase11-results
       PHASE11_LABEL: head
       PHASE11_MEASURED_COMMIT: ${{ github.event.pull_request.head.sha }}
     steps:
@@ -46,6 +47,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.88.0'
+          components: rustfmt
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
 
       - name: Cache cargo build
         uses: actions/cache@v5
@@ -69,6 +74,14 @@ jobs:
             echo "filesystem=$(df -T . | tail -1)"
           } | tee /tmp/phase11-results/environment.txt
 
+      - name: Run harness regressions and three-voter smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --test perf_phase11_durable_cluster --release --locked \
+            -- --nocapture --test-threads=1 \
+            2>&1 | tee /tmp/phase11-results/smoke.log
+
       - name: Run three-voter durable benchmark
         shell: bash
         run: |
@@ -76,23 +89,39 @@ jobs:
           cargo test --test perf_phase11_durable_cluster --release --locked \
             three_durable_voters_dataset_and_concurrency_characterization \
             -- --ignored --nocapture --test-threads=1 \
-            | tee /tmp/phase11-results/durable-cluster.log
+            2>&1 | tee /tmp/phase11-results/durable-cluster.log
 
       - name: Extract machine-readable results
         if: always()
         shell: bash
         run: |
-          grep '^PHASE11_RESULT ' /tmp/phase11-results/durable-cluster.log 2>/dev/null \
-            | sed 's/^PHASE11_RESULT //' \
-            > /tmp/phase11-results/results.jsonl || true
-          grep '^PHASE11_MEMORY ' /tmp/phase11-results/durable-cluster.log 2>/dev/null \
-            | sed 's/^PHASE11_MEMORY //' \
-            > /tmp/phase11-results/memory.jsonl || true
-          grep '^PHASE11_SETUP ' /tmp/phase11-results/durable-cluster.log 2>/dev/null \
-            | sed 's/^PHASE11_SETUP //' \
-            > /tmp/phase11-results/setup.jsonl || true
-          cat /tmp/phase11-results/results.jsonl || true
-          cat /tmp/phase11-results/memory.jsonl || true
+          python3 - <<'PYTHON'
+          import json
+          import os
+          from pathlib import Path
+          import re
+
+          root = Path(os.environ["PHASE11_RESULTS_DIR"])
+          root.mkdir(parents=True, exist_ok=True)
+          log = root / "durable-cluster.log"
+          records = {name: [] for name in ("RESULT", "MEMORY", "SETUP", "COMPLETE")}
+          for line in log.read_text().splitlines() if log.exists() else []:
+              match = re.search(r"PHASE11_(RESULT|MEMORY|SETUP|COMPLETE) (\{.*\})$", line)
+              if match:
+                  records[match[1]].append(json.loads(match[2]))
+          for kind, filename in (("RESULT", "results"), ("MEMORY", "memory"), ("SETUP", "setup")):
+              (root / f"{filename}.jsonl").write_text(
+                  "".join(json.dumps(record) + "\n" for record in records[kind])
+              )
+          complete = records["COMPLETE"]
+          results = records["RESULT"]
+          assert len(complete) == 1, "benchmark incomplete; inspect smoke/test and node logs"
+          assert len(results) == complete[0]["result_count"], "missing benchmark cases"
+          assert len({r["name"] for r in results}) == len(results), "duplicate cases"
+          assert all(r["commit"] == os.environ["PHASE11_MEASURED_COMMIT"] for r in results)
+          assert all(r["failed_ops"] == 0 and r["successful_ops"] == r["measured_iterations"] for r in results)
+          print(f"Validated {len(results)} completed benchmark cases")
+          PYTHON
 
       - name: Upload Phase-11 characterization artifact
         if: always()
