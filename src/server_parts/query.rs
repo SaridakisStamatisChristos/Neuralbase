@@ -33,7 +33,7 @@ where
             return Ok(());
         }
         ReadConsistencySetting::Invalid(error) => {
-            write_error_and_ready(socket, &error, "22023").await?;
+            write_query_error(socket, &error, "22023").await?;
             return Ok(());
         }
         ReadConsistencySetting::NotSetting => {}
@@ -173,13 +173,13 @@ where
             };
             match execution {
                 Ok(batch) => write_batch(socket, &batch).await?,
-                Err(err) => write_error_and_ready(socket, &err.to_string(), "22000").await?,
+                Err(err) => write_query_error(socket, &err.to_string(), "22000").await?,
             }
         }
         BoundPlan::SelectQuery(query) => {
             match execute_select_query_with_persistent_fast_path(&query, catalog, storage) {
                 Ok(result) => write_batch(socket, &query_result_to_batch(result)).await?,
-                Err(err) => write_error_and_ready(socket, &err.to_string(), "22000").await?,
+                Err(err) => write_query_error(socket, &err.to_string(), "22000").await?,
             }
         }
         BoundPlan::DropTable { name } => {
@@ -245,7 +245,7 @@ where
                 }
             } else {
                 let Some(exec) = dml_exec else {
-                    write_error_and_ready(
+                    write_query_error(
                         socket,
                         "storage not available (DB_PATH not set)",
                         "55000",
@@ -271,7 +271,7 @@ where
                     match exec.insert_row(&insert_plan.table.name, &pk, &str_pairs) {
                         Ok(()) => count += 1,
                         Err(e) => {
-                            write_error_and_ready(socket, &e.to_string(), "22000").await?;
+                            write_query_error(socket, &e.to_string(), "22000").await?;
                             return Ok(());
                         }
                     }
@@ -294,7 +294,7 @@ where
                 }
             } else {
                 let Some(exec) = dml_exec else {
-                    write_error_and_ready(
+                    write_query_error(
                         socket,
                         "storage not available (DB_PATH not set)",
                         "55000",
@@ -317,7 +317,7 @@ where
                             .write_all(&build_command_complete(&format!("UPDATE {n}")))
                             .await?
                     }
-                    Err(e) => write_error_and_ready(socket, &e.to_string(), "22000").await?,
+                    Err(e) => write_query_error(socket, &e.to_string(), "22000").await?,
                 }
             }
         }
@@ -334,7 +334,7 @@ where
                 }
             } else {
                 let Some(exec) = dml_exec else {
-                    write_error_and_ready(
+                    write_query_error(
                         socket,
                         "storage not available (DB_PATH not set)",
                         "55000",
@@ -348,7 +348,7 @@ where
                             .write_all(&build_command_complete(&format!("DELETE {n}")))
                             .await?
                     }
-                    Err(e) => write_error_and_ready(socket, &e.to_string(), "22000").await?,
+                    Err(e) => write_query_error(socket, &e.to_string(), "22000").await?,
                 }
             }
         }
@@ -382,7 +382,7 @@ where
                     let mut reg = registry.write().await;
                     reg.add_user(new_record);
                     if let Err(e) = reg.save_to_file(users_file) {
-                        write_error_and_ready(
+                        write_query_error(
                             socket,
                             &format!("failed to persist user registry: {e}"),
                             "58030",
@@ -425,7 +425,7 @@ where
                     let mut reg = registry.write().await;
                     if reg.update_user(updated) {
                         if let Err(e) = reg.save_to_file(users_file) {
-                            write_error_and_ready(
+                            write_query_error(
                                 socket,
                                 &format!("failed to persist user registry: {e}"),
                                 "58030",
@@ -443,7 +443,7 @@ where
                         .write_all(&build_command_complete("ALTER USER"))
                         .await?;
                 } else {
-                    write_error_and_ready(socket, &format!("user not found: {username}"), "42704")
+                    write_query_error(socket, &format!("user not found: {username}"), "42704")
                         .await?;
                 }
             }
@@ -477,7 +477,7 @@ where
                     let removed = reg.remove_user(&username);
                     if removed || if_exists {
                         if let Err(e) = reg.save_to_file(users_file) {
-                            write_error_and_ready(
+                            write_query_error(
                                 socket,
                                 &format!("failed to persist user registry: {e}"),
                                 "58030",
@@ -489,7 +489,7 @@ where
                     removed
                 };
                 if !removed && !if_exists {
-                    write_error_and_ready(socket, &format!("user not found: {username}"), "42704")
+                    write_query_error(socket, &format!("user not found: {username}"), "42704")
                         .await?;
                 } else {
                     socket
