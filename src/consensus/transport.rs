@@ -16,11 +16,13 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
+use tokio::time::{sleep, Instant};
 
 use crate::consensus::rpc::{NodeId, RaftMessage};
 
@@ -35,6 +37,21 @@ pub type ChannelBus = Arc<Mutex<HashMap<NodeId, mpsc::Sender<(NodeId, RaftMessag
 const CHANNEL_TRANSPORT_CAPACITY: usize = 4_096;
 const TCP_TRANSPORT_INBOX_CAPACITY: usize = 4_096;
 const PEER_WRITER_CAPACITY: usize = 4_096;
+const CRITICAL_DELIVERY_WINDOW: Duration = Duration::from_millis(1_500);
+const PEER_RETRY_BACKOFF: Duration = Duration::from_millis(25);
+
+fn requires_reliable_delivery(msg: &RaftMessage) -> bool {
+    matches!(
+        msg,
+        RaftMessage::RequestVote(_)
+            | RaftMessage::RequestVoteReply(_)
+            | RaftMessage::MembershipChangeCmd(_)
+            | RaftMessage::MembershipChangeCmdReply { .. }
+            | RaftMessage::LeaderTransfer { .. }
+            | RaftMessage::LeaderTransferReply { .. }
+            | RaftMessage::TimeoutNow { .. }
+    )
+}
 
 pub struct ChannelTransport {
     pub id: NodeId,
@@ -203,6 +220,8 @@ async fn run_tcp_peer_writer(
     let mut stream: Option<TcpStream> = None;
 
     while let Some(msg) = rx.recv().await {
+        let reliable = requires_reliable_delivery(&msg);
+        let deadline = Instant::now() + CRITICAL_DELIVERY_WINDOW;
         let payload = match serde_json::to_vec(&(local_id.clone(), msg)) {
             Ok(payload) => payload,
             Err(error) => {
@@ -211,32 +230,34 @@ async fn run_tcp_peer_writer(
             }
         };
 
-        if stream.is_none() {
-            match connect_tcp(&addr).await {
-                Ok(connected) => stream = Some(connected),
-                Err(error) => {
-                    tracing::debug!(peer = %peer_id, %addr, error = %error, "Raft TCP peer unavailable");
-                    continue;
+        loop {
+            if stream.is_none() {
+                match connect_tcp(&addr).await {
+                    Ok(connected) => stream = Some(connected),
+                    Err(error) => {
+                        tracing::debug!(peer = %peer_id, %addr, error = %error, "Raft TCP peer unavailable");
+                        if !reliable || Instant::now() >= deadline || rx.is_closed() {
+                            break;
+                        }
+                        sleep(PEER_RETRY_BACKOFF).await;
+                        continue;
+                    }
                 }
             }
-        }
 
-        let write_result =
-            write_frame(stream.as_mut().expect("stream established"), &payload).await;
-        if let Err(first_error) = write_result {
-            // A peer restart commonly invalidates an otherwise healthy persistent
-            // socket. Reconnect once and retry this Raft message. Raft tolerates
-            // duplicate RPC delivery if the first write happened to reach the peer.
-            stream = None;
-            match connect_tcp(&addr).await {
-                Ok(mut connected) => match write_frame(&mut connected, &payload).await {
-                    Ok(()) => stream = Some(connected),
-                    Err(error) => {
-                        tracing::debug!(peer = %peer_id, %addr, error = %error, "Raft TCP retry failed");
-                    }
-                },
+            match write_frame(stream.as_mut().expect("stream established"), &payload).await {
+                Ok(()) => break,
                 Err(error) => {
-                    tracing::debug!(peer = %peer_id, %addr, error = %error, first_error = %first_error, "Raft TCP reconnect failed");
+                    // A peer restart commonly invalidates an otherwise healthy
+                    // persistent socket. One-shot election/operator RPCs must
+                    // survive that reconnect window; periodic replication RPCs
+                    // are naturally retried by the next Raft heartbeat.
+                    stream = None;
+                    tracing::debug!(peer = %peer_id, %addr, error = %error, "Raft TCP write failed");
+                    if !reliable || Instant::now() >= deadline || rx.is_closed() {
+                        break;
+                    }
+                    sleep(PEER_RETRY_BACKOFF).await;
                 }
             }
         }
@@ -457,6 +478,8 @@ async fn run_tls_peer_writer(
     let mut stream: Option<tokio_rustls::client::TlsStream<TcpStream>> = None;
 
     while let Some(msg) = rx.recv().await {
+        let reliable = requires_reliable_delivery(&msg);
+        let deadline = Instant::now() + CRITICAL_DELIVERY_WINDOW;
         let payload = match serde_json::to_vec(&(local_id.clone(), msg)) {
             Ok(payload) => payload,
             Err(error) => {
@@ -465,29 +488,35 @@ async fn run_tls_peer_writer(
             }
         };
 
-        if stream.is_none() {
-            match connect_tls(&addr, &connector, server_name.clone()).await {
-                Ok(connected) => stream = Some(connected),
-                Err(error) => {
-                    tracing::debug!(peer = %peer_id, %addr, error = %error, "Raft TLS peer unavailable");
-                    continue;
+        loop {
+            if stream.is_none() {
+                match connect_tls(&addr, &connector, server_name.clone()).await {
+                    Ok(connected) => stream = Some(connected),
+                    Err(error) => {
+                        tracing::debug!(peer = %peer_id, %addr, error = %error, "Raft TLS peer unavailable");
+                        if !reliable || Instant::now() >= deadline || rx.is_closed() {
+                            break;
+                        }
+                        sleep(PEER_RETRY_BACKOFF).await;
+                        continue;
+                    }
                 }
             }
-        }
 
-        let write_result =
-            write_frame_generic(stream.as_mut().expect("TLS stream established"), &payload).await;
-        if let Err(first_error) = write_result {
-            stream = None;
-            match connect_tls(&addr, &connector, server_name.clone()).await {
-                Ok(mut connected) => match write_frame_generic(&mut connected, &payload).await {
-                    Ok(()) => stream = Some(connected),
-                    Err(error) => {
-                        tracing::debug!(peer = %peer_id, %addr, error = %error, "Raft TLS retry failed");
-                    }
-                },
+            match write_frame_generic(
+                stream.as_mut().expect("TLS stream established"),
+                &payload,
+            )
+            .await
+            {
+                Ok(()) => break,
                 Err(error) => {
-                    tracing::debug!(peer = %peer_id, %addr, error = %error, first_error = %first_error, "Raft TLS reconnect failed");
+                    stream = None;
+                    tracing::debug!(peer = %peer_id, %addr, error = %error, "Raft TLS write failed");
+                    if !reliable || Instant::now() >= deadline || rx.is_closed() {
+                        break;
+                    }
+                    sleep(PEER_RETRY_BACKOFF).await;
                 }
             }
         }

@@ -85,3 +85,56 @@ async fn logical_node_ids_route_over_explicit_tcp_addresses() {
         other => panic!("unexpected reply at n1: {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn critical_vote_survives_initial_connection_failure() {
+    let addr1 = reserve_addr();
+    let addr2 = reserve_addr();
+
+    let mut peers1 = HashMap::new();
+    peers1.insert("n2".to_string(), addr2.clone());
+    let t1 = Arc::new(
+        TcpTransport::listen_with_peers("n1".to_string(), &addr1, peers1)
+            .await
+            .expect("listen n1"),
+    );
+
+    t1.send(
+        &"n2".to_string(),
+        RaftMessage::RequestVote(RequestVoteArgs {
+            term: 9,
+            candidate_id: "n1".to_string(),
+            last_log_index: 17,
+            last_log_term: 8,
+        }),
+    )
+    .await;
+
+    // Force the per-peer writer through at least one failed connect before the
+    // receiver exists. Election/control RPCs are one-shot and must remain queued
+    // across this transient reconnect window.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut peers2 = HashMap::new();
+    peers2.insert("n1".to_string(), addr1);
+    let t2 = Arc::new(
+        TcpTransport::listen_with_peers("n2".to_string(), &addr2, peers2)
+            .await
+            .expect("listen delayed n2"),
+    );
+
+    let (from, msg) = timeout(Duration::from_secs(2), t2.recv())
+        .await
+        .expect("critical vote was lost across reconnect")
+        .expect("n2 transport closed");
+    assert_eq!(from, "n1");
+    match msg {
+        RaftMessage::RequestVote(args) => {
+            assert_eq!(args.term, 9);
+            assert_eq!(args.candidate_id, "n1");
+            assert_eq!(args.last_log_index, 17);
+            assert_eq!(args.last_log_term, 8);
+        }
+        other => panic!("unexpected delayed message at n2: {other:?}"),
+    }
+}
