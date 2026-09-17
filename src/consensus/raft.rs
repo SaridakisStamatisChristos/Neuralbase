@@ -303,6 +303,29 @@ impl<T: Transport> RaftNode<T> {
         self
     }
 
+    /// Restore the volatile Raft commit/apply frontier from a state-machine
+    /// cursor that is itself durably advanced only after committed entries apply.
+    /// This is stronger evidence than the otherwise-volatile `commit_index`: a
+    /// state machine cannot have durably applied an entry that was never committed.
+    /// The frontier must still be represented by this persisted Raft log/snapshot.
+    pub fn with_durable_apply_frontier(mut self, applied_index: u64) -> Self {
+        if applied_index < self.ps.snapshot_index {
+            panic!(
+                "fatal durable state-machine apply frontier {applied_index} is behind Raft snapshot boundary {}",
+                self.ps.snapshot_index
+            );
+        }
+        if applied_index > self.ps.last_log_index() {
+            panic!(
+                "fatal durable state-machine apply frontier {applied_index} is beyond persisted Raft log end {}",
+                self.ps.last_log_index()
+            );
+        }
+        self.commit_index = self.commit_index.max(applied_index);
+        self.last_applied = self.last_applied.max(applied_index);
+        self
+    }
+
     pub fn with_confirmed_apply_tx(mut self, tx: mpsc::Sender<CommittedEntry>) -> Self {
         let has_unrecoverable_snapshot = (self.ps.snapshot_index != 0
             || !self.snapshot_data.is_empty())

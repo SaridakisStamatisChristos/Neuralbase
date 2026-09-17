@@ -243,9 +243,24 @@ fn spawn_raft<T: Transport>(
         }
         _ => RaftNode::new(node_id, peers, transport),
     };
+    // Snapshot recovery may update the SQL state machine before Raft starts.
+    // Read its durable apply cursor only after persistence/snapshot recovery and
+    // use it as proof of the previously committed prefix. This prevents a live
+    // follower restart from forgetting an already-applied frontier and waiting
+    // indefinitely for a redundant 0..N replay.
     let mut node = node
         .with_snapshot_store(snapshot_store)
-        .with_persistence(strict_store)
+        .with_persistence(strict_store);
+    let durable_apply_index = state_machine
+        .durable_state()
+        .map_err(|error| {
+            io::Error::other(format!(
+                "load durable replicated SQL apply frontier: {error}"
+            ))
+        })?
+        .last_applied_index;
+    node = node
+        .with_durable_apply_frontier(durable_apply_index)
         .with_confirmed_apply_tx(apply_tx);
     node.set_election_timeout_ms(election_timeout_ms);
     let serving_ready = node.serving_readiness();
