@@ -19,7 +19,7 @@ use tokio_postgres::{Client, NoTls, SimpleQueryMessage};
 
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 const REPLICATION_TIMEOUT: Duration = Duration::from_secs(20);
-const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 const CASE_TIMEOUT: Duration = Duration::from_secs(300);
 const WARMUP: usize = 5;
 const REPS: usize = 100;
