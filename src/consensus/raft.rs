@@ -1048,9 +1048,16 @@ impl<T: Transport> RaftNode<T> {
         match msg {
             RaftMessage::RequestVote(args) => {
                 let reply = self.on_request_vote(args);
+                let reset_election_deadline = reply.vote_granted;
                 self.transport
                     .send(&from, RaftMessage::RequestVoteReply(reply))
                     .await;
+                if reset_election_deadline {
+                    // A granted vote is election activity. Give the candidate a
+                    // fresh timeout window to establish leadership before this
+                    // voter can start a competing election of its own.
+                    election_deadline = Instant::now() + self.election_timeout();
+                }
             }
             RaftMessage::RequestVoteReply(reply) => {
                 self.on_request_vote_reply(from, reply).await;
