@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Leader-side materialization and Raft submission for persistent SQL and identity mutations.
 //!
-//! The gateway serializes mutations on the leader. Before materialization, a
-//! current-term barrier is committed and confirmed applied. Identity passwords
-//! are converted to SCRAM verifier material on the leader before proposal; the
-//! plaintext password is never part of a replicated command.
+//! Read-modify-write mutations remain serialized on the leader and establish a
+//! current-term readiness barrier before materialization. Blind INSERTs use a
+//! narrower proposal sequencer: HLC allocation, deterministic encoding and Raft
+//! enqueue are ordered, then the sequencer is released while quorum/apply is
+//! awaited. This preserves strict replicated commit timestamp ordering while
+//! allowing multiple INSERT proposals to be in flight concurrently.
+//!
+//! Identity passwords are converted to SCRAM verifier material on the leader
+//! before proposal; plaintext passwords are never part of a replicated command.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,6 +32,14 @@ use crate::storage_executor::{decode_row, encode_row, table_id_for};
 use crate::vectorized::{ColumnVector, RecordBatch};
 
 const SQL_READINESS_BARRIER: &[u8] = b"NBRB\x01";
+
+type ProposalReply = oneshot::Receiver<Result<u64, String>>;
+
+struct PendingSql {
+    response: ProposalReply,
+    command_tag: &'static str,
+    affected_rows: Option<u64>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplicatedMutationAck {
@@ -72,6 +85,8 @@ pub struct ReplicatedSqlGateway {
     engine: Arc<StorageEngine>,
     clock: Arc<HlcClock>,
     serving_ready: Arc<AtomicBool>,
+    /// Proposal-order sequencer. Read-modify-write paths intentionally hold it
+    /// through apply; blind INSERTs release it immediately after Raft enqueue.
     mutation_serial: Arc<Mutex<()>>,
 }
 
@@ -147,40 +162,48 @@ impl ReplicatedSqlGateway {
         &self,
         plan: &InsertPlan,
     ) -> Result<ReplicatedMutationAck, ReplicatedGatewayError> {
-        let _guard = self.mutation_serial.lock().await;
-        self.commit_readiness_barrier().await?;
+        // Preserve HLC/log ordering, but do not serialize the consensus round trip.
+        // The INSERT entry itself is a current-term Raft proposal and client
+        // success is already delayed until quorum commit + confirmed local apply,
+        // so a separate readiness control entry is redundant for a blind insert.
+        let pending = {
+            let _proposal_order = self.mutation_serial.lock().await;
+            self.ensure_leader().await?;
 
-        let commit_ts = self.clock.tick().to_u64();
-        let rows = plan
-            .rows
-            .iter()
-            .enumerate()
-            .map(|(ordinal, values)| {
-                let mut row = BTreeMap::new();
-                for (column, value) in plan.columns.iter().zip(values) {
-                    row.insert(
-                        column.clone(),
-                        value.to_storage_string().unwrap_or_default(),
-                    );
-                }
-                let encoded = encode_row_for_schema(&plan.table, &row);
-                let mut primary_key = Vec::with_capacity(12);
-                primary_key.extend_from_slice(&commit_ts.to_be_bytes());
-                primary_key.extend_from_slice(&(ordinal as u32).to_be_bytes());
-                ReplicatedRowWrite {
-                    primary_key,
-                    value: encoded,
-                }
+            let commit_ts = self.clock.tick().to_u64();
+            let rows = plan
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(ordinal, values)| {
+                    let mut row = BTreeMap::new();
+                    for (column, value) in plan.columns.iter().zip(values) {
+                        row.insert(
+                            column.clone(),
+                            value.to_storage_string().unwrap_or_default(),
+                        );
+                    }
+                    let encoded = encode_row_for_schema(&plan.table, &row);
+                    let mut primary_key = Vec::with_capacity(12);
+                    primary_key.extend_from_slice(&commit_ts.to_be_bytes());
+                    primary_key.extend_from_slice(&(ordinal as u32).to_be_bytes());
+                    ReplicatedRowWrite {
+                        primary_key,
+                        value: encoded,
+                    }
+                })
+                .collect();
+
+            self.enqueue_sql(ReplicatedMutation::InsertRows {
+                table: plan.table.name.clone(),
+                table_id: table_id_for(&plan.table.name),
+                commit_ts,
+                rows,
             })
-            .collect();
+            .await?
+        };
 
-        self.submit_sql(ReplicatedMutation::InsertRows {
-            table: plan.table.name.clone(),
-            table_id: table_id_for(&plan.table.name),
-            commit_ts,
-            rows,
-        })
-        .await
+        self.finish_sql(pending).await
     }
 
     pub async fn update(
@@ -393,33 +416,62 @@ impl ReplicatedSqlGateway {
         self.submit_payload(SQL_READINESS_BARRIER.to_vec()).await
     }
 
-    async fn submit_payload(&self, payload: Vec<u8>) -> Result<u64, ReplicatedGatewayError> {
+    async fn enqueue_payload(&self, payload: Vec<u8>) -> Result<ProposalReply, ReplicatedGatewayError> {
         let (reply, response) = oneshot::channel();
         self.client_tx
             .send(ClientCommand { payload, reply })
             .await
             .map_err(|_| ReplicatedGatewayError::CommandChannelClosed)?;
+        Ok(response)
+    }
+
+    async fn finish_payload(&self, response: ProposalReply) -> Result<u64, ReplicatedGatewayError> {
         response
             .await
             .map_err(|_| ReplicatedGatewayError::ReplyChannelClosed)?
             .map_err(ReplicatedGatewayError::Raft)
     }
 
-    async fn submit_sql(
+    async fn submit_payload(&self, payload: Vec<u8>) -> Result<u64, ReplicatedGatewayError> {
+        let response = self.enqueue_payload(payload).await?;
+        self.finish_payload(response).await
+    }
+
+    async fn enqueue_sql(
         &self,
         mutation: ReplicatedMutation,
-    ) -> Result<ReplicatedMutationAck, ReplicatedGatewayError> {
+    ) -> Result<PendingSql, ReplicatedGatewayError> {
         let command_tag = mutation.command_tag();
         let affected_rows = mutation.affected_rows();
         let payload = mutation
             .encode()
             .map_err(|error| ReplicatedGatewayError::Encoding(error.to_string()))?;
-        let raft_index = self.submit_payload(payload).await?;
-        Ok(ReplicatedMutationAck {
-            raft_index,
+        let response = self.enqueue_payload(payload).await?;
+        Ok(PendingSql {
+            response,
             command_tag,
             affected_rows,
         })
+    }
+
+    async fn finish_sql(
+        &self,
+        pending: PendingSql,
+    ) -> Result<ReplicatedMutationAck, ReplicatedGatewayError> {
+        let raft_index = self.finish_payload(pending.response).await?;
+        Ok(ReplicatedMutationAck {
+            raft_index,
+            command_tag: pending.command_tag,
+            affected_rows: pending.affected_rows,
+        })
+    }
+
+    async fn submit_sql(
+        &self,
+        mutation: ReplicatedMutation,
+    ) -> Result<ReplicatedMutationAck, ReplicatedGatewayError> {
+        let pending = self.enqueue_sql(mutation).await?;
+        self.finish_sql(pending).await
     }
 
     async fn submit_identity(
@@ -620,7 +672,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn single_node_insert_waits_for_barrier_and_state_machine_apply() {
+    async fn single_node_insert_uses_one_raft_entry_and_waits_for_apply() {
         let (gateway, engine, _clock, _shared, _dir, _handle) = single_node_gateway().await;
         let plan = InsertPlan {
             table: schema(),
@@ -632,13 +684,44 @@ mod tests {
         };
         let ack = gateway.insert(&plan).await.unwrap();
         assert_eq!(ack.affected_rows, Some(1));
-        assert!(ack.raft_index >= 2, "barrier must precede SQL mutation");
+        assert_eq!(ack.raft_index, 1, "blind insert must not prepend a readiness barrier");
         assert_eq!(
             engine
                 .scan_table(table_id_for("items"), HlcTimestamp::MAX)
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_blind_inserts_preserve_log_ordered_commit_timestamps() {
+        let (gateway, engine, _clock, _shared, _dir, _handle) = single_node_gateway().await;
+        let mut tasks = tokio::task::JoinSet::new();
+        for id in 0..16i64 {
+            let gateway = gateway.clone();
+            let plan = InsertPlan {
+                table: schema(),
+                columns: vec!["id".to_string(), "name".to_string()],
+                rows: vec![vec![
+                    crate::binder::SqlValue::Int(id),
+                    crate::binder::SqlValue::Text(format!("v{id}")),
+                ]],
+            };
+            tasks.spawn(async move { gateway.insert(&plan).await });
+        }
+        let mut indexes = Vec::new();
+        while let Some(result) = tasks.join_next().await {
+            indexes.push(result.unwrap().unwrap().raft_index);
+        }
+        indexes.sort_unstable();
+        assert_eq!(indexes, (1u64..=16).collect::<Vec<_>>());
+        assert_eq!(
+            engine
+                .scan_table(table_id_for("items"), HlcTimestamp::MAX)
+                .unwrap()
+                .len(),
+            16
         );
     }
 
