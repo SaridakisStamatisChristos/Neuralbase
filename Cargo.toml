@@ -22,7 +22,7 @@ tls = ["dep:tokio-rustls", "dep:rcgen", "dep:rustls-pemfile"]
 
 [dependencies]
 tokio = { version = "1.44.0", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time", "signal"] }
-sqlparser = "=0.46.0"
+sqlparser = { version = "=0.46.0", features = ["visitor"] }
 thiserror = "1.0.69"
 rayon = "1.10.0"
 num_cpus = "1.16.0"
