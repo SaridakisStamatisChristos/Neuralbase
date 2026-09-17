@@ -134,13 +134,6 @@ jobs:
               "        def converge():\n            deadline = time.monotonic() + 420\n            while time.monotonic() < deadline:\n                result = invoke(\"reconcile\")\n                if result.get(\"plan\", {}).get(\"action\") == \"Converged\":\n                    return result\n                time.sleep(0.5)\n            raise AssertionError(\"Kubernetes reconciliation did not converge\")\n",
               "        def converge():\n            deadline = time.monotonic() + 180\n            last_blocked = None\n            blocked_streak = 0\n            last_result = None\n            while time.monotonic() < deadline:\n                result = invoke(\"reconcile\")\n                last_result = result\n                if result.get(\"plan\", {}).get(\"action\") == \"Converged\":\n                    return result\n                blocked = result.get(\"blocked\")\n                if blocked:\n                    if blocked == last_blocked:\n                        blocked_streak += 1\n                    else:\n                        last_blocked = blocked\n                        blocked_streak = 1\n                    if blocked_streak >= 6:\n                        raise AssertionError(\n                            f\"Kubernetes reconciliation stalled after {blocked_streak} identical blocks: {blocked}\"\n                        )\n                else:\n                    last_blocked = None\n                    blocked_streak = 0\n                time.sleep(0.25)\n            raise AssertionError(f\"Kubernetes reconciliation did not converge; last={last_result}\")\n",
           )
-
-          replace_exact(
-              ".github/workflows/ci.yml",
-              "Kubernetes lifecycle outer timeout",
-              "          timeout --signal=TERM --kill-after=30s 15m python3 tests/phase7_kubernetes.py\n",
-              "          timeout --signal=TERM --kill-after=30s 10m python3 tests/phase7_kubernetes.py\n",
-          )
           PY
 
       - name: Format and validate patch
@@ -161,7 +154,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git rm .github/workflows/one-shot-raft-liveness-repair.yml
-          git add src/consensus/raft.rs src/main.rs tests/raft_election_term_fencing.rs tests/phase7_kubernetes.py .github/workflows/ci.yml
+          git add src/consensus/raft.rs src/main.rs tests/raft_election_term_fencing.rs tests/phase7_kubernetes.py
           git diff --cached --check
           git commit -m "Stabilize Raft elections and fail fast in Kubernetes lifecycle"
           git push origin HEAD:phase11-sota-pass1
