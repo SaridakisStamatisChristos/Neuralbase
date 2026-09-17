@@ -117,8 +117,8 @@ jobs:
           replace_exact(
               "tests/raft_election_term_fencing.rs",
               "stale-vote newer election deadline",
-              "              wait_for_term_at_least(&store, first_term + 1, Duration::from_secs(2)).await;\n",
-              "              wait_for_term_at_least(&store, first_term + 1, Duration::from_secs(3)).await;\n",
+              "    let newer_term = wait_for_term_at_least(&store, first_term + 1, Duration::from_secs(2)).await;\n",
+              "    let newer_term = wait_for_term_at_least(&store, first_term + 1, Duration::from_secs(3)).await;\n",
           )
 
           replace_exact(
