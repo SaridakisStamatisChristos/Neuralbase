@@ -234,12 +234,21 @@ class KubernetesController(Controller):
             raise RuntimeError("managed pod changed during management exchange")
         if result["node"] != node or result["error"]:
             raise RuntimeError("management incarnation/configuration mismatch")
-        # Kubernetes readiness is part of the deployment observation. The local
-        # process may have become Raft-ready just before its probe result reaches
-        # the API server; conservatively wait for both views before convergence.
+        # The Kubernetes probe admits only finalized voters. An admitted learner
+        # must retain Raft readiness so the planner can check applied/matched
+        # progress and promote it. Use committed membership, not the immutable
+        # bootstrap flag: after promotion the voter must pass both readiness gates.
         status = result.get("status")
         if isinstance(status, dict) and "ready" in status:
-            status["ready"] = bool(status["ready"] and after["ready"])
+            membership = status.get("committed", {})
+            admitted_learner = (
+                node["id"] in membership.get("learners", [])
+                and node["id"] not in membership.get("voters", [])
+                and node["id"] not in membership.get("removed", [])
+                and membership.get("joint") is None
+                and not status.get("transition_pending", False)
+            )
+            status["ready"] = bool(status["ready"] and (admitted_learner or after["ready"]))
         return result
 
     def statuses(self):
