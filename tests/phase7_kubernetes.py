@@ -44,7 +44,7 @@ def main():
         def invoke(verb):
             result = subprocess.run(["python3", str(REPO / "ops/neuralbase_operator.py"), verb, "--config", str(path),
                                      "--server", str(REPO / "target/debug/neuralbase"), "--planner", str(REPO / "target/debug/neuralbase-operator")],
-                                    capture_output=True, text=True, timeout=240)
+                                    capture_output=True, text=True, timeout=60)
             assert result.returncode in (0, 2), result.stderr
             lines = result.stdout.strip().splitlines()
             assert lines, result.stderr
@@ -52,13 +52,31 @@ def main():
             print(json.dumps(response), flush=True)
             return response
         def converge():
-            deadline = time.monotonic() + 420
+            deadline = time.monotonic() + 180
+            last_blocked = None
+            blocked_streak = 0
+            last_result = None
             while time.monotonic() < deadline:
                 result = invoke("reconcile")
+                last_result = result
                 if result.get("plan", {}).get("action") == "Converged":
                     return result
-                time.sleep(0.5)
-            raise AssertionError("Kubernetes reconciliation did not converge")
+                blocked = result.get("blocked")
+                if blocked:
+                    if blocked == last_blocked:
+                        blocked_streak += 1
+                    else:
+                        last_blocked = blocked
+                        blocked_streak = 1
+                    if blocked_streak >= 6:
+                        raise AssertionError(
+                            f"Kubernetes reconciliation stalled after {blocked_streak} identical blocks: {blocked}"
+                        )
+                else:
+                    last_blocked = None
+                    blocked_streak = 0
+                time.sleep(0.25)
+            raise AssertionError(f"Kubernetes reconciliation did not converge; last={last_result}")
         def change(voters):
             config["desired"]["revision"] += 1
             config["desired"]["voters"] = voters

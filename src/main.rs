@@ -314,7 +314,7 @@ async fn start_raft_node(
     )
     .and_then(|v| v.parse::<u64>().ok())
     .filter(|v| *v > 0)
-    .unwrap_or(150);
+    .unwrap_or(750);
 
     tracing::info!(
         node_id = %node_id,

@@ -62,7 +62,14 @@ pub fn encode_leader_transfer(target: &str) -> Vec<u8> {
 }
 
 const HEARTBEAT_MS: u64 = 50;
-const ELECTION_TIMEOUT_BASE_MS: u64 = 150;
+// Production Raft runs alongside durable SQL/RocksDB apply and Kubernetes networking.
+// 150-300 ms was too close to scheduler/apply/reconnect latency and allowed healthy
+// clusters to enter term storms after a pod restart. Keep elections comfortably
+// above the heartbeat cadence while retaining sub-second failure detection.
+const ELECTION_TIMEOUT_BASE_MS: u64 = 750;
+// Once a campaign begins, do not start a newer term before the transport's
+// reliable one-shot vote delivery window has had time to complete.
+const ELECTION_CAMPAIGN_GRACE_MS: u64 = 2_000;
 pub const APPLY_CHANNEL_CAPACITY: usize = 1024;
 const LEADER_TRANSFER_TIMEOUT_MS: u64 = 5_000;
 
@@ -679,6 +686,12 @@ impl<T: Transport> RaftNode<T> {
         Duration::from_millis(base + extra)
     }
 
+    fn campaign_timeout(&self) -> Duration {
+        Duration::from_millis(
+            ELECTION_CAMPAIGN_GRACE_MS.max(self.election_timeout_base_ms.saturating_mul(2)),
+        )
+    }
+
     fn persist(&self) {
         if let Some(store) = &self.persistence {
             if let Err(error) = store.save(&self.ps, &self.snapshot_data) {
@@ -776,7 +789,12 @@ impl<T: Transport> RaftNode<T> {
                         if self.role != RaftRole::Leader {
                             self.start_election().await;
                         }
-                        election_deadline = Instant::now() + self.election_timeout();
+                        election_deadline = Instant::now()
+                            + if self.role == RaftRole::Candidate {
+                                self.campaign_timeout()
+                            } else {
+                                self.election_timeout()
+                            };
                     }
                     Some(cmd) = cmd_rx.recv() => {
                         // Compaction is a local admin operation and retains its
@@ -832,6 +850,7 @@ impl<T: Transport> RaftNode<T> {
                     }
                 }
 
+                let applied_before = self.last_applied;
                 while self.last_applied < self.commit_index {
                     let next_index = self.last_applied + 1;
                     let physical = (next_index - self.ps.snapshot_index) as usize;
@@ -982,6 +1001,18 @@ impl<T: Transport> RaftNode<T> {
                     }
                 }
 
+                // Confirmed state-machine apply is intentionally synchronous with
+                // Raft commit publication. A restart may replay enough durable entries
+                // to consume the follower's election timer even while a healthy leader
+                // is actively replicating. Do not turn apply latency into a spurious
+                // election; give the observed leader a fresh normal timeout after replay.
+                if self.last_applied > applied_before
+                    && self.role == RaftRole::Follower
+                    && self.leader_id.is_some()
+                {
+                    election_deadline = Instant::now() + self.election_timeout();
+                }
+
                 let removed = self
                     .ps
                     .membership
@@ -1053,10 +1084,10 @@ impl<T: Transport> RaftNode<T> {
                     .send(&from, RaftMessage::RequestVoteReply(reply))
                     .await;
                 if reset_election_deadline {
-                    // A granted vote is election activity. Give the candidate a
-                    // fresh timeout window to establish leadership before this
-                    // voter can start a competing election of its own.
-                    election_deadline = Instant::now() + self.election_timeout();
+                    // A granted vote is election activity. Give the candidate enough
+                    // time to receive reliable vote replies and establish leadership
+                    // before this voter starts a competing higher-term campaign.
+                    election_deadline = Instant::now() + self.campaign_timeout();
                 }
             }
             RaftMessage::RequestVoteReply(reply) => {
@@ -2040,7 +2071,12 @@ impl<T: Transport> RaftNode<T> {
             self.become_follower(term);
         }
         self.start_election().await;
-        *election_deadline = Instant::now() + self.election_timeout();
+        *election_deadline = Instant::now()
+            + if self.role == RaftRole::Candidate {
+                self.campaign_timeout()
+            } else {
+                self.election_timeout()
+            };
     }
 }
 

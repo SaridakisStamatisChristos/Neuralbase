@@ -70,7 +70,7 @@ async fn stale_granted_vote_reply_cannot_elect_candidate_in_newer_term() {
 
     wait_for_role(&shared, RaftRole::Candidate, Duration::from_secs(2)).await;
     let first_term = wait_for_term_at_least(&store, 1, Duration::from_secs(1)).await;
-    let newer_term = wait_for_term_at_least(&store, first_term + 1, Duration::from_secs(2)).await;
+    let newer_term = wait_for_term_at_least(&store, first_term + 1, Duration::from_secs(3)).await;
     assert!(newer_term > first_term);
     wait_for_role(&shared, RaftRole::Candidate, Duration::from_millis(100)).await;
 
