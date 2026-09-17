@@ -503,11 +503,8 @@ async fn run_tls_peer_writer(
                 }
             }
 
-            match write_frame_generic(
-                stream.as_mut().expect("TLS stream established"),
-                &payload,
-            )
-            .await
+            match write_frame_generic(stream.as_mut().expect("TLS stream established"), &payload)
+                .await
             {
                 Ok(()) => break,
                 Err(error) => {
