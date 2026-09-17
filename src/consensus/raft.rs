@@ -1221,6 +1221,9 @@ impl<T: Transport> RaftNode<T> {
             self.become_follower(reply.term);
             return;
         }
+        if reply.term != self.ps.current_term {
+            return;
+        }
         if self.role != RaftRole::Candidate || !self.effective_membership.is_voter(&from) {
             return;
         }
@@ -1299,7 +1302,11 @@ impl<T: Transport> RaftNode<T> {
                 match_index: self.ps.last_log_index(),
             };
         }
-        if args.term > self.ps.current_term || self.role == RaftRole::Candidate {
+        if args.term > self.ps.current_term
+            || (args.term == self.ps.current_term
+                && self.role != RaftRole::Follower
+                && args.leader_id != self.id)
+        {
             self.become_follower(args.term);
         }
         self.leader_id = Some(args.leader_id.clone());
@@ -1337,6 +1344,9 @@ impl<T: Transport> RaftNode<T> {
     async fn on_append_entries_reply(&mut self, from: NodeId, reply: AppendEntriesReply) {
         if reply.term > self.ps.current_term {
             self.become_follower(reply.term);
+            return;
+        }
+        if reply.term != self.ps.current_term {
             return;
         }
         if self.role != RaftRole::Leader
@@ -1397,6 +1407,7 @@ impl<T: Transport> RaftNode<T> {
             self.ps.voted_for = None;
         }
         self.role = RaftRole::Follower;
+        self.leader_id = None;
         self.leader = None;
         self.votes_received.clear();
         self.persist();
@@ -1760,7 +1771,11 @@ impl<T: Transport> RaftNode<T> {
                 last_included_index: args.last_included_index,
             };
         }
-        if args.term > self.ps.current_term || self.role == RaftRole::Candidate {
+        if args.term > self.ps.current_term
+            || (args.term == self.ps.current_term
+                && self.role != RaftRole::Follower
+                && args.leader_id != self.id)
+        {
             self.become_follower(args.term);
         }
         self.leader_id = Some(args.leader_id.clone());
@@ -1892,6 +1907,9 @@ impl<T: Transport> RaftNode<T> {
             self.become_follower(reply.term);
             return;
         }
+        if reply.term != self.ps.current_term {
+            return;
+        }
         if self.role != RaftRole::Leader || !reply.success {
             return;
         }
@@ -2014,8 +2032,12 @@ impl<T: Transport> RaftNode<T> {
             || term < self.ps.current_term
             || !self.effective_membership.is_voter(&self.id)
             || !self.effective_membership.is_voter(from)
+            || self.leader_id.as_ref() != Some(from)
         {
             return;
+        }
+        if term > self.ps.current_term {
+            self.become_follower(term);
         }
         self.start_election().await;
         *election_deadline = Instant::now() + self.election_timeout();
