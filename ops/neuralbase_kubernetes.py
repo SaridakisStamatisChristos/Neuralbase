@@ -199,10 +199,47 @@ class KubernetesController(Controller):
             self.ensure(expected)
         self.replicas(node, 1)
 
+    def pod_incarnation(self, node_id):
+        """Return the active pod UID/readiness, rejecting terminating or foreign pods."""
+        name = self.name(node_id)
+        pod = self.get("Pod", name + "-0")
+        if pod is None:
+            return None
+        metadata = pod.get("metadata", {})
+        if metadata.get("deletionTimestamp") is not None:
+            return None
+        labels = metadata.get("labels", {})
+        if (labels.get("neuralbase.io/owner") != self.state["owner"]
+                or labels.get("neuralbase.io/member") != name):
+            return None
+        uid = metadata.get("uid")
+        if not uid or pod.get("status", {}).get("phase") != "Running":
+            return None
+        container_ready = any(
+            status.get("name") == "neuralbase" and status.get("ready") is True
+            for status in pod.get("status", {}).get("containerStatuses", [])
+        )
+        return {"uid": uid, "ready": container_ready}
+
     def admin(self, node, command):
+        # Pod names are stable across StatefulSet restarts. Fence every management
+        # exchange by the immutable Pod UID so a terminating old process cannot
+        # make a freshly replaced, not-yet-ready voter appear converged.
+        before = self.pod_incarnation(node["id"])
+        if before is None:
+            raise RuntimeError("managed pod is not a stable running incarnation")
         result = self.kubectl(["exec", "-i", self.name(node["id"]) + "-0", "--", "/app/neuralbase-operator", "admin", "/config/node.json"], command)
+        after = self.pod_incarnation(node["id"])
+        if after is None or after["uid"] != before["uid"]:
+            raise RuntimeError("managed pod changed during management exchange")
         if result["node"] != node or result["error"]:
             raise RuntimeError("management incarnation/configuration mismatch")
+        # Kubernetes readiness is part of the deployment observation. The local
+        # process may have become Raft-ready just before its probe result reaches
+        # the API server; conservatively wait for both views before convergence.
+        status = result.get("status")
+        if isinstance(status, dict) and "ready" in status:
+            status["ready"] = bool(status["ready"] and after["ready"])
         return result
 
     def statuses(self):
