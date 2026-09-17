@@ -37,9 +37,8 @@ async fn same_term_append_entries_preserves_persisted_vote_and_rejects_second_ca
     // Keep both peers absent while target starts its first election. Its outbound
     // RequestVote RPCs are therefore dropped and it remains a candidate after
     // durably voting for itself.
-    let target_transport = Arc::new(
-        ChannelTransport::register(target_id.clone(), Arc::clone(&bus)).await,
-    );
+    let target_transport =
+        Arc::new(ChannelTransport::register(target_id.clone(), Arc::clone(&bus)).await);
     let store = Arc::new(MemPersistenceStore::new());
     let store_dyn: Arc<dyn RaftPersistenceStore> = store.clone();
     let mut target = RaftNode::new(
@@ -57,7 +56,10 @@ async fn same_term_append_entries_preserves_persisted_vote_and_rejects_second_ca
         .expect("load candidate state")
         .expect("candidate election must persist Raft state");
     let term = candidate_state.current_term;
-    assert_eq!(candidate_state.voted_for.as_deref(), Some(target_id.as_str()));
+    assert_eq!(
+        candidate_state.voted_for.as_deref(),
+        Some(target_id.as_str())
+    );
 
     // A legitimate leader in the same term makes the candidate step down. Raft
     // permits that role transition, but it MUST NOT erase the vote already cast
