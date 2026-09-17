@@ -56,89 +56,104 @@ jobs:
           path = Path("src/consensus/raft.rs")
           source = path.read_text()
 
-          reply_guard = '''        if reply.term > self.ps.current_term {
-              self.become_follower(reply.term);
-              return;
-          }
-          '''
-          guarded_reply = '''        if reply.term > self.ps.current_term {
-              self.become_follower(reply.term);
-              return;
-          }
-          if reply.term != self.ps.current_term {
-              return;
-          }
-          '''
-          count = source.count(reply_guard)
-          if count != 3:
-              raise SystemExit(f"expected 3 Raft term-bearing reply handlers, found {count}")
-          source = source.replace(reply_guard, guarded_reply)
+          def block(*lines):
+              return "\n".join(lines) + "\n"
 
-          replication_demotion = '''        if args.term > self.ps.current_term || self.role == RaftRole::Candidate {
-              self.become_follower(args.term);
-          }
-          self.leader_id = Some(args.leader_id.clone());
-          '''
-          hardened_replication_demotion = '''        if args.term > self.ps.current_term
-              || (args.term == self.ps.current_term
-                  && self.role != RaftRole::Follower
-                  && args.leader_id != self.id)
-          {
-              self.become_follower(args.term);
-          }
-          self.leader_id = Some(args.leader_id.clone());
-          '''
-          count = source.count(replication_demotion)
-          if count != 2:
-              raise SystemExit(f"expected AppendEntries + InstallSnapshot demotion sites, found {count}")
-          source = source.replace(replication_demotion, hardened_replication_demotion)
+          def replace_exact(label, old, new, expected=1):
+              global source
+              count = source.count(old)
+              if count != expected:
+                  raise SystemExit(f"{label}: expected {expected} match(es), found {count}")
+              source = source.replace(old, new)
 
-          follower_transition = '''        self.role = RaftRole::Follower;
-          self.leader = None;
-          self.votes_received.clear();
-          '''
-          hardened_follower_transition = '''        self.role = RaftRole::Follower;
-          self.leader_id = None;
-          self.leader = None;
-          self.votes_received.clear();
-          '''
-          count = source.count(follower_transition)
-          if count != 1:
-              raise SystemExit(f"expected one become_follower transition, found {count}")
-          source = source.replace(follower_transition, hardened_follower_transition)
+          reply_guard = block(
+              "        if reply.term > self.ps.current_term {",
+              "            self.become_follower(reply.term);",
+              "            return;",
+              "        }",
+          )
+          guarded_reply = block(
+              "        if reply.term > self.ps.current_term {",
+              "            self.become_follower(reply.term);",
+              "            return;",
+              "        }",
+              "        if reply.term != self.ps.current_term {",
+              "            return;",
+              "        }",
+          )
+          replace_exact("term-bearing reply handlers", reply_guard, guarded_reply, expected=3)
 
-          timeout_now = '''    async fn on_timeout_now(&mut self, from: &NodeId, term: u64, election_deadline: &mut Instant) {
-              if self.role == RaftRole::Leader
-                  || term < self.ps.current_term
-                  || !self.effective_membership.is_voter(&self.id)
-                  || !self.effective_membership.is_voter(from)
-              {
-                  return;
-              }
-              self.start_election().await;
-              *election_deadline = Instant::now() + self.election_timeout();
-          }
-          '''
-          hardened_timeout_now = '''    async fn on_timeout_now(&mut self, from: &NodeId, term: u64, election_deadline: &mut Instant) {
-              if self.role == RaftRole::Leader
-                  || term < self.ps.current_term
-                  || !self.effective_membership.is_voter(&self.id)
-                  || !self.effective_membership.is_voter(from)
-                  || self.leader_id.as_ref() != Some(from)
-              {
-                  return;
-              }
-              if term > self.ps.current_term {
-                  self.become_follower(term);
-              }
-              self.start_election().await;
-              *election_deadline = Instant::now() + self.election_timeout();
-          }
-          '''
-          count = source.count(timeout_now)
-          if count != 1:
-              raise SystemExit(f"expected one TimeoutNow handler, found {count}")
-          source = source.replace(timeout_now, hardened_timeout_now)
+          replication_demotion = block(
+              "        if args.term > self.ps.current_term || self.role == RaftRole::Candidate {",
+              "            self.become_follower(args.term);",
+              "        }",
+              "        self.leader_id = Some(args.leader_id.clone());",
+          )
+          hardened_replication_demotion = block(
+              "        if args.term > self.ps.current_term",
+              "            || (args.term == self.ps.current_term",
+              "                && self.role != RaftRole::Follower",
+              "                && args.leader_id != self.id)",
+              "        {",
+              "            self.become_follower(args.term);",
+              "        }",
+              "        self.leader_id = Some(args.leader_id.clone());",
+          )
+          replace_exact(
+              "AppendEntries + InstallSnapshot demotion",
+              replication_demotion,
+              hardened_replication_demotion,
+              expected=2,
+          )
+
+          follower_transition = block(
+              "        self.role = RaftRole::Follower;",
+              "        self.leader = None;",
+              "        self.votes_received.clear();",
+          )
+          hardened_follower_transition = block(
+              "        self.role = RaftRole::Follower;",
+              "        self.leader_id = None;",
+              "        self.leader = None;",
+              "        self.votes_received.clear();",
+          )
+          replace_exact(
+              "become_follower leader identity clear",
+              follower_transition,
+              hardened_follower_transition,
+          )
+
+          timeout_now = block(
+              "    async fn on_timeout_now(&mut self, from: &NodeId, term: u64, election_deadline: &mut Instant) {",
+              "        if self.role == RaftRole::Leader",
+              "            || term < self.ps.current_term",
+              "            || !self.effective_membership.is_voter(&self.id)",
+              "            || !self.effective_membership.is_voter(from)",
+              "        {",
+              "            return;",
+              "        }",
+              "        self.start_election().await;",
+              "        *election_deadline = Instant::now() + self.election_timeout();",
+              "    }",
+          )
+          hardened_timeout_now = block(
+              "    async fn on_timeout_now(&mut self, from: &NodeId, term: u64, election_deadline: &mut Instant) {",
+              "        if self.role == RaftRole::Leader",
+              "            || term < self.ps.current_term",
+              "            || !self.effective_membership.is_voter(&self.id)",
+              "            || !self.effective_membership.is_voter(from)",
+              "            || self.leader_id.as_ref() != Some(from)",
+              "        {",
+              "            return;",
+              "        }",
+              "        if term > self.ps.current_term {",
+              "            self.become_follower(term);",
+              "        }",
+              "        self.start_election().await;",
+              "        *election_deadline = Instant::now() + self.election_timeout();",
+              "    }",
+          )
+          replace_exact("TimeoutNow authorization", timeout_now, hardened_timeout_now)
 
           path.write_text(source)
           PY
