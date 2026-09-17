@@ -1388,11 +1388,14 @@ impl<T: Transport> RaftNode<T> {
     }
 
     fn become_follower(&mut self, term: u64) {
+        debug_assert!(term >= self.ps.current_term);
         self.fail_uncommitted_clients(
             "leadership lost before command reached required quorum commit",
         );
-        self.ps.current_term = term;
-        self.ps.voted_for = None;
+        if term > self.ps.current_term {
+            self.ps.current_term = term;
+            self.ps.voted_for = None;
+        }
         self.role = RaftRole::Follower;
         self.leader = None;
         self.votes_received.clear();
