@@ -13,11 +13,20 @@ from neuralbase_kubernetes import KubernetesController
 class KubernetesGuards(unittest.TestCase):
     def setUp(self):
         self.controller = KubernetesController.__new__(KubernetesController)
-        self.controller.state = {"objects": {"StatefulSet/k7-a": "original-uid"}}
+        self.controller.state = {"owner": "test-owner", "objects": {"StatefulSet/k7-a": "original-uid"}}
         self.expected = {"kind": "StatefulSet", "metadata": {"name": "k7-a", "labels": {"owner": "ours"}},
                          "spec": {"replicas": 1, "template": {"image": "expected"}}}
         self.actual = copy.deepcopy(self.expected)
         self.actual["metadata"].update(uid="original-uid", resourceVersion="17")
+
+    def pod(self, uid, ready=True, deleting=False):
+        metadata = {"name": "k7-a-0", "uid": uid,
+                    "labels": {"neuralbase.io/owner": "test-owner", "neuralbase.io/member": "k7-a"}}
+        if deleting:
+            metadata["deletionTimestamp"] = "2026-09-17T00:00:00Z"
+        return {"metadata": metadata,
+                "status": {"phase": "Running",
+                           "containerStatuses": [{"name": "neuralbase", "ready": ready}]}}
 
     def test_recreated_object_is_not_adopted(self):
         self.actual["metadata"]["uid"] = "replacement-uid"
@@ -44,6 +53,46 @@ class KubernetesGuards(unittest.TestCase):
             {"op": "test", "path": "/metadata/uid", "value": "original-uid"},
             {"op": "test", "path": "/metadata/resourceVersion", "value": "17"}])
         self.assertEqual(patch[2], {"op": "replace", "path": "/spec/replicas", "value": 0})
+
+    def test_admin_status_is_fenced_by_stable_pod_uid(self):
+        node = {"id": "k7.a"}
+        pods = [self.pod("pod-uid"), self.pod("pod-uid")]
+        self.controller.get = lambda *_: pods.pop(0)
+        self.controller.kubectl = lambda _args, _payload=None: {
+            "node": node, "error": None,
+            "status": {"is_leader": False, "ready": True, "applied": 7}}
+        result = self.controller.admin(node, "Status")
+        self.assertTrue(result["status"]["ready"])
+
+    def test_admin_discards_status_if_old_pod_starts_terminating(self):
+        node = {"id": "k7.a"}
+        pods = [self.pod("old-pod"), self.pod("old-pod", deleting=True)]
+        self.controller.get = lambda *_: pods.pop(0)
+        self.controller.kubectl = lambda _args, _payload=None: {
+            "node": node, "error": None,
+            "status": {"is_leader": True, "ready": True, "applied": 9}}
+        with self.assertRaisesRegex(RuntimeError, "changed during management exchange"):
+            self.controller.admin(node, "Status")
+
+    def test_admin_discards_status_if_stateful_pod_is_replaced(self):
+        node = {"id": "k7.a"}
+        pods = [self.pod("old-pod"), self.pod("new-pod")]
+        self.controller.get = lambda *_: pods.pop(0)
+        self.controller.kubectl = lambda _args, _payload=None: {
+            "node": node, "error": None,
+            "status": {"is_leader": True, "ready": True, "applied": 9}}
+        with self.assertRaisesRegex(RuntimeError, "changed during management exchange"):
+            self.controller.admin(node, "Status")
+
+    def test_kubernetes_readiness_is_required_for_converged_status(self):
+        node = {"id": "k7.a"}
+        pods = [self.pod("pod-uid", ready=False), self.pod("pod-uid", ready=False)]
+        self.controller.get = lambda *_: pods.pop(0)
+        self.controller.kubectl = lambda _args, _payload=None: {
+            "node": node, "error": None,
+            "status": {"is_leader": False, "ready": True, "applied": 7}}
+        result = self.controller.admin(node, "Status")
+        self.assertFalse(result["status"]["ready"])
 
     def test_mid_step_desired_change_invalidates_execution(self):
         with tempfile.TemporaryDirectory() as root:
