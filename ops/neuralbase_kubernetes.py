@@ -101,7 +101,8 @@ class KubernetesController(Controller):
         env = {"NEURALBASE_OPERATOR_NODE": "/config/node.json", "NEURALBASE_NODE_ID": node["id"],
                "NEURALBASE_DB_PATH": "/data/db", "NEURALBASE_USERS_FILE": "/data/users.json",
                "NEURALBASE_PEERS": "", "NEURALBASE_RAFT_ADDR": "0.0.0.0:7001", "NEURALBASE_LISTEN_ADDR": "0.0.0.0:5432",
-               "NEURALBASE_METRICS_PORT": "9090", "NEURALBASE_AUTH_REQUIRED": "0", "NEURALBASE_RAFT_TLS": "0"}
+               "NEURALBASE_METRICS_PORT": "9090", "NEURALBASE_RAFT_ELECTION_TIMEOUT_MS": "1000",
+               "NEURALBASE_AUTH_REQUIRED": "0", "NEURALBASE_RAFT_TLS": "0"}
         if self.identity:
             env.update(NEURALBASE_AUTH_REQUIRED="1", NEURALBASE_USERS_FILE="/identity/users.json",
                        NEURALBASE_IDENTITY_MIGRATION_SHA256=self.identity["sha256"])
