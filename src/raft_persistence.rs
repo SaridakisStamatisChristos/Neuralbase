@@ -156,7 +156,9 @@ fn decode_log_entry(expected_index: u64, bytes: &[u8]) -> Result<LogEntry, Strin
         ));
     }
     if &bytes[..4] != LOG_ENTRY_MAGIC {
-        return Err(format!("invalid Raft v2 log magic at index {expected_index}"));
+        return Err(format!(
+            "invalid Raft v2 log magic at index {expected_index}"
+        ));
     }
     if bytes[4] != LOG_ENTRY_VERSION {
         return Err(format!(
@@ -527,7 +529,11 @@ mod tests {
         assert_eq!(snapshot, b"snapshot-bytes");
 
         let meta_cf = engine.db.cf_handle(CF_META).unwrap();
-        assert!(engine.db.get_cf(&meta_cf, RAFT_STATE_KEY_V1).unwrap().is_none());
+        assert!(engine
+            .db
+            .get_cf(&meta_cf, RAFT_STATE_KEY_V1)
+            .unwrap()
+            .is_none());
         assert!(engine
             .db
             .get_cf(&meta_cf, RAFT_HARD_STATE_KEY_V2)
@@ -549,10 +555,26 @@ mod tests {
         store.save(&state, &[]).unwrap();
 
         let meta_cf = engine.db.cf_handle(CF_META).unwrap();
-        assert!(engine.db.get_cf(&meta_cf, raft_log_key(1)).unwrap().is_some());
-        assert!(engine.db.get_cf(&meta_cf, raft_log_key(2)).unwrap().is_some());
-        assert!(engine.db.get_cf(&meta_cf, raft_log_key(3)).unwrap().is_none());
-        assert!(engine.db.get_cf(&meta_cf, RAFT_STATE_KEY_V1).unwrap().is_none());
+        assert!(engine
+            .db
+            .get_cf(&meta_cf, raft_log_key(1))
+            .unwrap()
+            .is_some());
+        assert!(engine
+            .db
+            .get_cf(&meta_cf, raft_log_key(2))
+            .unwrap()
+            .is_some());
+        assert!(engine
+            .db
+            .get_cf(&meta_cf, raft_log_key(3))
+            .unwrap()
+            .is_none());
+        assert!(engine
+            .db
+            .get_cf(&meta_cf, RAFT_STATE_KEY_V1)
+            .unwrap()
+            .is_none());
         let (loaded, _) = store.load().unwrap().unwrap();
         assert_eq!(loaded.log[1].command, b"one");
         assert_eq!(loaded.log[2].command, b"two");

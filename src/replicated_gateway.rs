@@ -416,7 +416,10 @@ impl ReplicatedSqlGateway {
         self.submit_payload(SQL_READINESS_BARRIER.to_vec()).await
     }
 
-    async fn enqueue_payload(&self, payload: Vec<u8>) -> Result<ProposalReply, ReplicatedGatewayError> {
+    async fn enqueue_payload(
+        &self,
+        payload: Vec<u8>,
+    ) -> Result<ProposalReply, ReplicatedGatewayError> {
         let (reply, response) = oneshot::channel();
         self.client_tx
             .send(ClientCommand { payload, reply })
@@ -684,7 +687,10 @@ mod tests {
         };
         let ack = gateway.insert(&plan).await.unwrap();
         assert_eq!(ack.affected_rows, Some(1));
-        assert_eq!(ack.raft_index, 1, "blind insert must not prepend a readiness barrier");
+        assert_eq!(
+            ack.raft_index, 1,
+            "blind insert must not prepend a readiness barrier"
+        );
         assert_eq!(
             engine
                 .scan_table(table_id_for("items"), HlcTimestamp::MAX)

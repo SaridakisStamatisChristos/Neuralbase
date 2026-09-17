@@ -221,7 +221,8 @@ async fn run_tcp_peer_writer(
             }
         }
 
-        let write_result = write_frame(stream.as_mut().expect("stream established"), &payload).await;
+        let write_result =
+            write_frame(stream.as_mut().expect("stream established"), &payload).await;
         if let Err(first_error) = write_result {
             // A peer restart commonly invalidates an otherwise healthy persistent
             // socket. Reconnect once and retry this Raft message. Raft tolerates
@@ -474,7 +475,8 @@ async fn run_tls_peer_writer(
             }
         }
 
-        let write_result = write_frame_generic(stream.as_mut().expect("TLS stream established"), &payload).await;
+        let write_result =
+            write_frame_generic(stream.as_mut().expect("TLS stream established"), &payload).await;
         if let Err(first_error) = write_result {
             stream = None;
             match connect_tls(&addr, &connector, server_name.clone()).await {
