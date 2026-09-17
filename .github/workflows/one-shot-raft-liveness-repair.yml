@@ -1,0 +1,167 @@
+name: one-shot-raft-liveness-repair
+
+on:
+  push:
+    branches: [phase11-sota-pass1]
+    paths:
+      - .github/workflows/one-shot-raft-liveness-repair.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      LIBCLANG_PATH: /usr/lib/llvm-18/lib
+      ROCKSDB_INCLUDE_DIR: /usr/include
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@v5
+        with:
+          ref: phase11-sota-pass1
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y llvm-18-dev libclang-18-dev clang-18 librocksdb-dev nasm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88.0"
+          components: rustfmt
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Apply Raft liveness and fail-fast harness repair
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path, label, old, new, expected=1):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(f"{path}: {label}: expected {expected} match(es), found {count}")
+              p.write_text(text.replace(old, new))
+
+          raft = "src/consensus/raft.rs"
+
+          replace_exact(
+              raft,
+              "production election constants",
+              "const HEARTBEAT_MS: u64 = 50;\nconst ELECTION_TIMEOUT_BASE_MS: u64 = 150;\npub const APPLY_CHANNEL_CAPACITY: usize = 1024;\nconst LEADER_TRANSFER_TIMEOUT_MS: u64 = 5_000;\n",
+              "const HEARTBEAT_MS: u64 = 50;\n// Production Raft runs alongside durable SQL/RocksDB apply and Kubernetes networking.\n// 150-300 ms was too close to scheduler/apply/reconnect latency and allowed healthy\n// clusters to enter term storms after a pod restart. Keep elections comfortably\n// above the heartbeat cadence while retaining sub-second failure detection.\nconst ELECTION_TIMEOUT_BASE_MS: u64 = 750;\n// Once a campaign begins, do not start a newer term before the transport's\n// reliable one-shot vote delivery window has had time to complete.\nconst ELECTION_CAMPAIGN_GRACE_MS: u64 = 2_000;\npub const APPLY_CHANNEL_CAPACITY: usize = 1024;\nconst LEADER_TRANSFER_TIMEOUT_MS: u64 = 5_000;\n",
+          )
+
+          replace_exact(
+              raft,
+              "campaign timeout helper",
+              "    fn election_timeout(&self) -> Duration {\n        let base = self.election_timeout_base_ms;\n        let jitter_range = base.max(10);\n        let extra = rand::thread_rng().gen_range(0..jitter_range);\n        Duration::from_millis(base + extra)\n    }\n",
+              "    fn election_timeout(&self) -> Duration {\n        let base = self.election_timeout_base_ms;\n        let jitter_range = base.max(10);\n        let extra = rand::thread_rng().gen_range(0..jitter_range);\n        Duration::from_millis(base + extra)\n    }\n\n    fn campaign_timeout(&self) -> Duration {\n        Duration::from_millis(\n            ELECTION_CAMPAIGN_GRACE_MS.max(self.election_timeout_base_ms.saturating_mul(2)),\n        )\n    }\n",
+          )
+
+          replace_exact(
+              raft,
+              "candidate retry grace",
+              "                    _ = time::sleep_until(election_deadline) => {\n                        if self.role != RaftRole::Leader {\n                            self.start_election().await;\n                        }\n                        election_deadline = Instant::now() + self.election_timeout();\n                    }\n",
+              "                    _ = time::sleep_until(election_deadline) => {\n                        if self.role != RaftRole::Leader {\n                            self.start_election().await;\n                        }\n                        election_deadline = Instant::now()\n                            + if self.role == RaftRole::Candidate {\n                                self.campaign_timeout()\n                            } else {\n                                self.election_timeout()\n                            };\n                    }\n",
+          )
+
+          replace_exact(
+              raft,
+              "track apply work",
+              "                while self.last_applied < self.commit_index {\n",
+              "                let applied_before = self.last_applied;\n                while self.last_applied < self.commit_index {\n",
+          )
+
+          replace_exact(
+              raft,
+              "refresh deadline after synchronous replay",
+              "                let removed = self\n                    .ps\n                    .membership\n",
+              "                // Confirmed state-machine apply is intentionally synchronous with\n                // Raft commit publication. A restart may replay enough durable entries\n                // to consume the follower's election timer even while a healthy leader\n                // is actively replicating. Do not turn apply latency into a spurious\n                // election; give the observed leader a fresh normal timeout after replay.\n                if self.last_applied > applied_before\n                    && self.role == RaftRole::Follower\n                    && self.leader_id.is_some()\n                {\n                    election_deadline = Instant::now() + self.election_timeout();\n                }\n\n                let removed = self\n                    .ps\n                    .membership\n",
+          )
+
+          replace_exact(
+              raft,
+              "vote grant campaign grace",
+              "                if reset_election_deadline {\n                    // A granted vote is election activity. Give the candidate a\n                    // fresh timeout window to establish leadership before this\n                    // voter can start a competing election of its own.\n                    election_deadline = Instant::now() + self.election_timeout();\n                }\n",
+              "                if reset_election_deadline {\n                    // A granted vote is election activity. Give the candidate enough\n                    // time to receive reliable vote replies and establish leadership\n                    // before this voter starts a competing higher-term campaign.\n                    election_deadline = Instant::now() + self.campaign_timeout();\n                }\n",
+          )
+
+          replace_exact(
+              raft,
+              "TimeoutNow transfer campaign grace",
+              "        self.start_election().await;\n        *election_deadline = Instant::now() + self.election_timeout();\n    }\n}\n",
+              "        self.start_election().await;\n        *election_deadline = Instant::now()\n            + if self.role == RaftRole::Candidate {\n                self.campaign_timeout()\n            } else {\n                self.election_timeout()\n            };\n    }\n}\n",
+          )
+
+          replace_exact(
+              "src/main.rs",
+              "production default election timeout",
+              "    .unwrap_or(150);\n",
+              "    .unwrap_or(750);\n",
+          )
+
+          replace_exact(
+              "tests/raft_election_term_fencing.rs",
+              "stale-vote newer election deadline",
+              "              wait_for_term_at_least(&store, first_term + 1, Duration::from_secs(2)).await;\n",
+              "              wait_for_term_at_least(&store, first_term + 1, Duration::from_secs(3)).await;\n",
+          )
+
+          replace_exact(
+              "tests/phase7_kubernetes.py",
+              "operator subprocess timeout",
+              "                                    capture_output=True, text=True, timeout=240)\n",
+              "                                    capture_output=True, text=True, timeout=60)\n",
+          )
+
+          replace_exact(
+              "tests/phase7_kubernetes.py",
+              "bounded convergence with stall detection",
+              "        def converge():\n            deadline = time.monotonic() + 420\n            while time.monotonic() < deadline:\n                result = invoke(\"reconcile\")\n                if result.get(\"plan\", {}).get(\"action\") == \"Converged\":\n                    return result\n                time.sleep(0.5)\n            raise AssertionError(\"Kubernetes reconciliation did not converge\")\n",
+              "        def converge():\n            deadline = time.monotonic() + 180\n            last_blocked = None\n            blocked_streak = 0\n            last_result = None\n            while time.monotonic() < deadline:\n                result = invoke(\"reconcile\")\n                last_result = result\n                if result.get(\"plan\", {}).get(\"action\") == \"Converged\":\n                    return result\n                blocked = result.get(\"blocked\")\n                if blocked:\n                    if blocked == last_blocked:\n                        blocked_streak += 1\n                    else:\n                        last_blocked = blocked\n                        blocked_streak = 1\n                    if blocked_streak >= 6:\n                        raise AssertionError(\n                            f\"Kubernetes reconciliation stalled after {blocked_streak} identical blocks: {blocked}\"\n                        )\n                else:\n                    last_blocked = None\n                    blocked_streak = 0\n                time.sleep(0.25)\n            raise AssertionError(f\"Kubernetes reconciliation did not converge; last={last_result}\")\n",
+          )
+
+          replace_exact(
+              ".github/workflows/ci.yml",
+              "Kubernetes lifecycle outer timeout",
+              "          timeout --signal=TERM --kill-after=30s 15m python3 tests/phase7_kubernetes.py\n",
+              "          timeout --signal=TERM --kill-after=30s 10m python3 tests/phase7_kubernetes.py\n",
+          )
+          PY
+
+      - name: Format and validate patch
+        run: |
+          cargo fmt --all
+          git diff --check
+          python3 -m py_compile tests/phase7_kubernetes.py
+
+      - name: Run focused Raft liveness regressions
+        run: |
+          cargo test --test raft_election_term_fencing -- --nocapture
+          cargo test --test raft_restart_commit_recovery -- --nocapture
+          cargo test --test phase7_guarded_membership -- --nocapture
+          cargo test --test adversarial_raft rapid_reelection_never_split_brain -- --nocapture
+
+      - name: Commit verified repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/one-shot-raft-liveness-repair.yml
+          git add src/consensus/raft.rs src/main.rs tests/raft_election_term_fencing.rs tests/phase7_kubernetes.py .github/workflows/ci.yml
+          git diff --cached --check
+          git commit -m "Stabilize Raft elections and fail fast in Kubernetes lifecycle"
+          git push origin HEAD:phase11-sota-pass1
