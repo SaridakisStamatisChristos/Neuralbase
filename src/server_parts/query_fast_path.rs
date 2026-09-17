@@ -23,8 +23,29 @@ fn is_builtin_tpch_table(name: &str) -> bool {
         .any(|builtin| builtin.eq_ignore_ascii_case(name))
 }
 
-fn add_non_builtin_persistent_tables(
+/// Return the physical relation names referenced by a query, normalized to
+/// lower-case catalog keys. Walking the AST rather than the whole catalog keeps
+/// persistent query setup O(number of referenced relations), not O(total tables).
+///
+/// For schema-qualified names NeuralBase's current catalog is unqualified, so
+/// the last identifier is the lookup key. CTE aliases that are not real catalog
+/// tables are harmless: the caller checks the catalog before scanning storage.
+fn referenced_relation_names(
+    query: &sqlparser::ast::Query,
+) -> std::collections::BTreeSet<String> {
+    let mut relations = std::collections::BTreeSet::new();
+    let _ = sqlparser::ast::visit_relations(query, |relation| {
+        if let Some(identifier) = relation.0.last() {
+            relations.insert(identifier.value.to_lowercase());
+        }
+        std::ops::ControlFlow::<()>::Continue(())
+    });
+    relations
+}
+
+fn add_referenced_non_builtin_persistent_tables(
     qcat: &mut QueryCatalog,
+    query: &sqlparser::ast::Query,
     catalog: &InMemoryCatalog,
     storage: Option<&dyn TableScanner>,
 ) {
@@ -32,12 +53,12 @@ fn add_non_builtin_persistent_tables(
         return;
     };
 
-    for schema in catalog.all_tables() {
-        if is_builtin_tpch_table(&schema.name) {
+    for table in referenced_relation_names(query) {
+        if is_builtin_tpch_table(&table) || catalog.get_table(&table).is_none() {
             continue;
         }
-        if let Ok(batch) = scanner.scan_table(&schema.name) {
-            qcat.add_batch(&schema.name, &batch);
+        if let Ok(batch) = scanner.scan_table(&table) {
+            qcat.add_batch(&table, &batch);
         }
     }
 }
@@ -49,12 +70,17 @@ fn execute_select_query_tpch_first(
 ) -> Result<crate::query_executor::QueryResult, crate::query_executor::QueryError> {
     let dataset = generate_tpch_data(0.1);
     let mut qcat = QueryCatalog::from_tpch(&dataset);
-    for schema in catalog.all_tables() {
-        if !qcat.tables.contains_key(&schema.name.to_lowercase()) {
-            if let Some(scanner) = storage {
-                if let Ok(batch) = scanner.scan_table(&schema.name) {
-                    qcat.add_batch(&schema.name, &batch);
-                }
+
+    // The TPC-H fallback still needs persistent relations for mixed queries,
+    // but only relations actually named by this query. The previous code
+    // scanned/materialized every persistent table on every fallback execution.
+    for table in referenced_relation_names(query) {
+        if qcat.tables.contains_key(&table) || catalog.get_table(&table).is_none() {
+            continue;
+        }
+        if let Some(scanner) = storage {
+            if let Ok(batch) = scanner.scan_table(&table) {
+                qcat.add_batch(&table, &batch);
             }
         }
     }
@@ -67,7 +93,7 @@ fn execute_select_query_with_persistent_fast_path(
     storage: Option<&dyn TableScanner>,
 ) -> Result<crate::query_executor::QueryResult, crate::query_executor::QueryError> {
     let mut persistent = QueryCatalog::new();
-    add_non_builtin_persistent_tables(&mut persistent, catalog, storage);
+    add_referenced_non_builtin_persistent_tables(&mut persistent, query, catalog, storage);
 
     match crate::query_executor::execute_select_query(query, &persistent) {
         Err(crate::query_executor::QueryError::TableNotFound(_)) => {
@@ -210,6 +236,27 @@ mod phase10_query_fast_path_tests {
     }
 
     #[test]
+    fn unrelated_persistent_tables_are_not_scanned() {
+        let catalog = user_catalog();
+        for i in 0..64 {
+            catalog.register_table(TableSchema {
+                name: format!("noise_{i}"),
+                columns: vec![ColumnDef {
+                    name: "id".to_string(),
+                    data_type: "BIGINT".to_string(),
+                }],
+            });
+        }
+
+        let sql = query("SELECT id, name FROM phase10_users WHERE id = 1");
+        let scanner = TestScanner::default().with_batch("phase10_users", user_batch());
+        execute_select_query_with_persistent_fast_path(&sql, &catalog, Some(&scanner))
+            .expect("persistent fast path");
+
+        assert_eq!(scanner.calls(), vec!["phase10_users".to_string()]);
+    }
+
+    #[test]
     fn tpch_query_falls_back_to_historical_catalog() {
         let catalog = user_catalog();
         let sql = query("SELECT n_name FROM nation WHERE n_nationkey = 1");
@@ -258,7 +305,7 @@ mod phase10_query_fast_path_tests {
             .with_batch("phase10_users", user_batch())
             .with_batch("nation", nation_collision_batch());
         let fast = execute_select_query_with_persistent_fast_path(&sql, &catalog, Some(&scanner))
-            .expect("collision-preserving fallback");
+            .expect("TPC-H fallback");
 
         let reference_scanner = TestScanner::default()
             .with_batch("phase10_users", user_batch())
