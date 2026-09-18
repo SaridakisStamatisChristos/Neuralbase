@@ -14,7 +14,7 @@
 // This removes the Phase-11 connect/handshake-per-message bottleneck while
 // preserving Raft's per-peer message order and fire-and-forget Transport API.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -45,6 +45,47 @@ const TCP_TRANSPORT_INBOX_CAPACITY: usize = 4_096;
 const PEER_WRITER_CAPACITY: usize = 4_096;
 const CRITICAL_DELIVERY_WINDOW: Duration = Duration::from_millis(1_500);
 const PEER_RETRY_BACKOFF: Duration = Duration::from_millis(25);
+
+type WireEnvelope = (NodeId, u64, RaftMessage);
+
+#[derive(Default)]
+struct PeerIncarnations {
+    current: HashMap<NodeId, u64>,
+    retired: HashMap<NodeId, HashSet<u64>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PeerIncarnationObservation {
+    First,
+    Current,
+    Replaced,
+    Retired,
+}
+
+impl PeerIncarnations {
+    fn observe(&mut self, peer: &NodeId, incarnation: u64) -> PeerIncarnationObservation {
+        let Some(current) = self.current.get(peer).copied() else {
+            self.current.insert(peer.clone(), incarnation);
+            return PeerIncarnationObservation::First;
+        };
+        if current == incarnation {
+            return PeerIncarnationObservation::Current;
+        }
+        if self
+            .retired
+            .get(peer)
+            .is_some_and(|retired| retired.contains(&incarnation))
+        {
+            return PeerIncarnationObservation::Retired;
+        }
+        self.retired
+            .entry(peer.clone())
+            .or_default()
+            .insert(current);
+        self.current.insert(peer.clone(), incarnation);
+        PeerIncarnationObservation::Replaced
+    }
+}
 
 fn requires_reliable_delivery(msg: &RaftMessage) -> bool {
     matches!(
@@ -98,6 +139,42 @@ impl Transport for ChannelTransport {
     }
 }
 
+#[cfg(test)]
+mod incarnation_tests {
+    use super::*;
+
+    #[test]
+    fn peer_incarnation_replacement_is_monotonic_with_retired_epoch_rejection() {
+        let peer = "peer-a".to_string();
+        let mut epochs = PeerIncarnations::default();
+        assert_eq!(epochs.observe(&peer, 10), PeerIncarnationObservation::First);
+        assert_eq!(
+            epochs.observe(&peer, 10),
+            PeerIncarnationObservation::Current
+        );
+        assert_eq!(
+            epochs.observe(&peer, 20),
+            PeerIncarnationObservation::Replaced
+        );
+        assert_eq!(
+            epochs.observe(&peer, 10),
+            PeerIncarnationObservation::Retired
+        );
+        assert_eq!(
+            epochs.observe(&peer, 20),
+            PeerIncarnationObservation::Current
+        );
+        assert_eq!(
+            epochs.observe(&peer, 30),
+            PeerIncarnationObservation::Replaced
+        );
+        assert_eq!(
+            epochs.observe(&peer, 20),
+            PeerIncarnationObservation::Retired
+        );
+    }
+}
+
 // ── TCP transport ──────────────────────────────────────────────────────────
 
 pub struct TcpTransport {
@@ -105,6 +182,8 @@ pub struct TcpTransport {
     peer_addrs: Arc<HashMap<NodeId, String>>,
     rx: Arc<Mutex<mpsc::Receiver<(NodeId, RaftMessage)>>>,
     writers: Arc<Mutex<HashMap<NodeId, mpsc::Sender<RaftMessage>>>>,
+    incarnation: u64,
+    peer_incarnations: Arc<Mutex<PeerIncarnations>>,
     shutdown_tx: Option<oneshot::Sender<()>>,
     accept_task: Option<JoinHandle<()>>,
 }
@@ -123,6 +202,10 @@ impl TcpTransport {
         let (tx, rx) = mpsc::channel::<(NodeId, RaftMessage)>(TCP_TRANSPORT_INBOX_CAPACITY);
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
         let tx_clone = tx.clone();
+        let writers = Arc::new(Mutex::new(HashMap::new()));
+        let peer_incarnations = Arc::new(Mutex::new(PeerIncarnations::default()));
+        let accept_writers = Arc::clone(&writers);
+        let accept_peer_incarnations = Arc::clone(&peer_incarnations);
         let accept_task = tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -132,7 +215,9 @@ impl TcpTransport {
                             Ok((stream, _peer)) => {
                                 let _ = stream.set_nodelay(true);
                                 let tx2 = tx_clone.clone();
-                                tokio::spawn(Self::accept_conn(stream, tx2));
+                                let writers2 = Arc::clone(&accept_writers);
+                                let incarnations2 = Arc::clone(&accept_peer_incarnations);
+                                tokio::spawn(Self::accept_conn(stream, tx2, writers2, incarnations2));
                             }
                             Err(_) => break,
                         }
@@ -144,7 +229,9 @@ impl TcpTransport {
             id,
             peer_addrs: Arc::new(peer_addrs),
             rx: Arc::new(Mutex::new(rx)),
-            writers: Arc::new(Mutex::new(HashMap::new())),
+            writers,
+            incarnation: rand::random::<u64>(),
+            peer_incarnations,
             shutdown_tx: Some(shutdown_tx),
             accept_task: Some(accept_task),
         })
@@ -157,12 +244,28 @@ impl TcpTransport {
             .unwrap_or_else(|| to.clone())
     }
 
-    async fn accept_conn(mut stream: TcpStream, tx: mpsc::Sender<(NodeId, RaftMessage)>) {
+    async fn accept_conn(
+        mut stream: TcpStream,
+        tx: mpsc::Sender<(NodeId, RaftMessage)>,
+        writers: Arc<Mutex<HashMap<NodeId, mpsc::Sender<RaftMessage>>>>,
+        peer_incarnations: Arc<Mutex<PeerIncarnations>>,
+    ) {
         while let Ok(Some(bytes)) = read_frame(&mut stream).await {
-            if let Ok(envelope) = serde_json::from_slice::<(NodeId, RaftMessage)>(&bytes) {
-                if tx.send(envelope).await.is_err() {
-                    break;
-                }
+            let Ok((from, incarnation, message)) = serde_json::from_slice::<WireEnvelope>(&bytes)
+            else {
+                continue;
+            };
+            let observation = peer_incarnations.lock().await.observe(&from, incarnation);
+            if observation == PeerIncarnationObservation::Retired {
+                tracing::debug!(peer = %from, incarnation, "discard retired Raft peer incarnation");
+                continue;
+            }
+            if observation == PeerIncarnationObservation::Replaced {
+                writers.lock().await.remove(&from);
+                tracing::debug!(peer = %from, incarnation, "observed new Raft peer incarnation; reset reverse session");
+            }
+            if tx.send((from, message)).await.is_err() {
+                break;
             }
         }
     }
@@ -177,7 +280,13 @@ impl TcpTransport {
         let local_id = self.id.clone();
         let peer_id = to.clone();
         let addr = self.peer_addr(to);
-        tokio::spawn(run_tcp_peer_writer(local_id, peer_id.clone(), addr, rx));
+        tokio::spawn(run_tcp_peer_writer(
+            local_id,
+            self.incarnation,
+            peer_id.clone(),
+            addr,
+            rx,
+        ));
         writers.insert(peer_id, tx.clone());
         tx
     }
@@ -225,6 +334,7 @@ async fn connect_tcp(addr: &str) -> std::io::Result<TcpStream> {
 
 async fn run_tcp_peer_writer(
     local_id: NodeId,
+    local_incarnation: u64,
     peer_id: NodeId,
     addr: String,
     mut rx: mpsc::Receiver<RaftMessage>,
@@ -234,7 +344,7 @@ async fn run_tcp_peer_writer(
     while let Some(msg) = rx.recv().await {
         let reliable = requires_reliable_delivery(&msg);
         let deadline = Instant::now() + CRITICAL_DELIVERY_WINDOW;
-        let payload = match serde_json::to_vec(&(local_id.clone(), msg)) {
+        let payload = match serde_json::to_vec(&(local_id.clone(), local_incarnation, msg)) {
             Ok(payload) => payload,
             Err(error) => {
                 tracing::warn!(peer = %peer_id, error = %error, "failed to encode Raft message");
@@ -334,6 +444,8 @@ pub struct TlsTcpTransport {
     server_name: tokio_rustls::rustls::pki_types::ServerName<'static>,
     rx: Arc<Mutex<mpsc::Receiver<(NodeId, RaftMessage)>>>,
     writers: Arc<Mutex<HashMap<NodeId, mpsc::Sender<RaftMessage>>>>,
+    incarnation: u64,
+    peer_incarnations: Arc<Mutex<PeerIncarnations>>,
     shutdown_tx: Option<oneshot::Sender<()>>,
     accept_task: Option<JoinHandle<()>>,
 }
@@ -356,6 +468,10 @@ impl TlsTcpTransport {
         let (tx, rx) = mpsc::channel::<(NodeId, RaftMessage)>(TCP_TRANSPORT_INBOX_CAPACITY);
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
         let tx_clone = tx.clone();
+        let writers = Arc::new(Mutex::new(HashMap::new()));
+        let peer_incarnations = Arc::new(Mutex::new(PeerIncarnations::default()));
+        let accept_writers = Arc::clone(&writers);
+        let accept_peer_incarnations = Arc::clone(&peer_incarnations);
 
         let accept_task = tokio::spawn(async move {
             loop {
@@ -367,16 +483,31 @@ impl TlsTcpTransport {
                                 let _ = tcp.set_nodelay(true);
                                 let acc = acceptor.clone();
                                 let tx2 = tx_clone.clone();
+                                let writers2 = Arc::clone(&accept_writers);
+                                let incarnations2 = Arc::clone(&accept_peer_incarnations);
                                 tokio::spawn(async move {
                                     match acc.accept(tcp).await {
                                         Ok(mut tls) => {
                                             while let Ok(Some(bytes)) = read_frame_generic(&mut tls).await {
-                                                if let Ok(envelope) =
-                                                    serde_json::from_slice::<(NodeId, RaftMessage)>(&bytes)
-                                                {
-                                                    if tx2.send(envelope).await.is_err() {
-                                                        break;
-                                                    }
+                                                let Ok((from, incarnation, message)) =
+                                                    serde_json::from_slice::<WireEnvelope>(&bytes)
+                                                else {
+                                                    continue;
+                                                };
+                                                let observation = incarnations2
+                                                    .lock()
+                                                    .await
+                                                    .observe(&from, incarnation);
+                                                if observation == PeerIncarnationObservation::Retired {
+                                                    tracing::debug!(peer = %from, incarnation, "discard retired Raft TLS peer incarnation");
+                                                    continue;
+                                                }
+                                                if observation == PeerIncarnationObservation::Replaced {
+                                                    writers2.lock().await.remove(&from);
+                                                    tracing::debug!(peer = %from, incarnation, "observed new Raft TLS peer incarnation; reset reverse session");
+                                                }
+                                                if tx2.send((from, message)).await.is_err() {
+                                                    break;
                                                 }
                                             }
                                         }
@@ -399,7 +530,9 @@ impl TlsTcpTransport {
             connector,
             server_name,
             rx: Arc::new(Mutex::new(rx)),
-            writers: Arc::new(Mutex::new(HashMap::new())),
+            writers,
+            incarnation: rand::random::<u64>(),
+            peer_incarnations,
             shutdown_tx: Some(shutdown_tx),
             accept_task: Some(accept_task),
         })
@@ -425,6 +558,7 @@ impl TlsTcpTransport {
         let server_name = self.server_name.clone();
         tokio::spawn(run_tls_peer_writer(
             local_id,
+            self.incarnation,
             peer_id.clone(),
             addr,
             connector,
@@ -487,6 +621,7 @@ async fn connect_tls(
 #[cfg(feature = "tls")]
 async fn run_tls_peer_writer(
     local_id: NodeId,
+    local_incarnation: u64,
     peer_id: NodeId,
     addr: String,
     connector: tokio_rustls::TlsConnector,
@@ -498,7 +633,7 @@ async fn run_tls_peer_writer(
     while let Some(msg) = rx.recv().await {
         let reliable = requires_reliable_delivery(&msg);
         let deadline = Instant::now() + CRITICAL_DELIVERY_WINDOW;
-        let payload = match serde_json::to_vec(&(local_id.clone(), msg)) {
+        let payload = match serde_json::to_vec(&(local_id.clone(), local_incarnation, msg)) {
             Ok(payload) => payload,
             Err(error) => {
                 tracing::warn!(peer = %peer_id, error = %error, "failed to encode Raft TLS message");

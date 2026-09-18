@@ -141,7 +141,7 @@ async fn critical_vote_survives_initial_connection_failure() {
     }
 }
 
-async fn read_envelope(stream: &mut tokio::net::TcpStream) -> (String, RaftMessage) {
+async fn read_envelope(stream: &mut tokio::net::TcpStream) -> (String, u64, RaftMessage) {
     let mut len = [0u8; 4];
     stream
         .read_exact(&mut len)
@@ -183,7 +183,7 @@ async fn reset_peer_replaces_writable_but_unresponsive_session() {
         .await
         .expect("initial connection timeout")
         .expect("accept initial connection");
-    let (_, first) = timeout(Duration::from_secs(2), read_envelope(&mut stale))
+    let (_, first_incarnation, first) = timeout(Duration::from_secs(2), read_envelope(&mut stale))
         .await
         .expect("initial envelope timeout");
     match first {
@@ -207,10 +207,15 @@ async fn reset_peer_replaces_writable_but_unresponsive_session() {
         .await
         .expect("fresh connection timeout")
         .expect("accept fresh connection");
-    let (from, second) = timeout(Duration::from_secs(2), read_envelope(&mut fresh))
-        .await
-        .expect("fresh envelope timeout");
+    let (from, second_incarnation, second) =
+        timeout(Duration::from_secs(2), read_envelope(&mut fresh))
+            .await
+            .expect("fresh envelope timeout");
     assert_eq!(from, "n1");
+    assert_eq!(
+        first_incarnation, second_incarnation,
+        "transport incarnation must survive ordinary connection resets"
+    );
     match second {
         RaftMessage::RequestVote(args) => {
             assert_eq!(args.term, 12);
