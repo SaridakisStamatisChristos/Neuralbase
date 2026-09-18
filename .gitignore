@@ -23,6 +23,9 @@ test_db*/
 certs/*.key
 certs/*.pem
 
+# Coverage output
+coverage/
+
 # One-off local diagnostics
 *.log
 build_*.txt
