@@ -23,6 +23,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Reclaim runner disk space
+        shell: bash
+        run: |
+          echo "Disk before cleanup:"
+          df -h /
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/local/.ghcup || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo docker system prune -af || true
+          echo "Disk after cleanup:"
+          df -h /
+
       - name: Install system dependencies
         run: |
           sudo apt-get update -qq
@@ -96,6 +110,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Reclaim runner disk space
+        shell: bash
+        run: |
+          echo "Disk before cleanup:"
+          df -h /
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/local/.ghcup || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo docker system prune -af || true
+          echo "Disk after cleanup:"
+          df -h /
+
       - name: Install system dependencies
         run: |
           sudo apt-get update -qq
@@ -114,14 +142,6 @@ jobs:
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
-
-      - name: Cache cargo registry
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-coverage-${{ hashFiles('Cargo.lock') }}
 
       - name: Generate coverage reports
         run: timeout --signal=TERM --kill-after=30s 45m make coverage
@@ -218,6 +238,20 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Reclaim runner disk space
+        shell: bash
+        run: |
+          echo "Disk before cleanup:"
+          df -h /
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/local/.ghcup || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo docker system prune -af || true
+          echo "Disk after cleanup:"
+          df -h /
 
       - name: Install system dependencies
         run: |
