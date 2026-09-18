@@ -1,6 +1,7 @@
 # NeuralBase
 
 [![CI](https://github.com/SaridakisStamatisChristos/Neuralbase/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/SaridakisStamatisChristos/Neuralbase/actions/workflows/ci.yml)
+![Coverage](https://img.shields.io/badge/coverage-79.58%25-brightgreen.svg)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](Cargo.toml)
 
@@ -34,6 +35,12 @@
 - Phase-8 fail-closed DML/DDL/window boundaries, exactly-one-statement request handling, and explicit unsupported SQL transaction blocks.
 - Bounded typed extended-protocol parameters with NULL/text/selected binary scalar encodings, statement parameter descriptions, deterministic mutation materialization and real Rust `postgres` client evidence.
 - Docker Compose, Kubernetes StatefulSet and Helm development deployments.
+
+## Test coverage
+
+Current CI-measured Rust production-source coverage is **79.58% lines**, **77.15% functions**, and **78.63% regions** for the `cargo test --features tls --tests --locked` scope. Test, benchmark, and fuzz source files are excluded from the reported denominator.
+
+The CI coverage job publishes standard machine-readable and human-readable outputs on every run: Cobertura `coverage.xml`, `lcov.info`, LLVM JSON, a normalized `coverage-summary.json`, a text summary, and an HTML report. These reports are preserved as GitHub Actions artifacts for 30 days. PostgreSQL-reference Docker tests and the real Kind membership lifecycle remain separate validation gates and are not folded into this source-line percentage.
 
 ## Performance evidence
 
@@ -163,6 +170,7 @@ make test
 make lint
 make confidence
 make adversarial
+make coverage
 make tpch-correctness
 make sql-differential
 ```
