@@ -710,9 +710,16 @@ impl<T: Transport> RaftNode<T> {
     }
 
     fn campaign_timeout(&self) -> Duration {
-        Duration::from_millis(
-            ELECTION_CAMPAIGN_GRACE_MS.max(self.election_timeout_base_ms.saturating_mul(2)),
-        )
+        // Failed campaigns must not retry on a deterministic cadence. Two
+        // candidates that split a vote at nearly the same instant would
+        // otherwise preserve that phase forever by retrying every exact 2s.
+        // Keep the minimum above the transport's reliable-delivery window, then
+        // add bounded jitter so the next campaign naturally dephases without
+        // weakening the established sub-3s retry contract used by recovery tests.
+        let floor = ELECTION_CAMPAIGN_GRACE_MS.max(self.election_timeout_base_ms.saturating_mul(2));
+        let jitter_range = self.election_timeout_base_ms.clamp(50, 500);
+        let extra = rand::thread_rng().gen_range(0..jitter_range);
+        Duration::from_millis(floor.saturating_add(extra))
     }
 
     fn persist(&self) {
