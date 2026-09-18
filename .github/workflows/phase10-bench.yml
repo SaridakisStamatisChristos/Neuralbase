@@ -67,6 +67,7 @@ jobs:
           cp tests/perf_phase10_tpch_scales.rs /tmp/phase10-harness/
           cp tests/perf_phase10_memory.rs /tmp/phase10-harness/
           cp tests/perf_phase10_server_components.rs /tmp/phase10-harness/
+          cp tests/phase9_pitr_process.rs /tmp/phase10-harness/
 
       - name: Capture runner environment
         run: |

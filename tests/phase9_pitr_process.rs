@@ -178,6 +178,46 @@ fn wait_ready(node: &mut NodeProcess, auth_required: bool, password: &str) {
     }
 }
 
+fn wait_for_leader_readiness(node: &mut NodeProcess, auth_required: bool, password: &str) {
+    let deadline = Instant::now() + START_TIMEOUT;
+    loop {
+        assert!(
+            node.is_running(),
+            "{} exited while waiting for leader readiness",
+            node.spec.id
+        );
+        let probe = (|| -> Result<(), String> {
+            let mut client = if auth_required {
+                connect_auth(node.spec.sql_port, password)
+            } else {
+                connect_no_auth(node.spec.sql_port)
+            }
+            .map_err(|error| error.to_string())?;
+            client
+                .simple_query("SET neuralbase_read_consistency = 'leader'")
+                .map_err(|error| error.to_string())?;
+            client
+                .simple_query("SELECT 1")
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        })();
+
+        match probe {
+            Ok(()) => return,
+            Err(error) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "{} never became leader-read-ready; last error: {error}",
+                    node.spec.id
+                );
+                // This probe is read-only and each iteration owns a fresh connection,
+                // so retrying is safe even for historical protocol error paths.
+                thread::sleep(Duration::from_millis(30));
+            }
+        }
+    }
+}
+
 fn wait_auth(node: &mut NodeProcess, password: &str) {
     let deadline = Instant::now() + START_TIMEOUT;
     loop {
@@ -333,6 +373,7 @@ fn process_pitr_exact_target_identity_branch_and_restart() {
     let mut source = NodeProcess::new(source_spec.clone());
     source.start(false, None);
     wait_ready(&mut source, false, "");
+    wait_for_leader_readiness(&mut source, false, "");
     mutate_when_ready(
         &mut source,
         false,
@@ -374,6 +415,7 @@ fn process_pitr_exact_target_identity_branch_and_restart() {
 
     source.start(true, Some(&source_archive));
     wait_ready(&mut source, true, OLD_PASSWORD);
+    wait_for_leader_readiness(&mut source, true, OLD_PASSWORD);
     mutate_when_ready(
         &mut source,
         true,
@@ -450,6 +492,7 @@ fn process_pitr_exact_target_identity_branch_and_restart() {
     let mut recovery = NodeProcess::new(recovery_spec.clone());
     recovery.start(true, Some(&branch_archive));
     wait_ready(&mut recovery, true, OLD_PASSWORD);
+    wait_for_leader_readiness(&mut recovery, true, OLD_PASSWORD);
     assert_eq!(
         read_rows(recovery.spec.sql_port, OLD_PASSWORD),
         expected_target

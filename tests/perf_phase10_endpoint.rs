@@ -139,7 +139,6 @@ fn is_leadership_not_ready(error: &postgres::Error) -> bool {
 
 fn wait_for_leader_readiness(port: u16) {
     let deadline = Instant::now() + START_TIMEOUT;
-    let mut last_error = None;
 
     loop {
         let probe = (|| -> Result<(), String> {
@@ -156,11 +155,9 @@ fn wait_for_leader_readiness(port: u16) {
         match probe {
             Ok(()) => return,
             Err(error) => {
-                last_error = Some(error);
                 assert!(
                     Instant::now() < deadline,
-                    "endpoint never became leader-read-ready before setup; last error: {}",
-                    last_error.as_deref().unwrap_or("unknown")
+                    "endpoint never became leader-read-ready before setup; last error: {error}"
                 );
                 // The probe is read-only and each attempt owns a fresh connection.
                 // This is intentionally safe even against historical server revisions
