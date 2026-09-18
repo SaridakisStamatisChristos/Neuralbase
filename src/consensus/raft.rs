@@ -1493,6 +1493,12 @@ impl<T: Transport> RaftNode<T> {
         let mut targets = self.effective_membership.replication_targets();
         targets.remove(&self.id);
         for peer in targets {
+            // A persistent socket can remain locally writable after a Kubernetes
+            // pod incarnation disappears. A fresh leader must therefore start a
+            // fresh transport epoch before its first AppendEntries; otherwise it
+            // can emit heartbeats forever into a half-open session and never see
+            // the rejection needed to backtrack next_index for a restarted voter.
+            self.transport.reset_peer(&peer).await;
             next_index.insert(peer.clone(), next);
             match_index.insert(peer, 0);
         }

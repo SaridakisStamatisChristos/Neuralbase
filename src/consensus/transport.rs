@@ -30,6 +30,12 @@ use crate::consensus::rpc::{NodeId, RaftMessage};
 pub trait Transport: Send + Sync + 'static {
     async fn send(&self, to: &NodeId, msg: RaftMessage);
     async fn recv(&self) -> Option<(NodeId, RaftMessage)>;
+
+    /// Drop any cached outbound session for a peer. Raft leadership changes are
+    /// transport epoch boundaries: a newly elected leader must not inherit a
+    /// half-open TCP/TLS socket that still accepts local writes after the remote
+    /// process incarnation has disappeared.
+    async fn reset_peer(&self, _to: &NodeId) {}
 }
 
 pub type ChannelBus = Arc<Mutex<HashMap<NodeId, mpsc::Sender<(NodeId, RaftMessage)>>>>;
@@ -202,6 +208,12 @@ impl Transport for TcpTransport {
 
     async fn recv(&self) -> Option<(NodeId, RaftMessage)> {
         self.rx.lock().await.recv().await
+    }
+
+    async fn reset_peer(&self, to: &NodeId) {
+        if self.writers.lock().await.remove(to).is_some() {
+            tracing::debug!(peer = %to, "reset Raft TCP peer transport epoch");
+        }
     }
 }
 
@@ -449,6 +461,12 @@ impl Transport for TlsTcpTransport {
 
     async fn recv(&self) -> Option<(NodeId, RaftMessage)> {
         self.rx.lock().await.recv().await
+    }
+
+    async fn reset_peer(&self, to: &NodeId) {
+        if self.writers.lock().await.remove(to).is_some() {
+            tracing::debug!(peer = %to, "reset Raft TLS peer transport epoch");
+        }
     }
 }
 

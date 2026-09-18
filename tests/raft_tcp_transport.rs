@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use std::net::TcpListener as StdTcpListener;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::AsyncReadExt;
+use tokio::net::TcpListener;
 use tokio::time::timeout;
 
 fn reserve_addr() -> String {
@@ -136,5 +138,84 @@ async fn critical_vote_survives_initial_connection_failure() {
             assert_eq!(args.last_log_term, 8);
         }
         other => panic!("unexpected delayed message at n2: {other:?}"),
+    }
+}
+
+async fn read_envelope(stream: &mut tokio::net::TcpStream) -> (String, RaftMessage) {
+    let mut len = [0u8; 4];
+    stream
+        .read_exact(&mut len)
+        .await
+        .expect("read frame length");
+    let mut payload = vec![0u8; u32::from_be_bytes(len) as usize];
+    stream
+        .read_exact(&mut payload)
+        .await
+        .expect("read frame payload");
+    serde_json::from_slice(&payload).expect("decode Raft envelope")
+}
+
+#[tokio::test]
+async fn reset_peer_replaces_writable_but_unresponsive_session() {
+    let addr1 = reserve_addr();
+    let addr2 = reserve_addr();
+
+    let sink = TcpListener::bind(&addr2).await.expect("bind peer sink");
+    let mut peers1 = HashMap::new();
+    peers1.insert("n2".to_string(), addr2.clone());
+    let t1 = Arc::new(
+        TcpTransport::listen_with_peers("n1".to_string(), &addr1, peers1)
+            .await
+            .expect("listen n1"),
+    );
+
+    t1.send(
+        &"n2".to_string(),
+        RaftMessage::RequestVote(RequestVoteArgs {
+            term: 11,
+            candidate_id: "n1".to_string(),
+            last_log_index: 4,
+            last_log_term: 10,
+        }),
+    )
+    .await;
+    let (mut stale, _) = timeout(Duration::from_secs(2), sink.accept())
+        .await
+        .expect("initial connection timeout")
+        .expect("accept initial connection");
+    let (_, first) = timeout(Duration::from_secs(2), read_envelope(&mut stale))
+        .await
+        .expect("initial envelope timeout");
+    match first {
+        RaftMessage::RequestVote(args) => assert_eq!(args.term, 11),
+        other => panic!("unexpected initial message: {other:?}"),
+    }
+
+    t1.reset_peer(&"n2".to_string()).await;
+    t1.send(
+        &"n2".to_string(),
+        RaftMessage::RequestVote(RequestVoteArgs {
+            term: 12,
+            candidate_id: "n1".to_string(),
+            last_log_index: 5,
+            last_log_term: 12,
+        }),
+    )
+    .await;
+
+    let (mut fresh, _) = timeout(Duration::from_secs(2), sink.accept())
+        .await
+        .expect("fresh connection timeout")
+        .expect("accept fresh connection");
+    let (from, second) = timeout(Duration::from_secs(2), read_envelope(&mut fresh))
+        .await
+        .expect("fresh envelope timeout");
+    assert_eq!(from, "n1");
+    match second {
+        RaftMessage::RequestVote(args) => {
+            assert_eq!(args.term, 12);
+            assert_eq!(args.last_log_index, 5);
+        }
+        other => panic!("unexpected fresh message: {other:?}"),
     }
 }
