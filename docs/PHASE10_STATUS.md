@@ -1,6 +1,6 @@
 # Phase 10 status — optimizer, executor and distributed performance
 
-Phase 10 starts from canonical `main` commit `e8a4f1c7f5865c6e04f51f6e0658f0c2c81475db` (Phase-9 merge). Post-merge CI run `#409` / `34943456742` completed successfully on that exact SHA.
+Phase 10 is closed. It started from canonical `main` commit `e8a4f1c7f5865c6e04f51f6e0658f0c2c81475db` (Phase-9 merge), whose post-merge CI run `#409` / `34943456742` completed successfully.
 
 ## Correctness boundary
 
@@ -82,10 +82,10 @@ Those remain future work only when reproducible profiling selects them without w
 - [x] Performance profile and Phase-10 status synchronized.
 - [x] Final measured code head full CI green.
 - [x] Final measured code head exact-base/head benchmark green.
-- [ ] Documentation-synchronization head full CI green.
-- [ ] Documentation-synchronization head benchmark green.
-- [ ] PR #16 marked ready and merged.
-- [ ] Resulting `main` SHA recorded.
-- [ ] Resulting `main` push CI green.
+- [x] Documentation-synchronization head full CI green: CI #436 / `34997777023` on `9b47436d709d2b150f5b65f480bd90196149c012`.
+- [x] Documentation-synchronization head benchmark green: Phase-10 benchmark #24 / `34997777013` on the same head.
+- [x] PR #16 marked ready and merged.
+- [x] Resulting `main` merge SHA recorded: `28fa82541311dbbc40db0ae2ab924c2e6234b638`.
+- [x] Resulting `main` push CI green: CI #437 / `35002389815`.
 
-Phase 10 is **not closed** until the remaining merge/post-merge gates above are complete.
+Phase 10 is **closed**. Later Phase-11 work builds on this measured query-path baseline; the numbers above remain historical evidence for their exact commits and runner topology.

@@ -100,6 +100,62 @@ Phase 9 combines codec, storage, replay and real-process evidence instead of inf
 
 The Phase-9 closure gate additionally runs `cargo test` under the repository’s actual default, `tls`, `simd`, and combined `tls simd` feature surfaces, full all-feature Clippy with warnings denied, `make test`, and the targeted real-process PITR suite. Timestamp-target recovery and automatic DR are intentionally outside this evidence.
 
+## Phase 11 three-voter characterization
+
+`tests/perf_phase11_durable_cluster.rs` starts three production server processes
+with independent RocksDB directories and TCP Raft connections on one host. The
+ordinary test gate runs a small smoke test that deliberately probes before DDL
+exists, waits for all replicas, exercises all three read modes concurrently, and
+checks every acknowledged warmup/measured write on every voter. Regression tests
+also cover worker startup failure, narrow catch-up error classification, and
+incorrect/duplicate replicated rows.
+
+Run the smoke/regression tests and then the optional release characterization:
+
+```bash
+cargo test --test perf_phase11_durable_cluster --release --locked -- --nocapture
+PHASE11_RESULTS_DIR=/tmp/phase11-results cargo test --test perf_phase11_durable_cluster --release --locked three_durable_voters_dataset_and_concurrency_characterization -- --ignored --nocapture --test-threads=1
+```
+
+The harness uses the already-locked `tokio-postgres` client directly so connection
+handshakes, queries, catch-up and concurrent cases have cancellable deadlines.
+Connection-driver tasks and worker tasks are aborted on cancellation, and owned
+server processes are stopped on exit, including partial startup failure. Timed
+operations are never retried; leadership turnover, ambiguous mutation outcomes,
+unexpected SQL errors and incorrect values fail the run. Only initial discovery
+retries known pre-submission leadership states. Replica convergence tolerates
+`57P03`, the exact missing-table `42P01` message for the expected setup table,
+and a valid subset of the expected rows. Other binder errors sharing `42P01`
+are fatal. The current leader remains pinned during each scenario.
+
+All query results are checked. Every client executes five untimed warmups before
+the shared start signal; throughput timing begins before release and ends at the
+last worker completion. Reads use 100 sequential samples or 64 samples per
+concurrent client, and writes use 16 measured samples per concurrent client.
+These are bounded CI characterization samples, not a stable production p99 or
+saturation study. Both warmup and measured writes are verified on all voters.
+
+Dataset sizes are 100/1,000/10,000/25,000 rows, seeded in 256-row batches. These
+read predicates currently use scan-and-filter execution, not an indexed point
+lookup. Dataset size and retained Raft history both change across phases; this
+suite alone cannot attribute a slowdown to either one. Setup batching changes
+log history relative to the earlier single-row seed experiment. Strong reads
+continue to use the existing replicated-log barrier. No production consensus,
+storage, acknowledgement or read-consistency behavior is modified by the harness.
+
+The unrelated-table experiment starts a fresh cluster containing only its
+four-row target table, then adds 16 and 64 unrelated tables. Its zero-table
+baseline therefore excludes the dataset and concurrent-write tables.
+
+The dedicated workflow checks formatting, runs smoke/regression tests, and then
+runs the ignored characterization. Schema-2 JSON records report actual warmup
+and measured counts; a completion record and 27 distinct results are required.
+Failed/incomplete runs must not be treated as successful measurements. The
+workflow captures stderr and preserves each scenario's node logs under
+`PHASE11_RESULTS_DIR`, including on failure. Without that optional directory,
+node logs are temporary and bounded tails are printed for failing scenarios.
+These results are for three voters on one runner, not three independent hosts.
+
 ## Confidence gate
 
 `tests/confidence_yaml.rs` protects the machine-readable distributed boundary. `tests/sql_compatibility_profile.rs` separately locks the Phase-8 SQL anti-overclaim boundary. Production readiness, production HA, HPA safety, arbitrary-follower linearizable reads, automatic strong-read routing, timestamp-target PITR, automatic DR and full PostgreSQL compatibility remain false/not claimed; exact committed-index PITR is the bounded Phase-9 claim.

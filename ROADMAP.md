@@ -1,6 +1,6 @@
 # NeuralBase roadmap
 
-NeuralBase is a pre-1.0 experimental SQL engine. The distributed correctness baseline now includes replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated Raft membership changes, strongly consistent replicated SCRAM identity, the tested Phase-5 operator backup/restore/fresh-cluster recovery model, explicit Phase-6 read-consistency modes, the tested opt-in Phase-7 managed membership reconciliation profile, and the bounded Phase-8 SQL semantic/compatibility profile.
+NeuralBase is a pre-1.0 experimental SQL engine. The distributed correctness baseline includes replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated Raft membership changes, strongly consistent replicated SCRAM identity, the tested operator backup/restore/fresh-cluster recovery model, explicit read-consistency modes, managed membership reconciliation, the bounded SQL semantic/compatibility profile, and the completed Phase-10/11 evidence-driven performance work on persistent query routing, durable Raft persistence, write pipelining and peer transport.
 
 This is an engineering roadmap, not a release-date commitment.
 
@@ -131,6 +131,32 @@ The Phase-8 implementation candidate passed the full code-only PR-head CI gate i
 
 Phase 8 does **not** claim full PostgreSQL compatibility, distributed SQL transactions, arbitrary OID/type inference, binary row output, complete RowDescription metadata, full extended-protocol failed-transaction/error state, exact PostgreSQL NUMERIC/DECIMAL semantics, general constraint enforcement, locale-aware collations, broad timestamp/timezone semantics, or general named/frame window support.
 
+## Completed Phase 10 — evidence-driven query-path performance
+
+- [x] Reproducible exact-base/head characterization for parser/binder/planner, storage/executor, endpoint, distributed, memory and lifecycle scenarios.
+- [x] Persistent simple scans bypass unrelated synthetic TPC-H fixture construction while preserving the historical built-in-table authority.
+- [x] General persistent-only queries use a narrow persistent catalog first and fall back to the historical TPC-H-first route only on `TableNotFound`.
+- [x] Dedicated correctness guards cover persistent-only parity, mixed/TPC-H fallback, built-in-name collisions and fail-closed fallback boundaries.
+- [x] Same-run endpoint evidence recorded in [`docs/PHASE10_PROFILE.md`](docs/PHASE10_PROFILE.md), including the general persistent self-join reduction from roughly 740.61 ms p50 to 40.99 ms p50 on the measured Phase-10 environment.
+- [x] Phase-10 documentation synchronization, PR #16 merge, and post-merge `main` CI completed successfully.
+
+Phase 10 deliberately did not weaken quorum/apply acknowledgement, read consistency, snapshot/recovery, backup/PITR, membership or identity semantics. Its hosted-runner measurements are evidence for the recorded commits/topology, not universal latency guarantees.
+
+## Completed Phase 11 — durable distributed performance and Raft transport/liveness
+
+- [x] Incremental RocksDB Raft persistence replaces whole-log rewrite behavior while retaining migration/read compatibility.
+- [x] Replicated-write proposal locking is narrowed so quorum/apply waiting can pipeline outside the serialized proposal-critical section.
+- [x] Persistent ordered per-peer TCP/TLS writer actors use `TCP_NODELAY`, reconnect/retry semantics and leadership-bound transport epoch resets.
+- [x] Per-process transport incarnation fencing detects logical-node restarts, invalidates stale reverse sessions and rejects retired-incarnation traffic.
+- [x] Durable state-machine apply frontier is restored into Raft restart state without unsafe replay or premature serving readiness.
+- [x] Election/transfer term fencing and randomized bounded campaign-retry deadlines prevent stale-reply promotion and deterministic split-vote phase locking.
+- [x] Persistent-only general-query materialization remains effectively independent of unrelated-table count in the measured noise scenarios.
+- [x] Three-durable-voter same-host characterization completed 27/27 benchmark cases with zero measured failures on head `4fb3303534bb27c15394f2a7952207b857fad2dd`.
+- [x] Replicated INSERT characterization reached approximately 1,436 ops/s at one client and 3,561 ops/s at eight clients in that exact CI topology.
+- [x] Full core, lint, confidence, adversarial, PostgreSQL reference, deployment-manifest and real guarded-kind membership lifecycle gates passed in CI #503 before PR #20 merged as `dcf10d366e4ef5ee468f24e191a97be8b10acb1e`.
+
+Phase 11 does not establish production capacity, multi-host latency, automatic strong-read routing, ReadIndex/lease semantics, group commit, snapshot streaming/compression or a production-HA claim.
+
 ## P1 — remaining SQL compatibility depth
 
 Continue only with executable evidence and without weakening replicated-state safety:
@@ -146,20 +172,20 @@ Continue only with executable evidence and without weakening replicated-state sa
 
 See [SQL support](docs/SQL_SUPPORT.md#client-and-sql-limitations).
 
-## P2 — optimizer and execution performance
+## P2 — remaining optimizer, execution and distributed performance
 
 Only after lifecycle safety remains intact:
 
-- Raft batching/pipelining and persistent peer connections;
-- group commit/apply batching;
+- Raft batching/group commit beyond the current pipelined proposal path;
+- apply batching where acknowledgement and durable-apply semantics remain explicit;
 - snapshot streaming/compression;
 - optional ReadIndex/lease optimization for the strong-read contract;
 - integrate the library ONNX optimizer with the live SQL planner only with end-to-end correctness/performance evidence;
 - index access/predicate pushdown;
 - cost model calibration, spills and memory accounting;
-- reproducible write/read/failover/snapshot throughput/latency measurement.
+- multi-host, longer-duration and hardware-controlled write/read/failover/snapshot characterization beyond the current same-host CI profile.
 
-Performance work must not weaken acknowledgement, read-consistency, snapshot, membership, identity, recovery, managed-reconciliation or SQL fail-closed semantics.
+Persistent peer connections, write pipelining and reproducible same-host three-voter characterization are completed Phase-11 capabilities. Future performance work must not weaken acknowledgement, read-consistency, snapshot, membership, identity, recovery, managed-reconciliation or SQL fail-closed semantics.
 
 ## P2 — production hardening
 

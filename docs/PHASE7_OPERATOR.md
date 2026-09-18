@@ -245,6 +245,12 @@ Readiness executes `neuralbase-operator ready /config/node.json` and requires a
 serving, finalized voter. Learners remain discoverable for Raft through the
 headless Service while the SQL Service excludes them. Reconciliation observes
 initializing/unreachable deployment objects separately from ready/applied members.
+Management exchanges retain their Pod-UID and termination fences. For an admitted
+learner in stable committed membership with no pending transition, reconciliation
+preserves Raft readiness independently of the voter-only Kubernetes probe; the
+planner still requires applied and matched indexes at the authority frontier.
+After promotion, both Raft and Kubernetes readiness are required. The immutable
+learner bootstrap flag does not exempt a promoted voter from this requirement.
 A committed tombstone must precede scaling the retired StatefulSet to zero;
 reconciliation waits for its pod to disappear. The StatefulSet, ConfigMap and PVC
 remain retained. PVC quota failures and partial object creation preserve the

@@ -137,6 +137,37 @@ fn is_leadership_not_ready(error: &postgres::Error) -> bool {
         .is_some_and(|db| matches!(db.code().code(), "25006" | "57P03"))
 }
 
+fn wait_for_leader_readiness(port: u16) {
+    let deadline = Instant::now() + START_TIMEOUT;
+
+    loop {
+        let probe = (|| -> Result<(), String> {
+            let mut client = connect(port).map_err(|error| error.to_string())?;
+            client
+                .simple_query("SET neuralbase_read_consistency = 'leader'")
+                .map_err(|error| error.to_string())?;
+            client
+                .simple_query("SELECT 1")
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        })();
+
+        match probe {
+            Ok(()) => return,
+            Err(error) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "endpoint never became leader-read-ready before setup; last error: {error}"
+                );
+                // The probe is read-only and each attempt owns a fresh connection.
+                // This is intentionally safe even against historical server revisions
+                // whose transient leader error path could desynchronize that connection.
+                std::thread::sleep(Duration::from_millis(30));
+            }
+        }
+    }
+}
+
 fn execute_setup_mutation_when_leader(port: u16, sql: &str, description: &str) {
     let deadline = Instant::now() + START_TIMEOUT;
     loop {
@@ -247,6 +278,7 @@ fn phase10_real_endpoint_characterization() {
     let metrics_port = reserve_port(&mut used);
     let mut process = start_node(&root, sql_port, raft_port, metrics_port);
     wait_ready(&mut process, sql_port);
+    wait_for_leader_readiness(sql_port);
 
     // Setup retries are restricted to connection failures before submission and
     // explicit fail-closed leadership errors. Each attempt uses a fresh wire
