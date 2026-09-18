@@ -39,197 +39,189 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-
+          
           transport = Path("src/consensus/transport.rs")
           text = transport.read_text()
-
+          
           old_trait = """pub trait Transport: Send + Sync + 'static {
-    async fn send(&self, to: &NodeId, msg: RaftMessage);
-    async fn recv(&self) -> Option<(NodeId, RaftMessage)>;
-}
-"""
+              async fn send(&self, to: &NodeId, msg: RaftMessage);
+              async fn recv(&self) -> Option<(NodeId, RaftMessage)>;
+          }
+          """
           new_trait = """pub trait Transport: Send + Sync + 'static {
-    async fn send(&self, to: &NodeId, msg: RaftMessage);
-    async fn recv(&self) -> Option<(NodeId, RaftMessage)>;
-
-    /// Drop any cached outbound session for a peer. Raft leadership changes are
-    /// transport epoch boundaries: a newly elected leader must not inherit a
-    /// half-open TCP/TLS socket that still accepts local writes after the remote
-    /// process incarnation has disappeared.
-    async fn reset_peer(&self, _to: &NodeId) {}
-}
-"""
+              async fn send(&self, to: &NodeId, msg: RaftMessage);
+              async fn recv(&self) -> Option<(NodeId, RaftMessage)>;
+          
+              /// Drop any cached outbound session for a peer. Raft leadership changes are
+              /// transport epoch boundaries: a newly elected leader must not inherit a
+              /// half-open TCP/TLS socket that still accepts local writes after the remote
+              /// process incarnation has disappeared.
+              async fn reset_peer(&self, _to: &NodeId) {}
+          }
+          """
           if text.count(old_trait) != 1:
               raise SystemExit(f"transport trait anchor count={text.count(old_trait)}")
           text = text.replace(old_trait, new_trait, 1)
-
+          
           old_tcp = """    async fn recv(&self) -> Option<(NodeId, RaftMessage)> {
-        self.rx.lock().await.recv().await
-    }
-}
-
-async fn connect_tcp"""
+                  self.rx.lock().await.recv().await
+              }
+          }
+          
+          async fn connect_tcp"""
           new_tcp = """    async fn recv(&self) -> Option<(NodeId, RaftMessage)> {
-        self.rx.lock().await.recv().await
-    }
-
-    async fn reset_peer(&self, to: &NodeId) {
-        if self.writers.lock().await.remove(to).is_some() {
-            tracing::debug!(peer = %to, "reset Raft TCP peer transport epoch");
-        }
-    }
-}
-
-async fn connect_tcp"""
+                  self.rx.lock().await.recv().await
+              }
+          
+              async fn reset_peer(&self, to: &NodeId) {
+                  if self.writers.lock().await.remove(to).is_some() {
+                      tracing::debug!(peer = %to, "reset Raft TCP peer transport epoch");
+                  }
+              }
+          }
+          
+          async fn connect_tcp"""
           if text.count(old_tcp) != 1:
               raise SystemExit(f"tcp impl anchor count={text.count(old_tcp)}")
           text = text.replace(old_tcp, new_tcp, 1)
-
+          
           old_tls = """    async fn recv(&self) -> Option<(NodeId, RaftMessage)> {
-        self.rx.lock().await.recv().await
-    }
-}
-
-#[cfg(feature = "tls")]
-async fn connect_tls"""
+                  self.rx.lock().await.recv().await
+              }
+          }
+          
+          #[cfg(feature = "tls")]
+          async fn connect_tls"""
           new_tls = """    async fn recv(&self) -> Option<(NodeId, RaftMessage)> {
-        self.rx.lock().await.recv().await
-    }
-
-    async fn reset_peer(&self, to: &NodeId) {
-        if self.writers.lock().await.remove(to).is_some() {
-            tracing::debug!(peer = %to, "reset Raft TLS peer transport epoch");
-        }
-    }
-}
-
-#[cfg(feature = "tls")]
-async fn connect_tls"""
+                  self.rx.lock().await.recv().await
+              }
+          
+              async fn reset_peer(&self, to: &NodeId) {
+                  if self.writers.lock().await.remove(to).is_some() {
+                      tracing::debug!(peer = %to, "reset Raft TLS peer transport epoch");
+                  }
+              }
+          }
+          
+          #[cfg(feature = "tls")]
+          async fn connect_tls"""
           if text.count(old_tls) != 1:
               raise SystemExit(f"tls impl anchor count={text.count(old_tls)}")
           text = text.replace(old_tls, new_tls, 1)
           transport.write_text(text)
-
+          
           raft = Path("src/consensus/raft.rs")
           text = raft.read_text()
           old_loop = """        for peer in targets {
-            next_index.insert(peer.clone(), next);
-            match_index.insert(peer, 0);
-        }
-"""
+                      next_index.insert(peer.clone(), next);
+                      match_index.insert(peer, 0);
+                  }
+          """
           new_loop = """        for peer in targets {
-            // A persistent socket can remain locally writable after a Kubernetes
-            // pod incarnation disappears. A fresh leader must therefore start a
-            // fresh transport epoch before its first AppendEntries; otherwise it
-            // can emit heartbeats forever into a half-open session and never see
-            // the rejection needed to backtrack next_index for a restarted voter.
-            self.transport.reset_peer(&peer).await;
-            next_index.insert(peer.clone(), next);
-            match_index.insert(peer, 0);
-        }
-"""
+                      // A persistent socket can remain locally writable after a Kubernetes
+                      // pod incarnation disappears. A fresh leader must therefore start a
+                      // fresh transport epoch before its first AppendEntries; otherwise it
+                      // can emit heartbeats forever into a half-open session and never see
+                      // the rejection needed to backtrack next_index for a restarted voter.
+                      self.transport.reset_peer(&peer).await;
+                      next_index.insert(peer.clone(), next);
+                      match_index.insert(peer, 0);
+                  }
+          """
           if text.count(old_loop) != 1:
               raise SystemExit(f"leader tracking anchor count={text.count(old_loop)}")
           raft.write_text(text.replace(old_loop, new_loop, 1))
-
+          
           test = Path("tests/raft_tcp_transport.rs")
           text = test.read_text()
-          old_import = """use tokio::time::timeout;
-"""
-          new_import = """use tokio::io::AsyncReadExt;
-use tokio::net::TcpListener;
-use tokio::time::timeout;
-"""
+          old_import = "use tokio::time::timeout;\n"
+          new_import = "use tokio::io::AsyncReadExt;\nuse tokio::net::TcpListener;\nuse tokio::time::timeout;\n"
           if text.count(old_import) != 1:
               raise SystemExit(f"test import anchor count={text.count(old_import)}")
           text = text.replace(old_import, new_import, 1)
-
+          
           addition = r'''
-
-async fn read_envelope(stream: &mut tokio::net::TcpStream) -> (String, RaftMessage) {
-    let mut len = [0u8; 4];
-    stream.read_exact(&mut len).await.expect("read frame length");
-    let mut payload = vec![0u8; u32::from_be_bytes(len) as usize];
-    stream
-        .read_exact(&mut payload)
-        .await
-        .expect("read frame payload");
-    serde_json::from_slice(&payload).expect("decode Raft envelope")
-}
-
-#[tokio::test]
-async fn reset_peer_replaces_writable_but_unresponsive_session() {
-    let addr1 = reserve_addr();
-    let addr2 = reserve_addr();
-
-    let sink = TcpListener::bind(&addr2).await.expect("bind peer sink");
-    let mut peers1 = HashMap::new();
-    peers1.insert("n2".to_string(), addr2.clone());
-    let t1 = Arc::new(
-        TcpTransport::listen_with_peers("n1".to_string(), &addr1, peers1)
-            .await
-            .expect("listen n1"),
-    );
-
-    // Establish a connection that remains open and writable but will never send
-    // a Raft reply. This models a stale peer session whose remote incarnation is
-    // no longer useful even though the local kernel has not produced a write error.
-    t1.send(
-        &"n2".to_string(),
-        RaftMessage::RequestVote(RequestVoteArgs {
-            term: 11,
-            candidate_id: "n1".to_string(),
-            last_log_index: 4,
-            last_log_term: 10,
-        }),
-    )
-    .await;
-    let (mut stale, _) = timeout(Duration::from_secs(2), sink.accept())
-        .await
-        .expect("initial connection timeout")
-        .expect("accept initial connection");
-    let (_, first) = timeout(Duration::from_secs(2), read_envelope(&mut stale))
-        .await
-        .expect("initial envelope timeout");
-    match first {
-        RaftMessage::RequestVote(args) => assert_eq!(args.term, 11),
-        other => panic!("unexpected initial message: {other:?}"),
-    }
-
-    // Leadership transition: invalidate the cached writer even though its TCP
-    // socket has not failed. The next send must create a distinct connection.
-    t1.reset_peer(&"n2".to_string()).await;
-    t1.send(
-        &"n2".to_string(),
-        RaftMessage::RequestVote(RequestVoteArgs {
-            term: 12,
-            candidate_id: "n1".to_string(),
-            last_log_index: 5,
-            last_log_term: 12,
-        }),
-    )
-    .await;
-
-    let (mut fresh, _) = timeout(Duration::from_secs(2), sink.accept())
-        .await
-        .expect("fresh connection timeout")
-        .expect("accept fresh connection");
-    let (from, second) = timeout(Duration::from_secs(2), read_envelope(&mut fresh))
-        .await
-        .expect("fresh envelope timeout");
-    assert_eq!(from, "n1");
-    match second {
-        RaftMessage::RequestVote(args) => {
-            assert_eq!(args.term, 12);
-            assert_eq!(args.last_log_index, 5);
-        }
-        other => panic!("unexpected fresh message: {other:?}"),
-    }
-}
-'''
+          
+          async fn read_envelope(stream: &mut tokio::net::TcpStream) -> (String, RaftMessage) {
+              let mut len = [0u8; 4];
+              stream.read_exact(&mut len).await.expect("read frame length");
+              let mut payload = vec![0u8; u32::from_be_bytes(len) as usize];
+              stream
+                  .read_exact(&mut payload)
+                  .await
+                  .expect("read frame payload");
+              serde_json::from_slice(&payload).expect("decode Raft envelope")
+          }
+          
+          #[tokio::test]
+          async fn reset_peer_replaces_writable_but_unresponsive_session() {
+              let addr1 = reserve_addr();
+              let addr2 = reserve_addr();
+          
+              let sink = TcpListener::bind(&addr2).await.expect("bind peer sink");
+              let mut peers1 = HashMap::new();
+              peers1.insert("n2".to_string(), addr2.clone());
+              let t1 = Arc::new(
+                  TcpTransport::listen_with_peers("n1".to_string(), &addr1, peers1)
+                      .await
+                      .expect("listen n1"),
+              );
+          
+              t1.send(
+                  &"n2".to_string(),
+                  RaftMessage::RequestVote(RequestVoteArgs {
+                      term: 11,
+                      candidate_id: "n1".to_string(),
+                      last_log_index: 4,
+                      last_log_term: 10,
+                  }),
+              )
+              .await;
+              let (mut stale, _) = timeout(Duration::from_secs(2), sink.accept())
+                  .await
+                  .expect("initial connection timeout")
+                  .expect("accept initial connection");
+              let (_, first) = timeout(Duration::from_secs(2), read_envelope(&mut stale))
+                  .await
+                  .expect("initial envelope timeout");
+              match first {
+                  RaftMessage::RequestVote(args) => assert_eq!(args.term, 11),
+                  other => panic!("unexpected initial message: {other:?}"),
+              }
+          
+              t1.reset_peer(&"n2".to_string()).await;
+              t1.send(
+                  &"n2".to_string(),
+                  RaftMessage::RequestVote(RequestVoteArgs {
+                      term: 12,
+                      candidate_id: "n1".to_string(),
+                      last_log_index: 5,
+                      last_log_term: 12,
+                  }),
+              )
+              .await;
+          
+              let (mut fresh, _) = timeout(Duration::from_secs(2), sink.accept())
+                  .await
+                  .expect("fresh connection timeout")
+                  .expect("accept fresh connection");
+              let (from, second) = timeout(Duration::from_secs(2), read_envelope(&mut fresh))
+                  .await
+                  .expect("fresh envelope timeout");
+              assert_eq!(from, "n1");
+              match second {
+                  RaftMessage::RequestVote(args) => {
+                      assert_eq!(args.term, 12);
+                      assert_eq!(args.last_log_index, 5);
+                  }
+                  other => panic!("unexpected fresh message: {other:?}"),
+              }
+          }
+          '''
           if "reset_peer_replaces_writable_but_unresponsive_session" in text:
               raise SystemExit("peer reset regression already exists")
           test.write_text(text + addition)
+          
           PY
       - name: Format and validate diff
         run: |
