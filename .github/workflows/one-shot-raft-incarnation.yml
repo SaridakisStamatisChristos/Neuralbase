@@ -68,7 +68,7 @@ jobs:
 
           old_tcp_init = """            rx: Arc::new(Mutex::new(rx)),\n            writers: Arc::new(Mutex::new(HashMap::new())),\n            shutdown_tx: Some(shutdown_tx),\n"""
           new_tcp_init = """            rx: Arc::new(Mutex::new(rx)),\n            writers,\n            incarnation: rand::random::<u64>(),\n            peer_incarnations,\n            shutdown_tx: Some(shutdown_tx),\n"""
-          if text.count(old_tcp_init) != 1:
+          if text.count(old_tcp_init) != 2:
               raise SystemExit(f"tcp init anchor count={text.count(old_tcp_init)}")
           text = text.replace(old_tcp_init, new_tcp_init, 1)
 
