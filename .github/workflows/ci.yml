@@ -105,6 +105,9 @@ jobs:
   coverage:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
     env:
       LIBCLANG_PATH: /usr/lib/llvm-18/lib
       ROCKSDB_INCLUDE_DIR: /usr/include
@@ -113,6 +116,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
 
       - name: Reclaim runner disk space
         shell: bash
@@ -219,6 +224,16 @@ jobs:
           print(f"Function coverage: {functions:.2f}%")
           print(f"Region coverage: {regions:.2f}%")
           PY
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          use_oidc: true
+          files: coverage/coverage.xml
+          disable_search: true
+          fail_ci_if_error: true
+          flags: rust
+          name: neuralbase-rust
 
       - name: Upload standard coverage artifacts
         uses: actions/upload-artifact@v4
