@@ -14,6 +14,8 @@
 - PostgreSQL wire endpoint with SCRAM authentication support.
 - Parser/binder plus vectorized and row-oriented execution paths.
 - MVCC, HLC timestamps, RocksDB persistence and bounded general execution.
+- Phase-10 evidence-driven persistent-query routing that avoids unrelated synthetic TPC-H fixture construction while preserving historical fallback semantics.
+- Phase-11 distributed-performance path with incremental RocksDB Raft persistence, pipelined replicated-write proposal locking, persistent ordered TCP/TLS peer writers with `TCP_NODELAY`, process-incarnation fencing, durable apply-frontier recovery and randomized campaign retry deadlines.
 - Deterministic replicated persistent table `CREATE`, `DROP`, `INSERT`, `UPDATE`, and `DELETE`.
 - Leader-side concrete `UPDATE`/`DELETE` materialization and follower write rejection.
 - Raft acknowledgement only after quorum commit and confirmed durable state-machine apply.
@@ -32,6 +34,19 @@
 - Phase-8 fail-closed DML/DDL/window boundaries, exactly-one-statement request handling, and explicit unsupported SQL transaction blocks.
 - Bounded typed extended-protocol parameters with NULL/text/selected binary scalar encodings, statement parameter descriptions, deterministic mutation materialization and real Rust `postgres` client evidence.
 - Docker Compose, Kubernetes StatefulSet and Helm development deployments.
+
+## Performance evidence
+
+Performance claims are scoped to the exact benchmark commit and runner topology. On Phase-11 head `4fb3303534bb27c15394f2a7952207b857fad2dd`, the GitHub-hosted same-host three-durable-voter characterization completed 27/27 cases with zero failed measured operations.
+
+| Scenario | p50 | p95 | Throughput |
+| --- | ---: | ---: | ---: |
+| Replicated INSERT, 1 client | 0.704 ms | 0.731 ms | 1,436 ops/s |
+| Replicated INSERT, 8 clients | 2.168 ms | 2.993 ms | 3,561 ops/s |
+| Replicated INSERT, 32 clients | 10.131 ms | 14.253 ms | 3,041 ops/s |
+| Replicated INSERT, 64 clients | 25.150 ms | 30.750 ms | 2,538 ops/s |
+
+The persistent-only general-query route also remained effectively flat as unrelated catalog noise increased: approximately 0.255 ms p50 with 0 unrelated tables, 0.282 ms with 16, and 0.276 ms with 64. These are reproducible CI characterization results on one same-host topology, **not** production-capacity, multi-host or hardware-independent throughput claims. See [Phase-10 performance evidence](docs/PHASE10_PROFILE.md) and the checked-in Phase-11 durable benchmark harness for the measurement boundaries.
 
 ## Quick start
 
@@ -152,7 +167,7 @@ make tpch-correctness
 make sql-differential
 ```
 
-Green CI is evidence for the exact checked commit and tested scopes, not a production-readiness or universal PostgreSQL-compatibility claim. Phase-9 closure additionally requires the synchronized claim/documentation head to pass the repository CI plus the explicit feature-matrix/PITR process gate, followed by a green post-merge `main` run.
+Green CI is evidence for the exact checked commit and tested scopes, not a production-readiness or universal PostgreSQL-compatibility claim. Performance or lifecycle claims should therefore identify the exact measured commit, workflow and topology; historical phase-closure records remain evidence for their bounded scopes rather than evergreen production guarantees.
 
 ## Documentation
 
@@ -166,13 +181,14 @@ Green CI is evidence for the exact checked commit and tested scopes, not a produ
 - [Phase-9 PITR operator guide](docs/PITR.md)
 - [Observability](observability/README.md)
 - [Testing and evidence](docs/TESTING.md)
+- [Phase-10 performance profile](docs/PHASE10_PROFILE.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Roadmap](ROADMAP.md)
 - [Confidence model](CONFIDENCE.md)
 
 ## Project maturity
 
-Phases 1–9 establish the current bounded evidence surface: replicated table mutations, SQL-aware snapshot/recovery, coordinated membership, replicated identity, operator backup/restore/fresh-cluster DR, explicit tested read-consistency modes, opt-in managed process/Kubernetes membership reconciliation, and an executable SQL semantic/compatibility profile with selected PostgreSQL-16 differential and real-client extended-protocol evidence. Phase 9 does not change the project's pre-1.0 status and does not add a production-HA, full PostgreSQL compatibility, SQL transaction, HPA, timestamp-target PITR, automatic DR, or arbitrary-follower linearizability claim.
+Phases 1–11 establish the current bounded evidence surface: replicated table mutations, SQL-aware snapshot/recovery, coordinated membership, replicated identity, operator backup/restore/fresh-cluster DR, explicit tested read-consistency modes, opt-in managed process/Kubernetes membership reconciliation, an executable SQL semantic/compatibility profile, evidence-driven query-path optimization, and a durable three-voter performance pass covering incremental Raft persistence, pipelined writes and persistent/fenced peer transport. The project remains pre-1.0: these phases do not add a production-HA, full PostgreSQL compatibility, SQL transaction, HPA, timestamp-target PITR, automatic DR, arbitrary-follower linearizability, or hardware-independent performance claim.
 
 ## License
 
