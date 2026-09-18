@@ -23,8 +23,187 @@ fn is_builtin_tpch_table(name: &str) -> bool {
         .any(|builtin| builtin.eq_ignore_ascii_case(name))
 }
 
-fn add_non_builtin_persistent_tables(
+fn insert_relation_name(
+    name: &sqlparser::ast::ObjectName,
+    relations: &mut std::collections::BTreeSet<String>,
+) {
+    // NeuralBase's persistent catalog is currently unqualified; preserve the
+    // historical lookup semantics by using the final object identifier.
+    if let Some(identifier) = name.0.last() {
+        relations.insert(identifier.value.to_lowercase());
+    }
+}
+
+fn collect_table_factor_relations(
+    factor: &sqlparser::ast::TableFactor,
+    relations: &mut std::collections::BTreeSet<String>,
+) {
+    match factor {
+        sqlparser::ast::TableFactor::Table { name, .. } => insert_relation_name(name, relations),
+        sqlparser::ast::TableFactor::Derived { subquery, .. } => {
+            collect_query_relations(subquery, relations)
+        }
+        // The current general executor rejects other TableFactor variants, so
+        // there is no supported physical persistent relation hidden in them.
+        _ => {}
+    }
+}
+
+fn collect_select_relations(
+    select: &sqlparser::ast::Select,
+    relations: &mut std::collections::BTreeSet<String>,
+) {
+    for table_with_joins in &select.from {
+        collect_table_factor_relations(&table_with_joins.relation, relations);
+        for join in &table_with_joins.joins {
+            collect_table_factor_relations(&join.relation, relations);
+        }
+    }
+
+    // Correlated/non-correlated subqueries may appear in expressions. The
+    // general executor supports these forms, so include their physical tables
+    // without enabling sqlparser's optional visitor dependency.
+    for item in &select.projection {
+        match item {
+            sqlparser::ast::SelectItem::UnnamedExpr(expr)
+            | sqlparser::ast::SelectItem::ExprWithAlias { expr, .. } => {
+                collect_expr_relations(expr, relations)
+            }
+            _ => {}
+        }
+    }
+    if let Some(expr) = &select.selection {
+        collect_expr_relations(expr, relations);
+    }
+    if let Some(expr) = &select.having {
+        collect_expr_relations(expr, relations);
+    }
+    if let sqlparser::ast::GroupByExpr::Expressions(expressions) = &select.group_by {
+        for expr in expressions {
+            collect_expr_relations(expr, relations);
+        }
+    }
+}
+
+fn collect_expr_relations(
+    expr: &sqlparser::ast::Expr,
+    relations: &mut std::collections::BTreeSet<String>,
+) {
+    use sqlparser::ast::{Expr, FunctionArg, FunctionArgExpr};
+
+    match expr {
+        Expr::Subquery(query)
+        | Expr::Exists { subquery: query, .. }
+        | Expr::InSubquery { subquery: query, .. } => collect_query_relations(query, relations),
+        Expr::BinaryOp { left, right, .. } => {
+            collect_expr_relations(left, relations);
+            collect_expr_relations(right, relations);
+        }
+        Expr::UnaryOp { expr, .. }
+        | Expr::Nested(expr)
+        | Expr::IsNull(expr)
+        | Expr::IsNotNull(expr) => collect_expr_relations(expr, relations),
+        Expr::Between {
+            expr, low, high, ..
+        } => {
+            collect_expr_relations(expr, relations);
+            collect_expr_relations(low, relations);
+            collect_expr_relations(high, relations);
+        }
+        Expr::InList { expr, list, .. } => {
+            collect_expr_relations(expr, relations);
+            for item in list {
+                collect_expr_relations(item, relations);
+            }
+        }
+        Expr::Case {
+            operand,
+            conditions,
+            results,
+            else_result,
+        } => {
+            if let Some(operand) = operand {
+                collect_expr_relations(operand, relations);
+            }
+            for condition in conditions {
+                collect_expr_relations(condition, relations);
+            }
+            for result in results {
+                collect_expr_relations(result, relations);
+            }
+            if let Some(result) = else_result {
+                collect_expr_relations(result, relations);
+            }
+        }
+        Expr::Function(function) => {
+            if let sqlparser::ast::FunctionArguments::List(args) = &function.args {
+                for arg in &args.args {
+                    match arg {
+                        FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
+                        | FunctionArg::Named {
+                            arg: FunctionArgExpr::Expr(expr),
+                            ..
+                        } => collect_expr_relations(expr, relations),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_set_expr_relations(
+    set_expr: &sqlparser::ast::SetExpr,
+    relations: &mut std::collections::BTreeSet<String>,
+) {
+    match set_expr {
+        sqlparser::ast::SetExpr::Select(select) => collect_select_relations(select, relations),
+        sqlparser::ast::SetExpr::Query(query) => collect_query_relations(query, relations),
+        sqlparser::ast::SetExpr::SetOperation { left, right, .. } => {
+            collect_set_expr_relations(left, relations);
+            collect_set_expr_relations(right, relations);
+        }
+        _ => {}
+    }
+}
+
+fn collect_query_relations(
+    query: &sqlparser::ast::Query,
+    relations: &mut std::collections::BTreeSet<String>,
+) {
+    if let Some(with) = &query.with {
+        for cte in &with.cte_tables {
+            collect_query_relations(&cte.query, relations);
+        }
+    }
+    collect_set_expr_relations(&query.body, relations);
+    for order_by in &query.order_by {
+        collect_expr_relations(&order_by.expr, relations);
+    }
+    if let Some(limit) = &query.limit {
+        collect_expr_relations(limit, relations);
+    }
+    if let Some(offset) = &query.offset {
+        collect_expr_relations(&offset.value, relations);
+    }
+}
+
+/// Return the physical relation names referenced by a query, normalized to
+/// lower-case catalog keys. This is deliberately dependency-neutral: Phase 11
+/// does not enable sqlparser's optional visitor feature, keeping Cargo.lock and
+/// the production dependency graph unchanged.
+fn referenced_relation_names(
+    query: &sqlparser::ast::Query,
+) -> std::collections::BTreeSet<String> {
+    let mut relations = std::collections::BTreeSet::new();
+    collect_query_relations(query, &mut relations);
+    relations
+}
+
+fn add_referenced_non_builtin_persistent_tables(
     qcat: &mut QueryCatalog,
+    query: &sqlparser::ast::Query,
     catalog: &InMemoryCatalog,
     storage: Option<&dyn TableScanner>,
 ) {
@@ -32,12 +211,12 @@ fn add_non_builtin_persistent_tables(
         return;
     };
 
-    for schema in catalog.all_tables() {
-        if is_builtin_tpch_table(&schema.name) {
+    for table in referenced_relation_names(query) {
+        if is_builtin_tpch_table(&table) || catalog.get_table(&table).is_none() {
             continue;
         }
-        if let Ok(batch) = scanner.scan_table(&schema.name) {
-            qcat.add_batch(&schema.name, &batch);
+        if let Ok(batch) = scanner.scan_table(&table) {
+            qcat.add_batch(&table, &batch);
         }
     }
 }
@@ -49,12 +228,16 @@ fn execute_select_query_tpch_first(
 ) -> Result<crate::query_executor::QueryResult, crate::query_executor::QueryError> {
     let dataset = generate_tpch_data(0.1);
     let mut qcat = QueryCatalog::from_tpch(&dataset);
-    for schema in catalog.all_tables() {
-        if !qcat.tables.contains_key(&schema.name.to_lowercase()) {
-            if let Some(scanner) = storage {
-                if let Ok(batch) = scanner.scan_table(&schema.name) {
-                    qcat.add_batch(&schema.name, &batch);
-                }
+
+    // Mixed TPC-H/persistent queries still need persistent relations, but only
+    // those actually named by this query.
+    for table in referenced_relation_names(query) {
+        if qcat.tables.contains_key(&table) || catalog.get_table(&table).is_none() {
+            continue;
+        }
+        if let Some(scanner) = storage {
+            if let Ok(batch) = scanner.scan_table(&table) {
+                qcat.add_batch(&table, &batch);
             }
         }
     }
@@ -67,7 +250,7 @@ fn execute_select_query_with_persistent_fast_path(
     storage: Option<&dyn TableScanner>,
 ) -> Result<crate::query_executor::QueryResult, crate::query_executor::QueryError> {
     let mut persistent = QueryCatalog::new();
-    add_non_builtin_persistent_tables(&mut persistent, catalog, storage);
+    add_referenced_non_builtin_persistent_tables(&mut persistent, query, catalog, storage);
 
     match crate::query_executor::execute_select_query(query, &persistent) {
         Err(crate::query_executor::QueryError::TableNotFound(_)) => {
@@ -210,6 +393,39 @@ mod phase10_query_fast_path_tests {
     }
 
     #[test]
+    fn unrelated_persistent_tables_are_not_scanned() {
+        let catalog = user_catalog();
+        for i in 0..64 {
+            catalog.register_table(TableSchema {
+                name: format!("noise_{i}"),
+                columns: vec![ColumnDef {
+                    name: "id".to_string(),
+                    data_type: "BIGINT".to_string(),
+                }],
+            });
+        }
+
+        let sql = query("SELECT id, name FROM phase10_users WHERE id = 1");
+        let scanner = TestScanner::default().with_batch("phase10_users", user_batch());
+        execute_select_query_with_persistent_fast_path(&sql, &catalog, Some(&scanner))
+            .expect("persistent fast path");
+
+        assert_eq!(scanner.calls(), vec!["phase10_users".to_string()]);
+    }
+
+    #[test]
+    fn derived_subquery_relations_are_collected_without_catalog_sweep() {
+        let catalog = user_catalog();
+        let sql = query(
+            "SELECT d.id, d.name FROM (SELECT id, name FROM phase10_users WHERE id = 1) d",
+        );
+        let scanner = TestScanner::default().with_batch("phase10_users", user_batch());
+        execute_select_query_with_persistent_fast_path(&sql, &catalog, Some(&scanner))
+            .expect("derived persistent fast path");
+        assert_eq!(scanner.calls(), vec!["phase10_users".to_string()]);
+    }
+
+    #[test]
     fn tpch_query_falls_back_to_historical_catalog() {
         let catalog = user_catalog();
         let sql = query("SELECT n_name FROM nation WHERE n_nationkey = 1");
@@ -258,7 +474,7 @@ mod phase10_query_fast_path_tests {
             .with_batch("phase10_users", user_batch())
             .with_batch("nation", nation_collision_batch());
         let fast = execute_select_query_with_persistent_fast_path(&sql, &catalog, Some(&scanner))
-            .expect("collision-preserving fallback");
+            .expect("TPC-H fallback");
 
         let reference_scanner = TestScanner::default()
             .with_batch("phase10_users", user_batch())

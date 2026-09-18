@@ -8,7 +8,7 @@ where
     S: AsyncWrite + Unpin,
 {
     let Some(engine) = storage_engine else {
-        write_error_and_ready(
+        write_query_error(
             socket,
             "replicated identity storage is unavailable",
             "55000",
@@ -24,7 +24,7 @@ where
             Ok(false)
         }
         Err(error) => {
-            write_error_and_ready(
+            write_query_error(
                 socket,
                 &format!("replicated identity migration failed: {error}"),
                 "58030",
@@ -46,7 +46,7 @@ where
 
     match error {
         ReadBarrierError::ClusterRequired(mode) => {
-            write_error_and_ready(
+            write_query_error(
                 socket,
                 &format!("{mode} read consistency requires clustered Raft mode"),
                 "0A000",
@@ -54,7 +54,7 @@ where
             .await
         }
         ReadBarrierError::Timeout => {
-            write_error_and_ready(
+            write_query_error(
                 socket,
                 "strong-read authority barrier timed out before quorum/apply confirmation",
                 "57014",
@@ -69,13 +69,13 @@ where
                 None => "strong read requires current Raft leader; leader currently unknown"
                     .to_string(),
             };
-            write_error_and_ready(socket, &message, "25006").await
+            write_query_error(socket, &message, "25006").await
         }
         ReadBarrierError::Gateway(ReplicatedGatewayError::CatchingUp) => {
-            write_error_and_ready(socket, &error.to_string(), "57P03").await
+            write_query_error(socket, &error.to_string(), "57P03").await
         }
         ReadBarrierError::Gateway(_) => {
-            write_error_and_ready(
+            write_query_error(
                 socket,
                 &format!("strong-read consensus barrier failed: {error}"),
                 "58030",
@@ -98,23 +98,23 @@ where
                 Some(leader) => format!("not Raft leader; retry write on leader {leader}"),
                 None => "not Raft leader; leader currently unknown".to_string(),
             };
-            write_error_and_ready(socket, &message, "25006").await
+            write_query_error(socket, &message, "25006").await
         }
         ReplicatedGatewayError::CatchingUp => {
-            write_error_and_ready(socket, &error.to_string(), "57P03").await
+            write_query_error(socket, &error.to_string(), "57P03").await
         }
         ReplicatedGatewayError::UserAlreadyExists(_) => {
-            write_error_and_ready(socket, &error.to_string(), "42710").await
+            write_query_error(socket, &error.to_string(), "42710").await
         }
         ReplicatedGatewayError::UserNotFound(_) => {
-            write_error_and_ready(socket, &error.to_string(), "42704").await
+            write_query_error(socket, &error.to_string(), "42704").await
         }
         ReplicatedGatewayError::IdentityNotInitialized
         | ReplicatedGatewayError::IdentityInitializationConflict => {
-            write_error_and_ready(socket, &error.to_string(), "55000").await
+            write_query_error(socket, &error.to_string(), "55000").await
         }
         _ => {
-            write_error_and_ready(
+            write_query_error(
                 socket,
                 &format!("replicated mutation failed: {error}"),
                 "58030",
@@ -145,6 +145,19 @@ where
         .write_all(&build_command_complete(&format!("SELECT {row_count}")))
         .await?;
     Ok(())
+}
+
+// Query execution is nested inside the frontend protocol state machine. For
+// Simple Query, the outer `Q` handler emits exactly one ReadyForQuery; for the
+// extended protocol, ReadyForQuery is emitted only after Sync. Execution-time
+// errors must therefore never enqueue their own `Z` frame.
+async fn write_query_error<S>(socket: &mut S, message: &str, code: &str) -> std::io::Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
+    socket
+        .write_all(&build_error_response(message, code))
+        .await
 }
 
 async fn write_error_and_ready<S>(socket: &mut S, message: &str, code: &str) -> std::io::Result<()>

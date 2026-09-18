@@ -101,7 +101,8 @@ class KubernetesController(Controller):
         env = {"NEURALBASE_OPERATOR_NODE": "/config/node.json", "NEURALBASE_NODE_ID": node["id"],
                "NEURALBASE_DB_PATH": "/data/db", "NEURALBASE_USERS_FILE": "/data/users.json",
                "NEURALBASE_PEERS": "", "NEURALBASE_RAFT_ADDR": "0.0.0.0:7001", "NEURALBASE_LISTEN_ADDR": "0.0.0.0:5432",
-               "NEURALBASE_METRICS_PORT": "9090", "NEURALBASE_AUTH_REQUIRED": "0", "NEURALBASE_RAFT_TLS": "0"}
+               "NEURALBASE_METRICS_PORT": "9090", "NEURALBASE_RAFT_ELECTION_TIMEOUT_MS": "1000",
+               "NEURALBASE_AUTH_REQUIRED": "0", "NEURALBASE_RAFT_TLS": "0"}
         if self.identity:
             env.update(NEURALBASE_AUTH_REQUIRED="1", NEURALBASE_USERS_FILE="/identity/users.json",
                        NEURALBASE_IDENTITY_MIGRATION_SHA256=self.identity["sha256"])
@@ -199,10 +200,56 @@ class KubernetesController(Controller):
             self.ensure(expected)
         self.replicas(node, 1)
 
+    def pod_incarnation(self, node_id):
+        """Return the active pod UID/readiness, rejecting terminating or foreign pods."""
+        name = self.name(node_id)
+        pod = self.get("Pod", name + "-0")
+        if pod is None:
+            return None
+        metadata = pod.get("metadata", {})
+        if metadata.get("deletionTimestamp") is not None:
+            return None
+        labels = metadata.get("labels", {})
+        if (labels.get("neuralbase.io/owner") != self.state["owner"]
+                or labels.get("neuralbase.io/member") != name):
+            return None
+        uid = metadata.get("uid")
+        if not uid or pod.get("status", {}).get("phase") != "Running":
+            return None
+        container_ready = any(
+            status.get("name") == "neuralbase" and status.get("ready") is True
+            for status in pod.get("status", {}).get("containerStatuses", [])
+        )
+        return {"uid": uid, "ready": container_ready}
+
     def admin(self, node, command):
+        # Pod names are stable across StatefulSet restarts. Fence every management
+        # exchange by the immutable Pod UID so a terminating old process cannot
+        # make a freshly replaced, not-yet-ready voter appear converged.
+        before = self.pod_incarnation(node["id"])
+        if before is None:
+            raise RuntimeError("managed pod is not a stable running incarnation")
         result = self.kubectl(["exec", "-i", self.name(node["id"]) + "-0", "--", "/app/neuralbase-operator", "admin", "/config/node.json"], command)
+        after = self.pod_incarnation(node["id"])
+        if after is None or after["uid"] != before["uid"]:
+            raise RuntimeError("managed pod changed during management exchange")
         if result["node"] != node or result["error"]:
             raise RuntimeError("management incarnation/configuration mismatch")
+        # The Kubernetes probe admits only finalized voters. An admitted learner
+        # must retain Raft readiness so the planner can check applied/matched
+        # progress and promote it. Use committed membership, not the immutable
+        # bootstrap flag: after promotion the voter must pass both readiness gates.
+        status = result.get("status")
+        if isinstance(status, dict) and "ready" in status:
+            membership = status.get("committed", {})
+            admitted_learner = (
+                node["id"] in membership.get("learners", [])
+                and node["id"] not in membership.get("voters", [])
+                and node["id"] not in membership.get("removed", [])
+                and membership.get("joint") is None
+                and not status.get("transition_pending", False)
+            )
+            status["ready"] = bool(status["ready"] and (admitted_learner or after["ready"]))
         return result
 
     def statuses(self):
