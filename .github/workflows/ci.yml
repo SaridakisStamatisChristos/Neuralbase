@@ -19,6 +19,8 @@ jobs:
     env:
       LIBCLANG_PATH: /usr/lib/llvm-18/lib
       ROCKSDB_INCLUDE_DIR: /usr/include
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -106,6 +108,8 @@ jobs:
     env:
       LIBCLANG_PATH: /usr/lib/llvm-18/lib
       ROCKSDB_INCLUDE_DIR: /usr/include
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -235,6 +239,8 @@ jobs:
     env:
       LIBCLANG_PATH: /usr/lib/llvm-18/lib
       ROCKSDB_INCLUDE_DIR: /usr/include
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - name: Checkout
         uses: actions/checkout@v5
