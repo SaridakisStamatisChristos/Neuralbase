@@ -139,42 +139,6 @@ impl Transport for ChannelTransport {
     }
 }
 
-#[cfg(test)]
-mod incarnation_tests {
-    use super::*;
-
-    #[test]
-    fn peer_incarnation_replacement_is_monotonic_with_retired_epoch_rejection() {
-        let peer = "peer-a".to_string();
-        let mut epochs = PeerIncarnations::default();
-        assert_eq!(epochs.observe(&peer, 10), PeerIncarnationObservation::First);
-        assert_eq!(
-            epochs.observe(&peer, 10),
-            PeerIncarnationObservation::Current
-        );
-        assert_eq!(
-            epochs.observe(&peer, 20),
-            PeerIncarnationObservation::Replaced
-        );
-        assert_eq!(
-            epochs.observe(&peer, 10),
-            PeerIncarnationObservation::Retired
-        );
-        assert_eq!(
-            epochs.observe(&peer, 20),
-            PeerIncarnationObservation::Current
-        );
-        assert_eq!(
-            epochs.observe(&peer, 30),
-            PeerIncarnationObservation::Replaced
-        );
-        assert_eq!(
-            epochs.observe(&peer, 20),
-            PeerIncarnationObservation::Retired
-        );
-    }
-}
-
 // ── TCP transport ──────────────────────────────────────────────────────────
 
 pub struct TcpTransport {
@@ -183,7 +147,6 @@ pub struct TcpTransport {
     rx: Arc<Mutex<mpsc::Receiver<(NodeId, RaftMessage)>>>,
     writers: Arc<Mutex<HashMap<NodeId, mpsc::Sender<RaftMessage>>>>,
     incarnation: u64,
-    peer_incarnations: Arc<Mutex<PeerIncarnations>>,
     shutdown_tx: Option<oneshot::Sender<()>>,
     accept_task: Option<JoinHandle<()>>,
 }
@@ -231,7 +194,6 @@ impl TcpTransport {
             rx: Arc::new(Mutex::new(rx)),
             writers,
             incarnation: rand::random::<u64>(),
-            peer_incarnations,
             shutdown_tx: Some(shutdown_tx),
             accept_task: Some(accept_task),
         })
@@ -445,7 +407,6 @@ pub struct TlsTcpTransport {
     rx: Arc<Mutex<mpsc::Receiver<(NodeId, RaftMessage)>>>,
     writers: Arc<Mutex<HashMap<NodeId, mpsc::Sender<RaftMessage>>>>,
     incarnation: u64,
-    peer_incarnations: Arc<Mutex<PeerIncarnations>>,
     shutdown_tx: Option<oneshot::Sender<()>>,
     accept_task: Option<JoinHandle<()>>,
 }
@@ -532,7 +493,6 @@ impl TlsTcpTransport {
             rx: Arc::new(Mutex::new(rx)),
             writers,
             incarnation: rand::random::<u64>(),
-            peer_incarnations,
             shutdown_tx: Some(shutdown_tx),
             accept_task: Some(accept_task),
         })
@@ -670,5 +630,41 @@ async fn run_tls_peer_writer(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod incarnation_tests {
+    use super::*;
+
+    #[test]
+    fn peer_incarnation_replacement_is_monotonic_with_retired_epoch_rejection() {
+        let peer = "peer-a".to_string();
+        let mut epochs = PeerIncarnations::default();
+        assert_eq!(epochs.observe(&peer, 10), PeerIncarnationObservation::First);
+        assert_eq!(
+            epochs.observe(&peer, 10),
+            PeerIncarnationObservation::Current
+        );
+        assert_eq!(
+            epochs.observe(&peer, 20),
+            PeerIncarnationObservation::Replaced
+        );
+        assert_eq!(
+            epochs.observe(&peer, 10),
+            PeerIncarnationObservation::Retired
+        );
+        assert_eq!(
+            epochs.observe(&peer, 20),
+            PeerIncarnationObservation::Current
+        );
+        assert_eq!(
+            epochs.observe(&peer, 30),
+            PeerIncarnationObservation::Replaced
+        );
+        assert_eq!(
+            epochs.observe(&peer, 20),
+            PeerIncarnationObservation::Retired
+        );
     }
 }
