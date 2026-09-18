@@ -19,9 +19,25 @@ jobs:
     env:
       LIBCLANG_PATH: /usr/lib/llvm-18/lib
       ROCKSDB_INCLUDE_DIR: /usr/include
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Reclaim runner disk space
+        shell: bash
+        run: |
+          echo "Disk before cleanup:"
+          df -h /
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/local/.ghcup || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo docker system prune -af || true
+          echo "Disk after cleanup:"
+          df -h /
 
       - name: Install system dependencies
         run: |
@@ -45,7 +61,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
 
       - name: Run core tests
@@ -87,15 +102,162 @@ jobs:
         if: always()
         run: kind delete cluster --name neuralbase-phase7 || true
 
+  coverage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      LIBCLANG_PATH: /usr/lib/llvm-18/lib
+      ROCKSDB_INCLUDE_DIR: /usr/include
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Reclaim runner disk space
+        shell: bash
+        run: |
+          echo "Disk before cleanup:"
+          df -h /
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/local/.ghcup || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo docker system prune -af || true
+          echo "Disk after cleanup:"
+          df -h /
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            llvm-18-dev \
+            libclang-18-dev \
+            clang-18 \
+            librocksdb-dev \
+            nasm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88.0"
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate coverage reports
+        run: timeout --signal=TERM --kill-after=30s 45m make coverage
+
+      - name: Publish coverage summary
+        id: coverage-summary
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          source = Path("coverage/llvm-summary.json")
+          payload = json.loads(source.read_text())
+          totals = payload["data"][0]["totals"]
+
+          def stat(name):
+              item = totals[name]
+              return {
+                  "count": item["count"],
+                  "covered": item["covered"],
+                  "percent": round(float(item["percent"]), 2),
+              }
+
+          summary = {
+              "schema": 1,
+              "commit": os.environ["GITHUB_SHA"],
+              "scope": "cargo test --features tls --tests --locked; source files only",
+              "lines": stat("lines"),
+              "functions": stat("functions"),
+              "regions": stat("regions"),
+          }
+          Path("coverage/coverage-summary.json").write_text(
+              json.dumps(summary, indent=2) + "\n"
+          )
+
+          lines = summary["lines"]["percent"]
+          functions = summary["functions"]["percent"]
+          regions = summary["regions"]["percent"]
+
+          Path("coverage/coverage.txt").write_text(
+              f"line_coverage={lines:.2f}%\n"
+              f"function_coverage={functions:.2f}%\n"
+              f"region_coverage={regions:.2f}%\n"
+          )
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"lines={lines:.2f}\n")
+              out.write(f"functions={functions:.2f}\n")
+              out.write(f"regions={regions:.2f}\n")
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as out:
+              out.write("## Rust coverage\n\n")
+              out.write("| Metric | Coverage | Covered / Total |\n")
+              out.write("| --- | ---: | ---: |\n")
+              for key, label in (
+                  ("lines", "Lines"),
+                  ("functions", "Functions"),
+                  ("regions", "Regions"),
+              ):
+                  value = summary[key]
+                  out.write(
+                      f"| {label} | **{value['percent']:.2f}%** | "
+                      f"{value['covered']} / {value['count']} |\n"
+                  )
+              out.write("\nScope: `cargo test --features tls --tests --locked`; ")
+              out.write("test/benchmark source files are excluded from the reported denominator.\n")
+
+          print(f"Line coverage: {lines:.2f}%")
+          print(f"Function coverage: {functions:.2f}%")
+          print(f"Region coverage: {regions:.2f}%")
+          PY
+
+      - name: Upload standard coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.sha }}
+          path: |
+            coverage/coverage.xml
+            coverage/lcov.info
+            coverage/llvm-summary.json
+            coverage/coverage-summary.json
+            coverage/coverage.txt
+            coverage/html/
+          if-no-files-found: error
+          retention-days: 30
   tpch-reference:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       LIBCLANG_PATH: /usr/lib/llvm-18/lib
       ROCKSDB_INCLUDE_DIR: /usr/include
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Reclaim runner disk space
+        shell: bash
+        run: |
+          echo "Disk before cleanup:"
+          df -h /
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/local/.ghcup || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo docker system prune -af || true
+          echo "Disk after cleanup:"
+          df -h /
 
       - name: Install system dependencies
         run: |
@@ -118,7 +280,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
 
       - name: Run PostgreSQL 16 TPC-H reference suite

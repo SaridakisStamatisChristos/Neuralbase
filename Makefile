@@ -5,6 +5,15 @@ lint:
 	cargo fmt --all -- --check
 	cargo clippy --all-targets --locked -- -D warnings
 
+coverage:
+	mkdir -p coverage
+	cargo llvm-cov clean --workspace
+	cargo llvm-cov --features tls --tests --locked --no-report
+	cargo llvm-cov report --ignore-filename-regex '(^|/)(tests|benches|fuzz)/' --cobertura --output-path coverage/coverage.xml
+	cargo llvm-cov report --ignore-filename-regex '(^|/)(tests|benches|fuzz)/' --lcov --output-path coverage/lcov.info
+	cargo llvm-cov report --ignore-filename-regex '(^|/)(tests|benches|fuzz)/' --json --summary-only --output-path coverage/llvm-summary.json
+	cargo llvm-cov report --ignore-filename-regex '(^|/)(tests|benches|fuzz)/' --html --output-dir coverage/html
+
 confidence:
 	cargo test --test confidence_yaml --locked
 	cargo test --test sql_compatibility_profile --locked
