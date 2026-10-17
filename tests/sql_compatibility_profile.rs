@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Phase 8: executable anti-overclaim checks for SQL_COMPATIBILITY.yaml.
+// Executable anti-overclaim checks for SQL_COMPATIBILITY.yaml.
 
 use serde_yaml::{Mapping, Value};
 use std::collections::HashSet;
@@ -34,11 +34,10 @@ fn field<'a>(item: &'a Mapping, key: &str) -> &'a Value {
 fn compatibility_profile_is_valid_and_explicitly_not_full_postgresql() {
     let profile = load_profile();
     assert_eq!(profile["version"].as_i64(), Some(1));
-    assert_eq!(profile["phase"].as_i64(), Some(8));
     assert_eq!(
         profile["full_postgresql_compatibility"].as_bool(),
         Some(false),
-        "Phase 8 must not overclaim full PostgreSQL compatibility"
+        "the compatibility profile must not overclaim full PostgreSQL compatibility"
     );
     assert_eq!(profile["postgresql_reference_version"].as_i64(), Some(16));
 }
@@ -122,7 +121,7 @@ fn every_reference_tested_claim_names_existing_executable_evidence() {
 }
 
 #[test]
-fn phase8_anti_overclaim_boundaries_are_locked() {
+fn sql_anti_overclaim_boundaries_are_locked() {
     let profile = load_profile();
 
     assert_eq!(
@@ -179,7 +178,7 @@ fn persistent_dml_predicate_profile_requires_fail_closed_evidence() {
         .and_then(Value::as_sequence)
         .expect("DML predicate safety must name NeuralBase evidence");
     assert!(evidence.iter().any(|v| {
-        v.as_str() == Some("tests/phase8_dml_predicate_safety.rs")
-            && Path::new("tests/phase8_dml_predicate_safety.rs").exists()
+        v.as_str() == Some("tests/sql_dml_predicate_safety.rs")
+            && Path::new("tests/sql_dml_predicate_safety.rs").exists()
     }));
 }

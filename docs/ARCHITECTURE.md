@@ -1,6 +1,6 @@
 # Architecture
 
-NeuralBase combines a local SQL engine with a Raft consensus subsystem and deterministic replicated state machines for persistent table mutations and clustered identity. SQL-aware snapshots preserve the same authoritative replicated state across compaction, recovery and learner bootstrap. Phase 6 adds an explicit session-scoped read-consistency layer on top of the same tested Raft commit/apply boundary. Phase 7 adds an opt-in managed deployment reconciler that sequences process/Kubernetes lifecycle changes through guarded committed membership.
+NeuralBase combines a local SQL engine with a Raft consensus subsystem and deterministic replicated state machines for persistent table mutations and clustered identity. SQL-aware snapshots preserve the same authoritative replicated state across compaction, recovery and learner bootstrap. An explicit session-scoped read-consistency layer reuses the same tested Raft commit/apply boundary, and an opt-in managed deployment reconciler sequences process/Kubernetes lifecycle changes through guarded committed membership.
 
 ## Design principles
 
@@ -11,10 +11,10 @@ NeuralBase combines a local SQL engine with a Raft consensus subsystem and deter
 - **One replicated durability lifecycle.** Identity shares the same apply cursor and snapshot lifecycle as replicated SQL.
 - **Snapshot before truncation; restore before ACK.** Compaction/recovery ordering is explicit.
 - **Membership is a consensus operation.** Learners do not vote; promotion/removal use coordinated configuration changes.
-- **Read consistency is explicit.** `Local` preserves the historical local-read behavior; `Leader` and `Linearizable` require the current serving leader and a successful consensus barrier. Strong modes never silently downgrade.
+- **Read consistency is explicit.** `Local` preserves local-read behavior; `Leader` and `Linearizable` require the current serving leader and a successful consensus barrier. Strong modes never silently downgrade.
 - **Operator recovery is a separate artifact lifecycle.** NBBK/NBEC backup verification and fresh-cluster restore do not reuse raw internal Raft snapshot bytes or copied consensus disks.
-- **Deployment count is not membership.** The Phase-7 managed profile creates/retires incarnations only through guarded committed-state reconciliation; static Helm/HPA replica changes remain outside the contract.
-- **PITR is an explicit archive lifecycle.** Phase-9 recovery starts from a verified operator baseline and replays a verified committed-index archive; exact Raft indexes are recovery coordinates, not wall-clock timestamps.
+- **Deployment count is not membership.** Managed reconciliation creates/retires incarnations only through guarded committed-state reconciliation; static Helm/HPA replica changes remain outside the contract.
+- **PITR is an explicit archive lifecycle.** Recovery starts from a verified operator baseline and replays a verified committed-index archive; exact Raft indexes are recovery coordinates, not wall-clock timestamps.
 
 ## High-level flow
 
@@ -55,7 +55,7 @@ The session index advisor records simple-query patterns and periodically applies
 
 ## Standalone versus clustered identity
 
-Without `NEURALBASE_NODE_ID`, table and user DDL retain the historical local behavior, including the writable local `users.json` registry.
+Without `NEURALBASE_NODE_ID`, table and user DDL retain local behavior, including the writable local `users.json` registry.
 
 With clustered mode enabled, `CREATE USER`, `ALTER USER`, and `DROP USER` route through the replicated gateway. The leader derives SCRAM keys before proposal. `src/replicated_identity.rs` defines a versioned command format that cannot encode plaintext passwords or PostgreSQL MD5 verifier material.
 
@@ -79,13 +79,13 @@ Before state-dependent mutation materialization, the leader commits a current-te
 
 Normal client success is not resolved at local append. The leader persists, replicates, quorum-commits, applies in order, confirms durable state-machine completion, then replies.
 
-Phase-6 strong reads deliberately reuse this boundary. The read barrier is a non-SQL Raft control entry submitted through the existing client-command path. A successful barrier therefore proves current leader authority under the active/current-or-joint voter quorum and proves the local state machine has confirmed apply through that barrier before SQL execution continues.
+Strong reads deliberately reuse this boundary. The read barrier is a non-SQL Raft control entry submitted through the existing client-command path. A successful barrier therefore proves current leader authority under the active/current-or-joint voter quorum and proves the local state machine has confirmed apply through that barrier before SQL execution continues.
 
 ## SQL-aware snapshot architecture
 
 `src/replicated_snapshot.rs` owns a versioned logical snapshot envelope. `src/replicated_snapshot_manager.rs` exports/restores durable catalog/data/apply/HLC state and the replicated identity extension from a consistent storage point.
 
-Snapshot creation is validated and durably staged before prefix truncation. Follower InstallSnapshot validates/stages/restores state before the Raft snapshot boundary is durably published and acknowledged. Interrupted installation resumes idempotently after restart.
+Snapshot creation is validated and durably staged before prefix truncation. Follower `InstallSnapshot` validates/stages/restores state before the Raft snapshot boundary is durably published and acknowledged. Interrupted installation resumes idempotently after restart.
 
 Identity therefore survives compaction, empty-storage reconstruction and learner catch-up through the same mechanism as table state.
 
@@ -97,7 +97,7 @@ Finalized membership is durable and overrides stale bootstrap peer configuration
 
 Strong-read barriers use the same membership/quorum rules: learners do not contribute to quorum, joint configurations require the configured joint-majority rules, and removed nodes cannot be counted as a shortcut.
 
-The [Phase-7 controller](PHASE7_OPERATOR.md) adds a separate deterministic planner and opt-in deployment adapters. It reads committed membership through a quorum/apply authority barrier; every membership command checks leader, term and generation inside the serialized Raft loop. Process count and Kubernetes readiness never establish voter membership. Managed learners replay the original genesis configuration while using separate current routing seeds; routing knowledge never grants a vote. The authenticated process lifecycle and disposable-kind Kubernetes lifecycle passed CI evidence, including partial creation failure, drift, replacement, contraction and retained storage. Raw Helm/HPA replica changes remain unsupported.
+The [managed membership controller](MANAGED_MEMBERSHIP.md) adds a separate deterministic planner and opt-in deployment adapters. It reads committed membership through a quorum/apply authority barrier; every membership command checks leader, term and generation inside the serialized Raft loop. Process count and Kubernetes readiness never establish voter membership. Managed learners replay the original genesis configuration while using separate current routing seeds; routing knowledge never grants a vote. Authenticated process and disposable-kind Kubernetes lifecycle evidence includes partial creation failure, drift, replacement, contraction and retained storage. Raw Helm/HPA replica changes remain unsupported.
 
 ## Operator backup and disaster-recovery architecture
 
@@ -113,7 +113,7 @@ Cluster rebuilding deliberately starts from that single fresh authority. Additio
 
 ## Archived recovery stream and PITR architecture
 
-Phase 9 binds a verified NBBK/NBEC baseline to a distinct archive timeline in `stream.json`. Each post-baseline committed position is represented by one versioned `NBAR` record carrying index/term, record kind, timeline, previous-segment hash, payload hash, compatibility marker and final checksum. Optional `NBPE` wrapping provides authenticated ChaCha20-Poly1305 encryption with an out-of-band raw 32-byte key.
+A verified NBBK/NBEC baseline is bound to a distinct archive timeline in `stream.json`. Each post-baseline committed position is represented by one versioned `NBAR` record carrying index/term, record kind, timeline, previous-segment hash, payload hash, compatibility marker and final checksum. Optional `NBPE` wrapping provides authenticated encryption with an out-of-band raw 32-byte key.
 
 `PitrRuntimeArchiver` is opened only when `NEURALBASE_PITR_ARCHIVE_DIR` is configured. The confirmed-apply task first performs the durable replicated state-machine apply, then publishes the required archive segment, and only then reports confirmed apply to Raft. Publication failure therefore prevents that position from advancing the confirmed apply/compaction boundary. Startup independently verifies the stream and rejects frontier/baseline/compaction relationships that would make required recovery history unavailable.
 
@@ -149,7 +149,7 @@ The log barrier is intentionally stronger/more expensive than a pure authority c
 - `src/backup.rs` / `offline_backup.rs` / `online_backup.rs` — versioned operator backup contract and consistent capture.
 - `src/backup_encryption.rs` — authenticated NBEC container, key-file validation and encrypted publication.
 - `src/restore.rs` — fresh-generation staged restore and atomic target publication.
-- `src/pitr.rs` / `pitr_archive.rs` — Phase-9 archive record codec, chain verification, encryption and crash-safe publication.
+- `src/pitr.rs` / `pitr_archive.rs` — archive record codec, chain verification, encryption and crash-safe publication.
 - `src/pitr_runtime.rs` — opt-in synchronous archive/confirmed-apply fence and runtime limits/metrics.
 - `src/pitr_replay.rs` / `pitr_branch.rs` / `pitr_retention.rs` — exact-index replay, child timelines and conservative rollover retirement.
 - `src/bin/neuralbase-pitr.rs` — operator PITR initialization, verification, recovery, branching and retirement CLI.
@@ -158,4 +158,4 @@ The log barrier is intentionally stronger/more expensive than a pure authority c
 
 Standalone mode can fall back to in-memory/demo operation on a RocksDB open failure; its local DDL error handling is weaker than the fail-closed clustered path. SQL-level multi-statement transactions are not implemented despite the MVCC library. These limits are separate from the tested replicated commit/apply guarantees.
 
-Executable evidence supports replicated persistent tables, SQL-aware snapshot/recovery, coordinated membership changes, replicated SCRAM identity, the documented Phase-5 backup/restore/fresh-cluster DR model, explicit Phase-6 `Local`/`Leader`/`Linearizable` read semantics on the leader path, and the opt-in Phase-7 managed process/Kubernetes membership lifecycle. Stronger production claims still require target-environment security review, broader fault/upgrade validation, managed upgrade semantics and production performance characterization; arbitrary-follower strong-read routing, raw HPA scaling, timestamp-target PITR and automatic DR remain outside the claim; Phase-9 exact committed-index PITR is inside the tested claim.
+Executable evidence supports replicated persistent tables, SQL-aware snapshot/recovery, coordinated membership changes, replicated SCRAM identity, operator backup/restore/fresh-cluster recovery, explicit `Local`/`Leader`/`Linearizable` read semantics on the leader path, opt-in managed process/Kubernetes membership reconciliation and exact committed-index PITR. Stronger production claims still require target-environment security review, broader fault/upgrade validation, managed upgrade semantics and production performance characterization; arbitrary-follower strong-read routing, raw HPA scaling, timestamp-target PITR and automatic DR remain outside the claim.

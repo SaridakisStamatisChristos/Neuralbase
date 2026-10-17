@@ -1,6 +1,6 @@
-# Phase-9 point-in-time recovery
+# Exact committed-index point-in-time recovery
 
-NeuralBase Phase 9 implements an **opt-in archived recovery stream with exact committed-Raft-index recovery**. It does not implement wall-clock timestamp targets or automatic disaster recovery.
+NeuralBase implements an **opt-in archived recovery stream with exact committed-Raft-index recovery**. It does not implement wall-clock timestamp targets or automatic disaster recovery.
 
 ## Recovery model
 
@@ -46,13 +46,13 @@ export NEURALBASE_PITR_MAX_SEGMENTS=100000        # optional; default
 
 `NEURALBASE_PITR_MAX_SEGMENTS` must be in `1..=1000000`.
 
-When PITR archival is enabled, the confirmed-apply task orders one committed entry as:
+When PITR archival is enabled, confirmed apply orders each committed entry as:
 
 1. deterministic durable replicated state-machine apply;
 2. durable archive publication and independent record verification;
 3. confirmed apply returned to Raft.
 
-Therefore an archive publication failure is a confirmed-apply failure, not a warning. The normal non-PITR path remains unchanged when `NEURALBASE_PITR_ARCHIVE_DIR` is unset.
+An archive publication failure is therefore a confirmed-apply failure, not a warning. The normal non-PITR path remains unchanged when `NEURALBASE_PITR_ARCHIVE_DIR` is unset.
 
 Startup opens and verifies the complete stream. It fails closed if the archive baseline/frontier is newer than durable logical apply, if the configured segment limit is already exceeded, or if a persisted compacted Raft snapshot is ahead of the verified archive frontier.
 
@@ -78,7 +78,7 @@ The supported targets are:
 - `latest`;
 - an exact unsigned committed Raft index inside the verified range.
 
-A timestamp such as `2026-09-15T12:00:00Z` is not a valid Phase-9 target. Any time-to-index mapping must come from a separate trustworthy application/operator record.
+A timestamp such as `2026-09-15T12:00:00Z` is not a valid target. Any time-to-index mapping must come from a separate trustworthy application/operator record.
 
 ## Recover
 
@@ -94,13 +94,13 @@ target/release/neuralbase-pitr recover \
   --archive-key-file /secure/pitr.key
 ```
 
-Recovery verifies the baseline hash/metadata and requested target before publication. It restores into a hidden staging directory, sequentially verifies and replays required records through `ReplicatedSqlStateMachine`, reconstructs the selected historical membership, then establishes a fresh single-voter recovery generation whose active voter is the requested fresh recovery node. Historical source IDs are tombstoned. The staged database is closed/reopened and independently verified before an atomic target-directory publication.
+Recovery verifies the baseline hash/metadata and requested target before publication. It restores into a hidden staging directory, sequentially verifies and replays required records through `ReplicatedSqlStateMachine`, reconstructs the selected historical membership, then establishes a fresh single-voter recovery generation whose active voter is the requested fresh recovery node. Historical source IDs are tombstoned. The staged database is closed/reopened and independently verified before atomic target-directory publication.
 
 Wrong baselines, missing/corrupt segments, incompatible versions, unavailable indexes and historical node-ID reuse fail before the requested destination becomes authoritative.
 
 ## Branch after an earlier-point recovery
 
-Recovery to an earlier index discards the parent's later logical future. Before starting the recovered database and accepting new writes, create a new child archive timeline while the recovered database is stopped:
+Recovery to an earlier index discards the parent's later logical future. Before starting the recovered database and accepting new writes, create a child archive timeline while the recovered database is stopped:
 
 ```bash
 target/release/neuralbase-pitr branch \
@@ -134,7 +134,7 @@ Retirement atomically moves the old stream out of service, revalidates its metad
 
 NBPE uses ChaCha20-Poly1305 authenticated encryption. Archive metadata records whether encryption is required and the external key ID; raw key bytes are not stored in metadata. Wrong keys or authenticated-byte tampering fail verification/recovery.
 
-Archive encryption protects the archive segments only. Use NBEC independently if the baseline also requires confidentiality. Neither mechanism encrypts RocksDB or internal Raft persistence at rest.
+Archive encryption protects archive segments only. Use NBEC independently if the baseline also requires confidentiality. Neither mechanism encrypts RocksDB or internal Raft persistence at rest.
 
 ## Runtime metrics
 
@@ -150,13 +150,13 @@ These are diagnostics, not an automatic SLO/alerting system.
 
 ## Failure semantics and tested boundaries
 
-Phase-9 evidence covers strict format/version handling, canonical membership bytes, corruption/truncation/trailing bytes, gap/overlap/hash/timeline failures, restart staging cleanup, corrupt finalized files, duplicate/conflicting and convergent same-record publication, encrypted wrong-key/tamper behavior, bounded directory enumeration, wrong-baseline failure before publication, fresh recovery generations, child old-future rejection, conservative retention, and real-process exact-target SQL/identity recovery plus branched restart.
+Executable evidence covers strict format/version handling, canonical membership bytes, corruption/truncation/trailing bytes, gap/overlap/hash/timeline failures, restart staging cleanup, corrupt finalized files, duplicate/conflicting and convergent same-record publication, encrypted wrong-key/tamper behavior, bounded directory enumeration, wrong-baseline failure before publication, fresh recovery generations, child old-future rejection, conservative retention, and real-process exact-target SQL/identity recovery plus branched restart.
 
 The real-process test proves an earlier recovery target excludes later rows and a later password rotation, then creates a new child future and verifies it survives restart.
 
 ## Explicit non-goals
 
-Phase 9 does not claim:
+Exact-index PITR does not claim:
 
 - timestamp/wall-clock recovery targets;
 - automatic disaster detection, failover or recovery;
@@ -165,4 +165,6 @@ Phase 9 does not claim:
 - a measured RPO/RTO SLA;
 - production SQL HA.
 
-Those boundaries remain explicit even when `CONFIDENCE.yaml` reports `pitr: true`: that flag means the exact committed-index Phase-9 contract only.
+Those boundaries remain explicit even when `CONFIDENCE.yaml` reports `pitr: true`: that flag means the exact committed-index archive/replay contract only.
+
+See [`PITR_CORRECTNESS_MODEL.md`](PITR_CORRECTNESS_MODEL.md) for the state-machine and acknowledgement boundary.

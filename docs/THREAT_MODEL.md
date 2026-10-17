@@ -1,6 +1,6 @@
 # NeuralBase threat model
 
-**Updated:** 2026-09-13  
+**Updated:** 2026-10-17  
 **Scope:** pre-1.0 standalone and clustered development/research deployments
 
 This is a risk inventory, not a security certification.
@@ -14,7 +14,7 @@ This is a risk inventory, not a security certification.
 - standalone credential files and clustered legacy migration files;
 - TLS private keys/CA material;
 - NBBK/NBEC operator backups and their separately managed encryption keys;
-- Phase-9 NBAR/NBPE archive streams, timeline metadata and separately managed archive keys;
+- NBAR/NBPE archive streams, timeline metadata and separately managed archive keys;
 - managed-controller desired topology, durable controller state and Kubernetes object ownership metadata;
 - metrics and diagnostics.
 
@@ -24,7 +24,7 @@ This is a risk inventory, not a security certification.
 2. Raft node → Raft node; default TCP is trusted-network-only, optional TLS provides transport protection.
 3. Process → local disk; RocksDB and migration files are trusted durable/operator inputs and are not transparently encrypted at rest.
 4. Operator configuration → peer/bootstrap/migration/security configuration.
-5. Phase-7 controller → local management socket or explicit Kubernetes context/namespace; the controller principal and its durable root are trusted for the managed profile.
+5. Managed membership controller → local management socket or explicit Kubernetes context/namespace; the controller principal and its durable root are trusted for the managed profile.
 
 ## Authentication and identity risks
 
@@ -52,27 +52,27 @@ Required Raft persistence failures fail-stop the node. Replicated success waits 
 
 Learners do not count toward quorum. Promotion/removal use coordinated configuration changes; current-leader removal requires transfer. Finalized membership is persisted and removed-node tombstones prevent a stale disk from silently rejoining as a voter.
 
-Phase 7 adds an opt-in managed reconciler that obtains a quorum/apply authority observation, plans one deterministic next action, and rechecks leader/term/membership generation inside the serialized Raft path before membership changes. The process adapter uses a private same-user management socket and pidfd-based retirement checks. The Kubernetes adapter uses an explicit context/namespace, ownership/UID checks, managed-field drift rejection and resource-version-guarded replica patches. Storage is retained after member retirement.
+Managed reconciliation obtains a quorum/apply authority observation, plans one deterministic next action, and rechecks leader/term/membership generation inside the serialized Raft path before membership changes. The process adapter uses a private same-user management socket and pidfd-based retirement checks. The Kubernetes adapter uses an explicit context/namespace, ownership/UID checks, managed-field drift rejection and resource-version-guarded replica patches. Storage is retained after member retirement.
 
 Residual risks still include operator misuse or compromise of the trusted controller principal/root, address/configuration mistakes, controller/Kubernetes API availability, lack of formal proof, lack of rolling-upgrade orchestration, and insufficient hostile-network/storage/upgrade chaos coverage. The managed profile does not make arbitrary StatefulSet/Helm/HPA replica changes safe and does not establish a hostile multi-tenant control plane.
 
 ## Snapshot/recovery risk
 
-Snapshots are bounded/checksummed, staged before compaction and restored before InstallSnapshot success. They include identity, so a recovered member does not depend on an unrelated local credential mirror. Corrupt or regressive state fails closed.
+Snapshots are bounded/checksummed, staged before compaction and restored before `InstallSnapshot` success. They include identity, so a recovered member does not depend on an unrelated local credential mirror. Corrupt or regressive state fails closed.
 
-Internal cluster snapshot catch-up is not itself an operator backup product. Phase 5 adds distinct NBBK/NBEC operator artifacts and a fresh-cluster restore lifecycle.
+Internal cluster snapshot catch-up is not itself an operator backup product. NBBK/NBEC operator artifacts and fresh-cluster restore form a distinct recovery lifecycle.
 
 ## Operator backup security
 
 Operator backups contain application rows, catalog/state metadata and replicated SCRAM verifier material, so they remain sensitive even though plaintext user passwords are not represented in the replicated identity snapshot.
 
-NBBK is integrity-protected but plaintext. NBEC v1 adds authenticated ChaCha20-Poly1305 confidentiality/integrity. The 32-byte decryption key is supplied out of band; it is not embedded in the artifact. The Unix key loader rejects group/other-readable key files, key debug output is redacted, and executable CLI evidence checks that raw key bytes are absent from normal command output. Wrong keys and authenticated-byte tampering fail before restore target creation.
+NBBK is integrity-protected but plaintext. NBEC v1 adds authenticated confidentiality/integrity. The 32-byte decryption key is supplied out of band; it is not embedded in the artifact. The Unix key loader rejects group/other-readable key files, key debug output is redacted, and executable CLI evidence checks that raw key bytes are absent from normal command output. Wrong keys and authenticated-byte tampering fail before restore target creation.
 
 NBEC v1 does not carry a key identifier. External key inventory/rotation is therefore an operator responsibility. Old keys must remain available while backups encrypted under them are retained. RocksDB databases and internal Raft logs remain outside this backup-container encryption boundary and are not transparently encrypted at rest.
 
 ## PITR archive security and recovery risk
 
-Phase-9 archive streams contain deterministic committed SQL effects, SCRAM verifier identity material, membership transitions and control positions. Plain NBAR streams are integrity-protected but not confidential. NBPE adds authenticated ChaCha20-Poly1305 protection with a raw 32-byte out-of-band key; the key file is treated as sensitive and insecure/wrong key material fails closed. Archive encryption does not encrypt RocksDB, internal Raft state or the baseline unless the baseline itself is NBEC.
+Archive streams contain deterministic committed SQL effects, SCRAM verifier identity material, membership transitions and control positions. Plain NBAR streams are integrity-protected but not confidential. NBPE adds authenticated protection with a raw 32-byte out-of-band key; the key file is treated as sensitive and insecure/wrong key material fails closed. Archive encryption does not encrypt RocksDB, internal Raft state or the baseline unless the baseline itself is NBEC.
 
 The runtime archive fence is fail-closed: a required archive publication failure prevents confirmed apply from advancing. Operators must therefore provision durable writable archive storage and monitor archive failures/segment limits. A full stream also blocks further archive-required progress until rollover is performed; deleting segments to bypass the limit destroys the recovery chain and is unsupported.
 
@@ -80,7 +80,7 @@ Branching is a history fork, not an in-place rewind. A recovered earlier point m
 
 ## Read-consistency risk
 
-The default `Local` mode intentionally performs no consensus coordination and may lag on a follower. Applications requiring the Phase-6 strong-read contract must select `Leader` or `Linearizable` and connect to the current serving Raft leader.
+The default `Local` mode intentionally performs no consensus coordination and may lag on a follower. Applications requiring the strong-read contract must select `Leader` or `Linearizable` and connect to the current serving Raft leader.
 
 Strong reads fail closed rather than silently downgrading: followers return not-leader, recovering/non-serving nodes return catching-up, and an isolated former leader cannot successfully complete the quorum barrier. The current implementation uses a replicated control/log entry for every strong read, so heavy strong-read workloads can add consensus latency and log churn.
 
@@ -90,24 +90,24 @@ NeuralBase does not automatically route strong reads from followers to the leade
 
 SQL TLS and Raft mTLS are configuration-dependent rather than secure-by-default production profiles. In a TLS-enabled build, configuring the SQL acceptor requires SSLRequest/TLS and rejects plaintext startup. Helm TLS settings configure SQL only; Raft mTLS needs its separate enable switch, CA and certificate-name configuration. See [CONFIGURATION.md](CONFIGURATION.md#tls). Certificate provisioning/rotation/revocation remain operator responsibilities. A compromised node with valid cluster credentials remains inside the Raft trust boundary.
 
-The Phase-7 local-process adapter is a trusted-host development profile and uses plaintext Raft. The managed Kubernetes profile expects an isolated trusted namespace/network and an external controller principal with the documented RBAC permissions. Member pods do not mount Kubernetes API credentials, but compromise of the controller principal can still create/patch managed objects within its Role. This is not a production multi-tenant security boundary.
+The local-process managed adapter is a trusted-host development profile and uses plaintext Raft. The managed Kubernetes profile expects an isolated trusted namespace/network and an external controller principal with the documented RBAC permissions. Member pods do not mount Kubernetes API credentials, but compromise of the controller principal can still create/patch managed objects within its Role. This is not a production multi-tenant security boundary.
 
 ## Current production blockers
 
-Stronger production claims require secure-by-default deployment profiles, certificate/secret lifecycle, richer authorization/auditability, broader network/storage/upgrade chaos testing, managed upgrade/rollback semantics, controller-principal hardening, and production resource/performance characterization. Arbitrary Helm/HPA scaling remains unsupported even though the explicit Phase-7 managed profile is lifecycle-tested. Arbitrary-follower strong-read routing and lower-overhead ReadIndex/lease optimization remain unimplemented. Exact committed-index PITR is implemented through the explicit Phase-9 archive workflow, but timestamp-target PITR and automatic DR remain unimplemented; Phase-5/9 artifact encryption does not imply general database-at-rest encryption.
+Stronger production claims require secure-by-default deployment profiles, certificate/secret lifecycle, richer authorization/auditability, broader network/storage/upgrade chaos testing, managed upgrade/rollback semantics, controller-principal hardening, and production resource/performance characterization. Arbitrary Helm/HPA scaling remains unsupported even though the explicit managed profile is lifecycle-tested. Arbitrary-follower strong-read routing and lower-overhead ReadIndex/lease optimization remain unimplemented. Exact committed-index PITR is implemented through the explicit archive workflow, but timestamp-target PITR and automatic DR remain unimplemented; backup/archive artifact encryption does not imply general database-at-rest encryption.
 
 ## Evidence references
 
-- `src/read_consistency.rs` / `src/read_barrier.rs` — Phase-6 session contract and strong-read barrier.
-- `tests/phase6_*` — partition, membership, recovery, restart/restore and real-process read evidence.
+- `src/read_consistency.rs` / `src/read_barrier.rs` — session contract and strong-read barrier.
+- `tests/read_barrier.rs`, `tests/read_consistency_membership.rs`, `tests/read_consistency_recovery_readiness.rs`, `tests/read_consistency_process.rs`, `tests/read_consistency_concurrent_process.rs` — partition, membership, recovery, restart/restore and real-process read evidence.
 - `src/replicated_identity*.rs` — verifier-only identity, storage and strict migration.
 - `src/replicated_state_machine.rs` — atomic replicated apply boundary.
 - `src/replicated_snapshot*.rs` — logical snapshot lifecycle.
 - `src/consensus/membership.rs` / `src/consensus/raft.rs` — membership and consensus behavior.
-- `tests/phase3_membership.rs` — learner/joint-consensus lifecycle.
-- `tests/phase4_identity*.rs` — identity failover/recovery/membership/process evidence.
+- `tests/membership_lifecycle.rs` — learner/joint-consensus lifecycle.
+- `tests/replicated_identity*.rs` — identity failover/recovery/membership/process evidence.
 - `tests/raft_persistence_fail_closed.rs` and replicated SQL snapshot/process suites — durability/failure evidence.
-- `src/backup*.rs`, `src/offline_backup.rs`, `src/online_backup.rs`, `src/restore.rs` and `tests/phase5_*` — operator recovery/security evidence.
-- `src/pitr*.rs`, `src/bin/neuralbase-pitr.rs` and `tests/phase9_pitr_process.rs` — archived recovery, encryption, replay, branch/retention and real-process PITR evidence.
-- `src/operator.rs`, `src/consensus/operator_control.rs`, `src/operator_admin.rs`, `ops/neuralbase_operator.py`, `ops/neuralbase_kubernetes.py` and `tests/phase7_*` — guarded managed membership/deployment evidence.
+- `src/backup*.rs`, `src/offline_backup.rs`, `src/online_backup.rs`, `src/restore.rs`, `tests/online_backup_interactions.rs`, `tests/cluster_recovery.rs`, `tests/recovery_process.rs`, `tests/encrypted_backup_ops.rs` — operator recovery/security evidence.
+- `src/pitr*.rs`, `src/bin/neuralbase-pitr.rs` and `tests/pitr_process.rs` — archived recovery, encryption, replay, branch/retention and real-process PITR evidence.
+- `src/operator.rs`, `src/consensus/operator_control.rs`, `src/operator_admin.rs`, `ops/neuralbase_operator.py`, `ops/neuralbase_kubernetes.py` and `tests/managed_membership_*` — guarded managed membership/deployment evidence.
 - `CONFIDENCE.md` / `CONFIDENCE.yaml` — machine-readable claim boundary.

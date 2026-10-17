@@ -1,6 +1,6 @@
 # SQL support
 
-This document describes the SQL surface on the current development line (crate `0.1.0`, including the Phase 8 SQL semantic-depth work). It is a capability map, not a claim of full PostgreSQL compatibility. Parsing a PostgreSQL-looking statement does not guarantee its clauses are implemented by the binder or executor. The machine-readable contract is [`SQL_COMPATIBILITY.yaml`](../SQL_COMPATIBILITY.yaml).
+This document describes the SQL surface on the current pre-1.0 development line. It is a capability map, not a claim of full PostgreSQL compatibility. Parsing a PostgreSQL-looking statement does not guarantee its clauses are implemented by the binder or executor. The machine-readable contract is [`SQL_COMPATIBILITY.yaml`](../SQL_COMPATIBILITY.yaml).
 
 ## Query support
 
@@ -10,9 +10,9 @@ NeuralBase implements `SELECT`, filtering/projection, inner/left joins, multi-ta
 |---|---|
 | Aggregates | `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, grouping and `HAVING` |
 | Set operations | `UNION`, `INTERSECT`, `EXCEPT`; do not infer parity for every quantifier/NULL combination |
-| Windows | `ROW_NUMBER`, `RANK`, `LAG`, `LEAD` with the implemented partition/order handling. Validated window queries route through the general query executor; explicit frames and named windows fail closed. |
+| Windows | `ROW_NUMBER`, `RANK`, `LAG`, `LEAD` with implemented partition/order handling. Validated window queries route through the general query executor; explicit frames and named windows fail closed. |
 | Scalar/NULL semantics | Selected no-`FROM` integer/boolean/text/DATE casts and expressions, including three-valued `NULL` logic, `IN`/`NOT IN`, `CASE`, `COALESCE`, and `NULLIF`, have PostgreSQL-16 differential coverage. This does not imply parity for every table/join/aggregate edge case. |
-| `EXPLAIN SELECT` | Accepted, but emits the fixed text `PhysicalPlan: SeqScan -> Project`, not the actual full plan |
+| `EXPLAIN SELECT` | Accepted, but emits fixed text rather than the actual full plan |
 | `EXPLAIN ANALYZE SELECT` | Executes/times the query, but the current path suppresses its execution error; not a correctness check |
 | Query budgets | Cross products limited to 50,000 rows; join intermediates to 200,000 rows; no general spill-to-disk implementation |
 
@@ -22,27 +22,27 @@ The server seeds the eight TPC-H table schemas and generates demo data for its q
 
 - **Exactly one statement per ordinary request.** Compound simple-query input such as `SELECT 1; SELECT 2` is rejected before either statement executes. NeuralBase does not implement PostgreSQL simple-query multi-statement behavior. In `psql`, use separate interactive statements or repeated `-c` options.
 - **No SQL transaction blocks.** `BEGIN`, `COMMIT`, `ROLLBACK`, savepoints, and PostgreSQL failed-transaction session state are not implemented. Ordinary statements are independent/autocommit requests. Rejected transaction-control input does not poison the connection, but this is not a distributed-transaction contract. MVCC/transaction-manager library tests do not establish multi-statement SQL transaction semantics.
-- **Partial extended protocol.** Parse/Bind/Execute/Describe/Close/Sync support a bounded subset. Parse-declared `BOOL`, `INT2`, `INT4`, `INT8`, `FLOAT4`, `FLOAT8`, `TEXT`, `VARCHAR`, `BPCHAR`, and `DATE` parameters can be materialized from text and selected PostgreSQL binary encodings; `NULL` parameters work; OID `0` inference fails closed. Statement Describe returns `ParameterDescription` followed by `NoData`; portal Describe returns `NoData`. Binary row results and full PostgreSQL result metadata/error-cycle semantics are not implemented. A binary result preference is tolerated only for commands such as the NeuralBase `SET` that emit no row data. A real Rust `postgres` client prepared-statement scenario is part of Phase-8 tests, but that does not imply arbitrary driver/ORM compatibility.
+- **Partial extended protocol.** Parse/Bind/Execute/Describe/Close/Sync support a bounded subset. Parse-declared `BOOL`, `INT2`, `INT4`, `INT8`, `FLOAT4`, `FLOAT8`, `TEXT`, `VARCHAR`, `BPCHAR`, and `DATE` parameters can be materialized from text and selected PostgreSQL binary encodings; `NULL` parameters work; OID `0` inference fails closed. Statement Describe returns `ParameterDescription` followed by `NoData`; portal Describe returns `NoData`. Binary row results and full PostgreSQL result metadata/error-cycle semantics are not implemented. A binary result preference is tolerated only for commands such as the NeuralBase `SET` that emit no row data. A real Rust `postgres` client prepared-statement scenario is part of the executable evidence, but that does not imply arbitrary driver/ORM compatibility.
 - **Limited DDL, fail closed for unsupported constraints.** Plain `CREATE TABLE`/`DROP TABLE` remain supported in their documented scope. `PRIMARY KEY`, `UNIQUE`, foreign-key/check/default declarations and table constraints are not enforced and are therefore rejected rather than silently discarded. SQL `ALTER TABLE`, explicit index DDL, views, grants and database/schema management are not implemented. The internal index advisor is a separate local mechanism.
 - **Limited types.** Declared `DECIMAL`/`NUMERIC` map to `DOUBLE`, and durable `BOOLEAN` declarations use the historical integer representation; precision/scale and full PostgreSQL type semantics are not preserved. Timestamp/time-zone compatibility is not claimed.
 - **Narrow DML binding, fail closed.** `INSERT` accepts `VALUES`; `INSERT ... SELECT` is unsupported. `UPDATE`/`DELETE` use a simple column/literal predicate representation. If a `WHERE` clause cannot be bound to that supported representation, the mutation is rejected rather than broadened to an unfiltered write. Rich `SELECT` predicate support does not imply the same DML support.
 - **Authentication is not authorization.** The server does not enforce per-user table privileges or an administrator-only user-DDL policy. User rotation/drop does not terminate already authenticated sessions.
 
-Implementation references: [`sql.rs`](../src/sql.rs), [`binder.rs`](../src/binder.rs), [`binder_phase8.rs`](../src/binder_phase8.rs), [`query_executor.rs`](../src/query_executor.rs), [`extended_protocol.rs`](../src/extended_protocol.rs), [`server_parts/session.rs`](../src/server_parts/session.rs) and [`server_parts/query.rs`](../src/server_parts/query.rs).
+Implementation references: [`sql.rs`](../src/sql.rs), [`binder.rs`](../src/binder.rs), [`binder_safety.rs`](../src/binder_safety.rs), [`query_executor.rs`](../src/query_executor.rs), [`query_executor_semantics.rs`](../src/query_executor_semantics.rs), [`extended_protocol.rs`](../src/extended_protocol.rs), [`server_parts/session.rs`](../src/server_parts/session.rs) and [`server_parts/query.rs`](../src/server_parts/query.rs).
 
-## Phase 8 executable semantic evidence
+## Executable semantic evidence
 
-Phase 8 adds explicit evidence instead of promoting broad compatibility by implication:
+The compatibility suite uses explicit evidence instead of promoting broad compatibility by implication:
 
 - `tests/sql_compatibility_profile.rs` validates the machine-readable support/anti-overclaim contract in `SQL_COMPATIBILITY.yaml`.
 - `tests/sql_semantic_differential.rs` compares the selected scalar/NULL/text/DATE/window matrix against PostgreSQL 16.
-- `tests/phase8_dml_predicate_safety.rs` proves unsupported persistent DML predicates fail closed.
-- `tests/phase8_ddl_safety.rs` proves unsupported constraint/default declarations fail closed.
-- `tests/phase8_window_safety.rs` locks the supported basic window route and rejects named-window/explicit-frame semantics that are not implemented.
-- `tests/phase8_transaction_protocol.rs` locks single-statement rejection, explicit transaction-block non-support, and connection recovery after errors.
-- `tests/phase8_extended_protocol.rs` exercises the live bounded Parse/Bind/Execute/Describe lifecycle.
-- `tests/phase8_postgres_client.rs` exercises the server with the real Rust `postgres` client and a typed prepared parameter.
-- `tests/phase8_parameter_determinism.rs` verifies bound persistent-mutation parameters become concrete deterministic plans before the established mutation/Raft path.
+- `tests/sql_dml_predicate_safety.rs` proves unsupported persistent DML predicates fail closed.
+- `tests/sql_ddl_safety.rs` proves unsupported constraint/default declarations fail closed.
+- `tests/window_semantics_safety.rs` locks the supported basic window route and rejects named-window/explicit-frame semantics that are not implemented.
+- `tests/transaction_protocol_boundaries.rs` locks single-statement rejection, explicit transaction-block non-support, and connection recovery after errors.
+- `tests/extended_protocol.rs` exercises the live bounded Parse/Bind/Execute/Describe lifecycle.
+- `tests/postgres_client_compatibility.rs` exercises the server with the real Rust `postgres` client and a typed prepared parameter.
+- `tests/parameter_determinism.rs` verifies bound persistent-mutation parameters become concrete deterministic plans before the established mutation/Raft path.
 
 These tests establish only their declared surface. They do not establish complete PostgreSQL compatibility.
 
@@ -62,7 +62,7 @@ Clustered mode means `NEURALBASE_NODE_ID` is configured and durable RocksDB is a
 
 Standalone durability assumes RocksDB opened successfully. Standalone DDL can acknowledge after a logged persistence error, and a multi-row standalone insert is applied row by row; these paths do not provide the clustered atomic commit/apply contract.
 
-Parameterized persistent mutations in the supported Phase-8 Bind subset are decoded and materialized into the existing concrete SQL/DML plan before a persistent proposal is formed. Followers do not independently reinterpret client parameter bytes.
+Parameterized persistent mutations in the supported Bind subset are decoded and materialized into the existing concrete SQL/DML plan before a persistent proposal is formed. Followers do not independently reinterpret client parameter bytes.
 
 ## Cluster mutation semantics
 
@@ -87,15 +87,15 @@ User DDL is quorum-committed and applied on the leader before success. Authentic
 
 ## Snapshot/recovery boundary
 
-The SQL-aware logical snapshot includes catalog/table rows, durable replicated apply/HLC metadata and replicated identity. Snapshot creation is staged before compaction; installation restores durable state before success ACK. Fixed-member reconstruction and learner catch-up can therefore recover both table and authentication state from snapshot + suffix.
+The SQL-aware logical snapshot includes catalog/table rows, durable replicated apply/HLC metadata and replicated identity. Snapshot creation is staged before compaction; installation restores durable state before success ACK. Fixed-member reconstruction and learner catch-up can therefore recover both table and authentication state from snapshot plus suffix.
 
 ## Membership boundary
 
-The engine supports learner admission/catch-up, joint-consensus promotion/removal and durable finalized membership. Phase 7 also includes guarded managed reconciliation evidence. This remains a control-plane surface rather than SQL syntax, and the checked-in deployment intentionally does not claim automatic HPA-style database membership changes.
+The engine supports learner admission/catch-up, joint-consensus promotion/removal and durable finalized membership. Guarded managed reconciliation connects explicit desired topology to that protocol. This remains a control-plane surface rather than SQL syntax, and the checked-in deployment intentionally does not claim automatic HPA-style database membership changes.
 
 ## Read consistency
 
-Phase 6 adds a session-scoped NeuralBase `SET` surface for read consistency:
+NeuralBase exposes a session-scoped `SET` surface for read consistency:
 
 ```sql
 SET neuralbase_read_consistency = local;
@@ -138,4 +138,4 @@ psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 -U anon -d postgres \
 
 ## TPC-H and PostgreSQL-reference evidence
 
-`tests/tpch_correctness.rs` executes checked-in Q1-Q22 against a deterministic small NeuralBase dataset and compares results with PostgreSQL 16. `tests/sql_semantic_differential.rs` adds the selected Phase-8 scalar/NULL/text/DATE/window matrix. These are regression evidence for exact tested forms, not official TPC-H certification or complete PostgreSQL compatibility.
+`tests/tpch_correctness.rs` executes checked-in Q1-Q22 against a deterministic small NeuralBase dataset and compares results with PostgreSQL 16. `tests/sql_semantic_differential.rs` adds the selected scalar/NULL/text/DATE/window matrix. These are regression evidence for exact tested forms, not official TPC-H certification or complete PostgreSQL compatibility.

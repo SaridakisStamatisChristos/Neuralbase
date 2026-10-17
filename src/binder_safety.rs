@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Phase 8 safety wrapper around the historical binder implementation.
+// Fail-closed semantic safety wrapper around the historical binder implementation.
 //
 // The legacy binder intentionally remains the implementation source for bound
 // plan/value types. This module adds fail-closed validation at SQL boundaries
@@ -17,8 +17,8 @@ pub use crate::binder_legacy::{
 };
 
 /// Bind a standard SQL statement while preserving the historical binder's
-/// supported behavior. Phase 8 validates semantics that must never be silently
-/// discarded before delegating to the established binder.
+/// supported behavior. The safety layer validates semantics that must never be
+/// silently discarded before delegating to the established binder.
 pub fn bind_statement(
     statement: &Statement,
     catalog: &dyn Catalog,
@@ -29,8 +29,7 @@ pub fn bind_statement(
     // column names/aliases. That is correct for its historical scalar subset,
     // but it would discard a validated window expression such as
     // ROW_NUMBER() OVER (...). Route window-bearing queries directly to the
-    // general executor, which is the implementation that actually evaluates
-    // the supported Phase-8 partition/order window subset.
+    // general executor, which evaluates the supported partition/order subset.
     if let Statement::Query(query) = statement {
         if query_contains_window(query) {
             return Ok(BoundPlan::SelectQuery(query.clone()));
@@ -42,7 +41,7 @@ pub fn bind_statement(
     Ok(plan)
 }
 
-/// Bind a NeuralBase-extended statement through the Phase-8 safety boundary.
+/// Bind a NeuralBase-extended statement through the semantic safety boundary.
 pub fn bind_nb_statement(
     nb_stmt: &NbStatement,
     catalog: &dyn Catalog,
@@ -73,10 +72,11 @@ fn validate_statement_semantics(statement: &Statement) -> Result<(), BindError> 
     Ok(())
 }
 
-/// Phase 8 supports the established ROW_NUMBER/RANK/LAG/LEAD partition/order
-/// subset, but not named-window inheritance or explicit frame clauses. The
-/// legacy executor ignores those fields; accepting them would therefore return
-/// a result for semantics the engine did not execute.
+/// The supported window surface covers the established
+/// ROW_NUMBER/RANK/LAG/LEAD partition/order subset, but not named-window
+/// inheritance or explicit frame clauses. The legacy executor ignores those
+/// fields; accepting them would therefore return a result for semantics the
+/// engine did not execute.
 fn validate_query_semantics(query: &Query) -> Result<(), BindError> {
     if let Some(with) = &query.with {
         for cte in &with.cte_tables {
@@ -287,9 +287,9 @@ fn expr_contains_window(expr: &Expr) -> bool {
 /// correctly interprets `None` as a full-table mutation, so allowing an
 /// unsupported WHERE expression to reach it would broaden the write.
 ///
-/// Phase 8 therefore rejects exactly that ambiguous state. A statement without
-/// a WHERE clause retains its existing full-table semantics; a WHERE clause is
-/// accepted only when the legacy binder produced a concrete predicate.
+/// The safety layer therefore rejects exactly that ambiguous state. A statement
+/// without a WHERE clause retains its existing full-table semantics; a WHERE
+/// clause is accepted only when the legacy binder produced a concrete predicate.
 fn validate_persistent_dml_predicate(
     statement: &Statement,
     plan: &BoundPlan,

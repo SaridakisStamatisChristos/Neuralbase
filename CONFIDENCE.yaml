@@ -1,8 +1,8 @@
 version: 5
-updated: 2026-09-15
+updated: 2026-10-17
 
 system:
-  scope: local_sql_engine_plus_replicated_tables_snapshots_membership_identity_backup_read_consistency_managed_reconciliation_phase8_sql_profile_and_phase9_exact_index_pitr
+  scope: local_sql_engine_plus_replicated_tables_snapshots_membership_identity_backup_read_consistency_managed_reconciliation_sql_semantic_profile_and_exact_index_pitr
   effective_confidence: 0.78
   production_ready: false
   distributed_sql_replication: true
@@ -50,44 +50,45 @@ system:
   summary: >-
     Confidence covers the tested local SQL/MVCC engine, replicated persistent-table
     mutations, SQL-aware snapshot/recovery, coordinated learner/joint-consensus
-    membership changes, replicated SCRAM identity, Phase-5 operator recovery,
-    Phase-6 Local/Leader/Linearizable leader-path read semantics, the opt-in Phase-7
-    managed process/Kubernetes membership reconciliation profile, and the explicit
-    Phase-8 SQL compatibility profile, and Phase-9 exact committed-index archived
-    recovery/PITR. Phase 8 adds fail-closed unsupported DML/DDL semantics,
+    membership changes, replicated SCRAM identity, operator backup/restore and
+    fresh-cluster recovery, Local/Leader/Linearizable leader-path read semantics,
+    opt-in managed process/Kubernetes membership reconciliation, the explicit SQL
+    semantic/compatibility profile, and exact committed-index archived recovery/PITR.
+    SQL semantic hardening includes fail-closed unsupported DML/DDL semantics,
     single-statement request enforcement, selected PostgreSQL-16 differential
     scalar/window evidence, and a typed extended-protocol subset with real
-    postgres-client evidence. Phase 9 adds strict hash-linked archive records,
-    optional authenticated archive encryption, synchronous archive-before-confirmed-
-    apply fencing, exact-index replay into a fresh verified recovery generation,
-    child timeline branching and conservative bounded retention. This does not imply
-    production HA, full PostgreSQL compatibility, SQL transaction blocks, arbitrary-
-    follower linearizable reads, automatic strong-read routing, arbitrary Helm/HPA
-    replica scaling, timestamp-target PITR, or automatic disaster recovery.
+    postgres-client evidence. Exact-index recovery includes strict hash-linked
+    archive records, optional authenticated archive encryption, synchronous
+    archive-before-confirmed-apply fencing, replay into a fresh verified recovery
+    generation, child timeline branching and conservative bounded retention. This
+    does not imply production HA, full PostgreSQL compatibility, SQL transaction
+    blocks, arbitrary-follower linearizable reads, automatic strong-read routing,
+    arbitrary Helm/HPA replica scaling, timestamp-target PITR, or automatic DR.
 
 artifacts:
   - artifact: wire_protocol_v3
     effective: 0.68
     status: tested_partial_extended_protocol
     evidence:
-      - tests/session1_foundation.rs
-      - tests/session14_advanced_sql.rs
-      - tests/phase8_extended_protocol.rs
-      - tests/phase8_postgres_client.rs
-      - tests/phase8_parameter_determinism.rs
+      - tests/foundation_correctness.rs
+      - tests/advanced_sql.rs
+      - tests/extended_protocol.rs
+      - tests/postgres_client_compatibility.rs
+      - tests/parameter_determinism.rs
     limitation: >-
-      Phase 8 supports a bounded typed Parse/Bind/Execute/Describe/Close/Sync subset,
-      NULL parameters, text and selected binary scalar parameter encodings, and
-      ParameterDescription. Row-producing binary result formats, OID 0 inference,
-      complete metadata and PostgreSQL extended-protocol failed-transaction/error
-      state are not implemented. SQL transaction blocks remain unsupported.
+      The supported surface is a bounded typed Parse/Bind/Execute/Describe/Close/Sync
+      subset with NULL parameters, text and selected binary scalar parameter
+      encodings, and ParameterDescription. Row-producing binary result formats,
+      OID 0 inference, complete metadata and PostgreSQL extended-protocol
+      failed-transaction/error state are not implemented. SQL transaction blocks
+      remain unsupported.
 
   - artifact: sql_parser
     effective: 0.78
     status: tested
     evidence:
       - tests/tpch_correctness.rs
-      - tests/phase8_transaction_protocol.rs
+      - tests/transaction_protocol_boundaries.rs
       - tests/sql_compatibility_profile.rs
       - fuzz/fuzz_targets/fuzz_sql_parser.rs
     limitation: >-
@@ -96,13 +97,13 @@ artifacts:
 
   - artifact: binder
     effective: 0.76
-    status: tested_fail_closed_phase8_boundary
+    status: tested_fail_closed_semantic_boundary
     evidence:
-      - tests/session1_foundation.rs
+      - tests/foundation_correctness.rs
       - tests/tpch_correctness.rs
-      - tests/phase8_dml_predicate_safety.rs
-      - tests/phase8_ddl_safety.rs
-      - tests/phase8_window_safety.rs
+      - tests/sql_dml_predicate_safety.rs
+      - tests/sql_ddl_safety.rs
+      - tests/window_semantics_safety.rs
     limitation: >-
       Unsupported UPDATE/DELETE predicates, unenforced CREATE TABLE options and
       constraints, named windows and explicit window frames fail closed. This does
@@ -120,35 +121,35 @@ artifacts:
     status: tested_with_bounded_intermediates
     evidence:
       - tests/tpch_correctness.rs
-      - tests/session14_advanced_sql.rs
+      - tests/advanced_sql.rs
       - tests/sql_semantic_differential.rs
     note: >-
       Checked-in TPC-H Q1-Q22 SQL strings have PostgreSQL-16 row-for-row reference
-      comparisons on the deterministic small test dataset. Phase 8 additionally
-      differentially checks a selected scalar NULL/boolean/cast/date/text surface
-      and basic window cases. This is bounded correctness evidence, not general
-      PostgreSQL semantic compatibility or production-scale performance evidence.
+      comparisons on the deterministic small test dataset. A selected scalar
+      NULL/boolean/cast/date/text surface and basic window cases are also checked
+      differentially. This is bounded correctness evidence, not general PostgreSQL
+      semantic compatibility or production-scale performance evidence.
 
   - artifact: sql_semantic_profile
     effective: 0.72
-    status: explicit_bounded_phase8_profile
+    status: explicit_bounded_compatibility_profile
     evidence:
       - SQL_COMPATIBILITY.yaml
       - tests/sql_compatibility_profile.rs
       - tests/sql_semantic_differential.rs
-      - tests/phase8_dml_predicate_safety.rs
-      - tests/phase8_ddl_safety.rs
-      - tests/phase8_window_safety.rs
-      - tests/phase8_transaction_protocol.rs
-      - tests/phase8_extended_protocol.rs
-      - tests/phase8_postgres_client.rs
-      - tests/phase8_parameter_determinism.rs
+      - tests/sql_dml_predicate_safety.rs
+      - tests/sql_ddl_safety.rs
+      - tests/window_semantics_safety.rs
+      - tests/transaction_protocol_boundaries.rs
+      - tests/extended_protocol.rs
+      - tests/postgres_client_compatibility.rs
+      - tests/parameter_determinism.rs
     limitation: >-
       Full PostgreSQL compatibility is explicitly false. SQL transaction blocks,
       general constraints, exact NUMERIC semantics, timestamp/timezone semantics,
       locale-aware collations, general named/frame windows, arbitrary parameter OIDs,
       binary row results and complete extended-protocol recovery/metadata remain
-      outside the Phase-8 contract.
+      outside the declared contract.
 
   - artifact: storage_engine
     effective: 0.78
@@ -158,7 +159,7 @@ artifacts:
       - tests/dml_correctness.rs
       - tests/replicated_sql_process.rs
       - tests/replicated_sql_snapshot_bootstrap.rs
-      - tests/phase4_identity_recovery.rs
+      - tests/replicated_identity_recovery.rs
 
   - artifact: mvcc_txn_manager
     effective: 0.76
@@ -183,8 +184,8 @@ artifacts:
       - src/replicated_identity_store.rs
       - src/replicated_identity_runtime.rs
       - tests/auth_correctness.rs
-      - tests/phase4_identity.rs
-      - tests/phase4_identity_process.rs
+      - tests/replicated_identity.rs
+      - tests/replicated_identity_process.rs
     limitation: >-
       Clustered authority is replicated SCRAM identity. Plaintext passwords are
       materialized into SCRAM verifier data before Raft proposal. PostgreSQL MD5
@@ -199,13 +200,13 @@ artifacts:
       - tests/adversarial_raft.rs
       - tests/raft_client_ack.rs
       - tests/raft_persistence_fail_closed.rs
-      - tests/phase3_membership.rs
-      - tests/phase4_identity_membership.rs
-      - tests/phase6_read_barrier.rs
-      - tests/phase6_membership_reads.rs
+      - tests/membership_lifecycle.rs
+      - tests/replicated_identity_membership.rs
+      - tests/read_barrier.rs
+      - tests/read_consistency_membership.rs
     limitation: >-
       No TLA+ proof or arbitrary HPA deployment semantics. Membership changes are
-      exercised through explicit learner, joint-consensus and guarded Phase-7
+      exercised through explicit learner, joint-consensus and guarded managed
       reconciliation paths; arbitrary replica-count changes remain unsafe. Strong
       reads use a log-backed barrier rather than ReadIndex/lease optimization.
 
@@ -217,7 +218,7 @@ artifacts:
       - src/consensus/raft.rs
       - tests/raft_persistence_fail_closed.rs
       - tests/replicated_sql_snapshot_bootstrap.rs
-      - tests/phase3_membership.rs
+      - tests/membership_lifecycle.rs
 
   - artifact: raft_tcp_transport
     effective: 0.74
@@ -226,9 +227,9 @@ artifacts:
       - tests/raft_tcp_transport.rs
       - src/consensus/transport.rs
       - tests/replicated_sql_process.rs
-      - tests/phase4_identity_process.rs
-      - tests/phase6_read_consistency_process.rs
-      - tests/phase6_concurrent_process.rs
+      - tests/replicated_identity_process.rs
+      - tests/read_consistency_process.rs
+      - tests/read_consistency_concurrent_process.rs
 
   - artifact: sql_replication
     effective: 0.76
@@ -247,14 +248,14 @@ artifacts:
       - tests/replicated_sql_snapshot_guard.rs
       - tests/replicated_sql_snapshot_bootstrap.rs
       - tests/replicated_sql_snapshot_cycles.rs
-      - tests/phase6_read_barrier.rs
-      - tests/phase8_parameter_determinism.rs
+      - tests/read_barrier.rs
+      - tests/parameter_determinism.rs
     limitation: >-
       Persistent table CREATE/DROP/INSERT/UPDATE/DELETE and SQL-aware snapshot
-      recovery are tested. Phase-8 typed parameters are materialized into concrete
-      SQL/bound mutation semantics before the established replicated path. This is
-      not a distributed SQL transaction claim. Reads default to Local, while
-      explicit Leader and Linearizable modes are tested on the current-leader path.
+      recovery are tested. Typed parameters are materialized into concrete SQL/bound
+      mutation semantics before the established replicated path. This is not a
+      distributed SQL transaction claim. Reads default to Local, while explicit
+      Leader and Linearizable modes are tested on the current-leader path.
       Arbitrary-follower linearizable reads and production HA are not claimed.
 
   - artifact: read_consistency
@@ -267,17 +268,16 @@ artifacts:
       - src/server_parts/session.rs
       - src/server_parts/query.rs
       - src/server_parts/tail.rs
-      - tests/phase6_read_barrier.rs
-      - tests/phase6_membership_reads.rs
-      - tests/phase6_recovery_readiness.rs
-      - tests/phase6_read_consistency_process.rs
-      - tests/phase6_concurrent_process.rs
+      - tests/read_barrier.rs
+      - tests/read_consistency_membership.rs
+      - tests/read_consistency_recovery_readiness.rs
+      - tests/read_consistency_process.rs
+      - tests/read_consistency_concurrent_process.rs
     limitation: >-
-      Leader and Linearizable currently share a current-term replicated log
-      barrier that succeeds only after quorum commit and confirmed durable local
-      apply. Strong reads require the current serving leader. There is no silent
-      downgrade, arbitrary-follower linearizable routing, ReadIndex or lease-read
-      optimization.
+      Leader and Linearizable currently share a current-term replicated log barrier
+      that succeeds only after quorum commit and confirmed durable local apply.
+      Strong reads require the current serving leader. There is no silent downgrade,
+      arbitrary-follower linearizable routing, ReadIndex or lease-read optimization.
 
   - artifact: membership_changes
     effective: 0.74
@@ -290,15 +290,15 @@ artifacts:
       - src/operator_admin.rs
       - ops/neuralbase_operator.py
       - ops/neuralbase_kubernetes.py
-      - tests/phase3_membership.rs
-      - tests/phase4_identity_membership.rs
-      - tests/phase6_membership_reads.rs
-      - tests/phase7_planner.rs
-      - tests/phase7_guarded_membership.rs
-      - tests/phase7_managed_storage.rs
-      - tests/phase7_process.rs
-      - tests/phase7_kubernetes.py
-      - tests/phase7_kubernetes_guards.py
+      - tests/membership_lifecycle.rs
+      - tests/replicated_identity_membership.rs
+      - tests/read_consistency_membership.rs
+      - tests/managed_membership_planner.rs
+      - tests/managed_membership_guards.rs
+      - tests/managed_membership_storage.rs
+      - tests/managed_membership_process.rs
+      - tests/managed_membership_kubernetes.py
+      - tests/managed_membership_kubernetes_guards.py
     limitation: >-
       The opt-in managed process/Kubernetes profile reconciles explicit desired
       topology through the guarded membership protocol and retains removed storage.
@@ -316,11 +316,11 @@ artifacts:
       - src/replicated_identity_runtime.rs
       - src/replicated_state_machine.rs
       - src/replicated_snapshot_manager.rs
-      - tests/phase4_identity.rs
-      - tests/phase4_identity_recovery.rs
-      - tests/phase4_identity_snapshot_bootstrap.rs
-      - tests/phase4_identity_membership.rs
-      - tests/phase4_identity_process.rs
+      - tests/replicated_identity.rs
+      - tests/replicated_identity_recovery.rs
+      - tests/replicated_identity_snapshot_bootstrap.rs
+      - tests/replicated_identity_membership.rs
+      - tests/replicated_identity_process.rs
     limitation: >-
       Replicated credentials are SCRAM verifier material only. Legacy migration is
       explicit and digest-selected; malformed/duplicate/MD5 registries fail closed.
@@ -337,18 +337,18 @@ artifacts:
       - src/backup_encryption.rs
       - src/restore.rs
       - src/bin/neuralbase-backup.rs
-      - tests/phase5_online_backup_interactions.rs
-      - tests/phase5_cluster_recovery.rs
-      - tests/phase5_recovery_process.rs
-      - tests/phase5_encrypted_ops.rs
-      - tests/phase6_read_consistency_process.rs
+      - tests/online_backup_interactions.rs
+      - tests/cluster_recovery.rs
+      - tests/recovery_process.rs
+      - tests/encrypted_backup_ops.rs
+      - tests/read_consistency_process.rs
     limitation: >-
       The external CLI provides offline create/verify/restore. Online backup is a
       tested in-process leader coordinator, not a standalone live-server CLI.
       Recovery creates a fresh cluster generation; it is not in-place restore into
       an existing live cluster. Offline sources require persisted Raft state and
-      committed membership; standalone-only databases are not supported. Exact-
-      index PITR is a separate Phase-9 artifact; automatic DR is not implemented.
+      committed membership; standalone-only databases are not supported. Exact-index
+      PITR is a separate artifact; automatic DR is not implemented.
 
   - artifact: point_in_time_recovery
     effective: 0.74
@@ -362,8 +362,9 @@ artifacts:
       - src/pitr_branch.rs
       - src/pitr_retention.rs
       - src/bin/neuralbase-pitr.rs
-      - tests/phase9_pitr_process.rs
+      - tests/pitr_process.rs
       - docs/PITR.md
+      - docs/PITR_CORRECTNESS_MODEL.md
     limitation: >-
       Recovery targets are baseline/latest or an exact committed Raft index. Archive
       v1 does not map wall-clock timestamps to indexes and does not provide automatic
@@ -379,33 +380,32 @@ artifacts:
       - k8s/deployment.yaml
       - helm/neuralbase
       - ops/neuralbase_kubernetes.py
-      - tests/phase7_kubernetes.py
+      - tests/managed_membership_kubernetes.py
     limitation: >-
-      The checked-in Compose/raw Kubernetes/Helm examples remain static topology
-      examples and must not be scaled arbitrarily. A separate opt-in Phase-7
-      per-incarnation StatefulSet/PVC profile is lifecycle-tested through kind and
-      guarded membership reconciliation. HPA remains unsupported, SQL Services are
-      not leader-routing, and the managed profile is not a production security or
-      upgrade baseline.
+      The checked-in Compose/raw Kubernetes/Helm examples remain static-topology
+      examples and must not be scaled arbitrarily. A separate opt-in per-incarnation
+      StatefulSet/PVC profile is lifecycle-tested through kind and guarded membership
+      reconciliation. HPA remains unsupported, SQL Services are not leader-routing,
+      and the managed profile is not a production security or upgrade baseline.
 
 verification_policy:
   - No performance claim without a reproducible benchmark and workload context.
   - distributed_sql_replication means only the machine-readable replication_scope above.
-  - production_ready and production_ha remain false despite membership, identity, recovery, read-consistency, managed-reconciliation, Phase-8 SQL, and Phase-9 exact-index PITR progress.
-  - pitr=true means only the Phase-9 exact committed-Raft-index archive/replay contract; pitr_timestamp_targets and automatic_dr remain false.
+  - production_ready and production_ha remain false despite membership, identity, recovery, read-consistency, managed-reconciliation, SQL-semantic, and exact-index PITR progress.
+  - pitr=true means only the exact committed-Raft-index archive/replay contract; pitr_timestamp_targets and automatic_dr remain false.
   - Keep SQL correctness claims synchronized with SQL_COMPATIBILITY.yaml and executable PostgreSQL reference tests.
-  - Keep arbitrary Helm/HPA scaling unsupported; the managed Phase-7 profile must sequence changes through guarded committed membership.
+  - Keep arbitrary Helm/HPA scaling unsupported; managed reconciliation must sequence changes through guarded committed membership.
   - Replicated identity claims require verifier-only log material and explicit legacy migration semantics.
   - Follower authentication reads locally applied identity without a quorum barrier; user DDL does not terminate existing sessions.
   - Library optimizer/exchange components do not establish live SQL planner or distributed-query integration.
   - Strong-read claims require explicit current-leader authority, quorum barrier, confirmed local apply, and no silent downgrade.
-  - Phase-8 extended-protocol claims remain limited to the declared typed subset; SQL transactions, arbitrary OID inference, binary row output and full PostgreSQL protocol error state remain unsupported.
+  - Extended-protocol claims remain limited to the declared typed subset; SQL transactions, arbitrary OID inference, binary row output and full PostgreSQL protocol error state remain unsupported.
   - A release head must pass tests, lint, confidence checks, adversarial tests, TPC-H plus semantic PostgreSQL reference validation, Helm rendering, and the managed Kubernetes lifecycle gate.
 
 next_high_value_work:
   - Continue SQL semantic depth with exact NUMERIC/decimal behavior, broader date/time/timestamp semantics, locale/collation work, enforceable constraints and fuller wire metadata/error-state compatibility.
   - Preserve the explicit unsupported boundary for SQL transaction blocks until multi-statement/distributed semantics can be implemented without weakening replicated-state safety.
-  - Harden the managed reconciliation profile for upgrades, broader network/storage chaos, and production-grade security without enabling raw HPA scaling.
-  - Add timestamp-to-index recovery mapping only with an explicit durable time/index contract; do not infer it from Phase-9 exact-index PITR.
+  - Harden managed reconciliation for upgrades, broader network/storage chaos, and production-grade security without enabling raw HPA scaling.
+  - Add timestamp-to-index recovery mapping only with an explicit durable time/index contract; do not infer it from exact-index PITR.
   - Expand authorization/security and upgrade/storage-chaos hardening.
-  - Optimize strong reads with ReadIndex/lease mechanics only if the Phase-6 public contract and failure semantics remain unchanged.
+  - Optimize strong reads with ReadIndex/lease mechanics only if the public read contract and failure semantics remain unchanged.

@@ -1,7 +1,7 @@
 pub mod auth;
 pub mod backup;
 pub mod backup_encryption;
-#[path = "binder_phase8.rs"]
+#[path = "binder_safety.rs"]
 pub mod binder;
 #[path = "binder.rs"]
 mod binder_legacy;
@@ -28,7 +28,7 @@ pub mod pitr_replay;
 pub mod pitr_retention;
 pub mod pitr_runtime;
 pub mod protocol;
-#[path = "query_executor_phase8.rs"]
+#[path = "query_executor_semantics.rs"]
 pub mod query_executor;
 #[path = "query_executor.rs"]
 mod query_executor_legacy;

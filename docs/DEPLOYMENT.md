@@ -34,7 +34,7 @@ Setting `NEURALBASE_NODE_ID` enables replicated state and requires durable Rocks
 | `NEURALBASE_AUTH_REQUIRED` | Require PostgreSQL authentication |
 | `NEURALBASE_USERS_FILE` | Standalone registry path, or clustered **legacy migration source** path |
 | `NEURALBASE_IDENTITY_MIGRATION_SHA256` | Exact SHA-256 authorizing the selected clustered legacy registry |
-| `NEURALBASE_PITR_ARCHIVE_DIR` | Existing verified Phase-9 archive stream; opt-in synchronous archival |
+| `NEURALBASE_PITR_ARCHIVE_DIR` | Existing verified archive stream; opt-in synchronous archival |
 | `NEURALBASE_PITR_KEY_FILE` | Optional raw 32-byte archive-encryption key file |
 | `NEURALBASE_PITR_MAX_SEGMENTS` | Bounded per-stream archive segment limit |
 
@@ -59,7 +59,7 @@ The first connection that reaches the leader while migration is pending causes t
 
 Migration input must use the strict `users` array SCRAM shape shown by `users.json.example`. Unknown fields/comments, malformed base64, duplicate users, MD5 credentials and digest mismatches are rejected.
 
-A fresh auth-disabled cluster with no migration file may connect and execute its first `CREATE USER`, which initializes replicated identity. A fresh cluster starting with `NEURALBASE_AUTH_REQUIRED=true` must already contain replicated identity (for example on existing PVCs) or provide an authorized migration source; otherwise authentication fails closed.
+A fresh auth-disabled cluster with no migration file may connect and execute its first `CREATE USER`, which initializes replicated identity. A fresh cluster starting with `NEURALBASE_AUTH_REQUIRED=true` must already contain replicated identity, for example on existing PVCs, or provide an authorized migration source; otherwise authentication fails closed.
 
 ## Docker Compose
 
@@ -125,7 +125,7 @@ The leader-coordinated online backup implementation is currently an in-process `
 
 Restored clusters begin from exactly one fresh recovery authority. Additional members must be fresh learners admitted/caught-up/promoted through the consensus membership API. Do not clone the restored PVC/directory into multiple voters.
 
-### Phase-9 exact-index PITR
+### Exact-index PITR
 
 The separate `neuralbase-pitr` tool initializes and verifies an archive stream from a verified NBBK/NBEC baseline, lists exact recoverable committed-index targets, recovers into a fresh target, creates a new child timeline after earlier-point recovery, and retires a quiesced parent only after a replacement child is independently verified at the parent frontier. Runtime archival is enabled only with `NEURALBASE_PITR_ARCHIVE_DIR`; optional `NEURALBASE_PITR_KEY_FILE` selects authenticated archive encryption.
 
@@ -135,9 +135,9 @@ This is an operator-managed recovery path, not automatic DR. Timestamp targets a
 
 The consensus API supports adding a learner, catch-up, promotion, joint-consensus voter changes, removal and leadership transfer. The static chart does not reconcile these operations when `replicaCount` changes, so that value remains a bootstrap topology setting and HPA is rejected.
 
-The separate [Phase-7 managed profile](PHASE7_OPERATOR.md#managed-kubernetes-profile) connects explicit desired topology to one StatefulSet/PVC per incarnation. It checks committed membership, immutable object identity and Kubernetes resource versions before executing actions, and only changes deployment state through the guarded membership sequence. Its CI evidence includes authenticated independent-process scale/replacement and a real disposable-kind lifecycle with PVC-quota partial failure, drift, leader restart/replacement, contraction, retained PVCs and SQL/SCRAM convergence. Do not point this controller at an existing Helm deployment or change its replicas directly.
+The separate [managed membership profile](MANAGED_MEMBERSHIP.md#managed-kubernetes-profile) connects explicit desired topology to one StatefulSet/PVC per incarnation. It checks committed membership, immutable object identity and Kubernetes resource versions before executing actions, and only changes deployment state through the guarded membership sequence. Its CI evidence includes authenticated independent-process scale/replacement and a real disposable-kind lifecycle with PVC-quota partial failure, drift, leader restart/replacement, contraction, retained PVCs and SQL/SCRAM convergence. Do not point this controller at an existing Helm deployment or change its replicas directly.
 
-The Phase-7 profile is therefore an implemented and lifecycle-tested **opt-in managed reconciler**, not a declaration that arbitrary Kubernetes scaling is safe. Static Helm/Compose assets stay static; HPA remains disabled.
+The managed profile is therefore an implemented and lifecycle-tested **opt-in reconciler**, not a declaration that arbitrary Kubernetes scaling is safe. Static Helm/Compose assets stay static; HPA remains disabled.
 
 ## TLS
 
@@ -145,4 +145,4 @@ Build with `--features tls`. SQL TLS and Raft mTLS remain configuration-dependen
 
 ## Operational readiness boundary
 
-Current manifests demonstrate packaging for the tested replicated-table/snapshot/membership/identity engine. Phase-5 manual backup/restore/fresh-cluster DR is tested separately from deployment automation. Phase-6 strong read modes are implemented on the leader path. Phase 7 adds tested opt-in managed process/Kubernetes membership reconciliation, but production readiness still requires target-environment security review, broader fault/upgrade validation, managed upgrade/rollback semantics and production performance characterization. Timestamp-target PITR, automatic DR, arbitrary Helm/HPA scaling and production HA remain unimplemented or unclaimed; exact committed-index PITR is implemented only through the explicit Phase-9 archive workflow.
+Current manifests demonstrate packaging for the tested replicated-table/snapshot/membership/identity engine. Manual backup/restore/fresh-cluster recovery is tested separately from deployment automation. Strong read modes are implemented on the leader path. Managed process/Kubernetes membership reconciliation is opt-in and lifecycle-tested, but production readiness still requires target-environment security review, broader fault/upgrade validation, managed upgrade/rollback semantics and production performance characterization. Timestamp-target PITR, automatic DR, arbitrary Helm/HPA scaling and production HA remain unimplemented or unclaimed; exact committed-index PITR exists only through the explicit archive workflow.

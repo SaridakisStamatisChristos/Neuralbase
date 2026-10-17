@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Explicit client-visible read-consistency contract.
 //!
-//! Phase 6 deliberately keeps the historical local read behavior as the
+//! The contract deliberately keeps the historical local read behavior as the
 //! default. Stronger modes are opt-in and have distinct semantics:
 //! - `Local`: read locally applied state without consensus coordination.
 //! - `Leader`: require current leader authority, but do not advertise a
@@ -15,14 +15,14 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Version of the public/internal Phase-6 consistency contract.
+/// Version of the public/internal read-consistency contract.
 pub const READ_CONSISTENCY_CONTRACT_VERSION: u8 = 1;
 
 /// Per-session consistency requested for SQL reads.
 ///
 /// `Local` is intentionally the default for backward compatibility with the
-/// pre-Phase-6 server. Selecting a stronger mode must never silently degrade to
-/// `Local`.
+/// historical server behavior. Selecting a stronger mode must never silently
+/// degrade to `Local`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadConsistency {
@@ -88,8 +88,8 @@ pub enum ReadConsistencySetting {
     Invalid(String),
 }
 
-/// Parse the Phase-6 session setting without handing it to the general SQL
-/// parser. Accepted forms are intentionally small and deterministic:
+/// Parse the read-consistency session setting without handing it to the general
+/// SQL parser. Accepted forms are intentionally small and deterministic:
 ///
 /// ```text
 /// SET neuralbase_read_consistency = 'linearizable'
