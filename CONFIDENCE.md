@@ -1,8 +1,8 @@
 # Confidence Report
 
-**Updated:** 2026-09-15
+**Updated:** 2026-10-17
 
-NeuralBase remains pre-1.0 research/development software. The evidence boundary includes replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated Raft membership changes, strongly consistent replicated SCRAM identity, the documented Phase-5 operator backup/restore/fresh-cluster DR model, explicit Phase-6 read-consistency modes on the leader path, the opt-in Phase-7 managed process/Kubernetes membership reconciliation profile, the bounded Phase-8 SQL compatibility profile, and Phase-9 exact committed-index archived recovery/PITR. It remains deliberately narrower than a production-HA or complete PostgreSQL-compatibility claim.
+NeuralBase remains pre-1.0 research/development software. The current evidence boundary covers replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated Raft membership changes, replicated SCRAM identity, operator backup/restore and fresh-cluster recovery, explicit leader-path read-consistency modes, opt-in managed process/Kubernetes membership reconciliation, a bounded SQL compatibility profile, and exact committed-index archived recovery/PITR. It remains deliberately narrower than a production-HA or complete PostgreSQL-compatibility claim.
 
 ## Strongest evidence
 
@@ -11,30 +11,30 @@ NeuralBase remains pre-1.0 research/development software. The evidence boundary 
 - Replicated success waits for quorum commit and confirmed durable local state-machine apply.
 - SQL snapshot creation is durably staged before Raft prefix truncation; follower installation restores durable state before success acknowledgement.
 - Empty-storage member reconstruction, repeated compaction/restart, and real-process failover paths are tested.
-- Phase 3 tests exercise learner admission/catch-up/promotion, joint-consensus 3 → 4 → 3 transitions, durable finalized membership and stale removed-node protection.
-- Phase 4 routes clustered user DDL through Raft, derives SCRAM material before proposal, stores identity atomically with the replicated apply cursor, snapshots identity, and authenticates from replicated RocksDB state.
-- Phase 4 tests cover three-node identity convergence, leader-loss password rotation/drop, crash/replay, snapshot reconstruction, learner promotion/removal, and real-process PostgreSQL authentication across restart/failover/rejoin.
+- Membership lifecycle tests exercise learner admission/catch-up/promotion, joint-consensus 3 → 4 → 3 transitions, durable finalized membership and stale removed-node protection.
+- Clustered user DDL routes through Raft, derives SCRAM material before proposal, stores identity atomically with the replicated apply cursor, snapshots identity, and authenticates from replicated RocksDB state.
+- Identity tests cover three-node convergence, leader-loss password rotation/drop, crash/replay, snapshot reconstruction, learner promotion/removal, and real-process PostgreSQL authentication across restart/failover/rejoin.
 - Strict legacy migration requires an exact `NEURALBASE_IDENTITY_MIGRATION_SHA256`; malformed, duplicate, MD5 or digest-mismatched input fails closed.
-- Phase 5 adds versioned offline/online backup, independent verification, authenticated NBEC encryption, fresh-target restore, fresh-generation cluster rebuild, interruption evidence and a real-process recovery path.
-- Phase 6 adds explicit `Local`, `Leader`, and `Linearizable` session modes. Strong modes require the current serving leader, use a current-term replicated barrier, and proceed only after quorum commit plus confirmed durable local apply through that barrier.
-- Phase 6 tests cover follower rejection, stale former leader partitions, leader transfer, learner/promotion/finalization, recovery readiness, restart, Phase-5 restore bootstrap, concurrent real-process reads/writes and immediate linearizable read-after-write.
-- Phase 7 adds deterministic desired-topology planning, quorum/apply authority observations, in-loop leader/term/generation guards, managed learner creation/catch-up/promotion, leader transfer/removal, durable incarnation identity, retained storage and bounded reobservation/retry behavior.
-- Phase 7 process tests use independent authenticated server/controller processes and verify SQL/SCRAM convergence through scale-out, leader restart, fresh-identity replacement and scale-in.
-- Phase 7 Kubernetes CI uses a disposable kind cluster and exercises PVC-quota partial creation failure, managed-object drift, 3→4 expansion, leader pod loss, fresh-identity replacement, 4→3 contraction, retained PVCs and SQL/SCRAM convergence.
-- Phase 8 adds an executable `SQL_COMPATIBILITY.yaml` anti-overclaim profile and PostgreSQL-16 differential tests for a selected scalar NULL/boolean/cast/date/text surface plus basic window cases.
-- Unsupported or unbindable `UPDATE`/`DELETE` predicates now fail closed instead of broadening to an unfiltered mutation; unenforced CREATE TABLE options/constraints, named windows and explicit window frames also fail closed.
+- Backup/recovery evidence covers versioned offline/online backup, independent verification, authenticated NBEC encryption, fresh-target restore, fresh-generation cluster rebuild, interruption behavior and a real-process recovery path.
+- `Local`, `Leader`, and `Linearizable` session modes are explicit. Strong modes require the current serving leader, use a current-term replicated barrier, and proceed only after quorum commit plus confirmed durable local apply through that barrier.
+- Read-consistency tests cover follower rejection, stale former leader partitions, leader transfer, learner/promotion/finalization, recovery readiness, restart, restored-cluster bootstrap, concurrent real-process reads/writes and immediate linearizable read-after-write.
+- Managed reconciliation adds deterministic desired-topology planning, quorum/apply authority observations, in-loop leader/term/generation guards, managed learner creation/catch-up/promotion, leader transfer/removal, durable incarnation identity, retained storage and bounded reobservation/retry behavior.
+- Managed process tests use independent authenticated server/controller processes and verify SQL/SCRAM convergence through scale-out, leader restart, fresh-identity replacement and scale-in.
+- Managed Kubernetes CI uses a disposable kind cluster and exercises PVC-quota partial creation failure, managed-object drift, 3→4 expansion, leader pod loss, fresh-identity replacement, 4→3 contraction, retained PVCs and SQL/SCRAM convergence.
+- The executable `SQL_COMPATIBILITY.yaml` profile and PostgreSQL-16 differential tests lock a selected scalar NULL/boolean/cast/date/text surface plus basic window cases without promoting unsupported behavior.
+- Unsupported or unbindable `UPDATE`/`DELETE` predicates fail closed instead of broadening to an unfiltered mutation; unenforced CREATE TABLE options/constraints, named windows and explicit window frames also fail closed.
 - Compound SQL requests are rejected before partial execution. `BEGIN`, `COMMIT`, and `ROLLBACK` remain explicitly unsupported, and connection recovery after those errors is tested.
 - The extended protocol supports a bounded typed parameter subset with NULL, text and selected binary scalar encodings, statement parameter descriptions and lifecycle handling. A real Rust `postgres` client reuses a typed prepared statement against the live server.
 - Typed parameter materialization is deterministic before the established parser/binder and replicated mutation path; this is not a distributed transaction claim.
 - PostgreSQL 16 TPC-H Q1-Q22 reference comparison remains part of CI at a deterministic small scale.
-- Phase 9 adds strict hash-linked archived committed records, authenticated archive encryption, synchronous archive-before-confirmed-apply fencing, exact baseline/index/latest recovery into a fresh verified generation, child timeline branching and conservative retention retirement.
-- Phase-9 evidence includes corruption/version/gap/overlap/publication/restart/branch/encryption faults plus a real OS-process exact-target recovery that rolls back both SQL data and replicated SCRAM identity, creates a new future, and survives restart.
+- Exact-index archived recovery uses strict hash-linked committed records, authenticated archive encryption, synchronous archive-before-confirmed-apply fencing, baseline/index/latest recovery into a fresh verified generation, child timeline branching and conservative retention retirement.
+- Archived-recovery evidence includes corruption/version/gap/overlap/publication/restart/branch/encryption faults plus a real OS-process exact-target recovery that rolls back both SQL data and replicated SCRAM identity, creates a new future, and survives restart.
 
-## Phase-8 SQL compatibility scope
+## SQL compatibility scope
 
-The authoritative compatibility inventory is [`SQL_COMPATIBILITY.yaml`](SQL_COMPATIBILITY.yaml), guarded by `tests/sql_compatibility_profile.rs`. Phase 8 intentionally distinguishes reference-tested, divergent, partial, unsupported and unsafe-clustered surfaces rather than inferring support from parser acceptance.
+The authoritative compatibility inventory is [`SQL_COMPATIBILITY.yaml`](SQL_COMPATIBILITY.yaml), guarded by `tests/sql_compatibility_profile.rs`. It intentionally distinguishes reference-tested, divergent, partial, unsupported and unsafe-clustered surfaces rather than inferring support from parser acceptance.
 
-Within the promoted Phase-8 scope:
+Within the declared scope:
 
 - one ordinary request contains exactly one statement; compound requests fail before partial execution;
 - selected no-FROM scalar SQL has PostgreSQL-16 differential evidence for three-valued NULL logic, `CASE`, `COALESCE`, `NULLIF`, `IN`/`NOT IN`, selected casts, DATE subtraction and selected text semantics;
@@ -79,13 +79,13 @@ Identity mutation ordering is consensus-backed, but login on a follower reads it
 
 The Raft layer supports explicit learner admission, learner catch-up, promotion through joint old/new voter configurations, coordinated removal, leadership-transfer constraints and durable finalized membership.
 
-The Phase-7 managed profile connects explicit desired topology to that protocol. It reobserves current committed membership through a quorum/apply authority barrier, checks guards inside the serialized Raft loop, creates fresh learner incarnations, waits for catch-up, promotes before replacement/removal, transfers leadership before leader removal, retires only after finalized committed tombstones, and retains removed storage. The Linux process and Kubernetes adapters are both executable-evidence paths rather than design-only code.
+The managed profile connects explicit desired topology to that protocol. It reobserves current committed membership through a quorum/apply authority barrier, checks guards inside the serialized Raft loop, creates fresh learner incarnations, waits for catch-up, promotes before replacement/removal, transfers leadership before leader removal, retires only after finalized committed tombstones, and retains removed storage. The Linux process and Kubernetes adapters are executable-evidence paths rather than design-only code.
 
 This does **not** mean arbitrary changes to the checked-in static Helm/Compose/StatefulSet replica counts are safe. The managed Kubernetes profile uses separate per-incarnation StatefulSets/PVCs and must be driven through its controller. HPA remains disabled. Rolling-upgrade orchestration, automatic version/image migration, hostile multi-tenant controller isolation and production deployment certification are not part of the claim.
 
-## Phase-9 PITR scope
+## Exact-index PITR scope
 
-The promoted PITR claim is deliberately narrower than generic time-based recovery. A verified NBBK/NBEC baseline anchors one archive timeline. Each required committed position after the baseline is represented by a strict hash-linked NBAR/NBPE record. When runtime archival is enabled, archive publication is part of the confirmed-apply fence, and startup refuses stream/durable-state/compaction relationships that would invalidate the recovery history.
+The PITR claim is deliberately narrower than generic time-based recovery. A verified NBBK/NBEC baseline anchors one archive timeline. Each required committed position after the baseline is represented by a strict hash-linked NBAR/NBPE record. When runtime archival is enabled, archive publication is part of the confirmed-apply fence, and startup refuses stream/durable-state/compaction relationships that would invalidate recovery history.
 
 Recovery accepts `baseline`, `latest` or an exact committed Raft index. It replays into a hidden fresh target, reconstructs state and membership at that exact boundary, establishes a fresh recovery authority, verifies the completed target and only then publishes it. Recovery to an earlier point must branch into a distinct child timeline before new future writes.
 
@@ -99,9 +99,9 @@ This claim does **not** include timestamp-to-index mapping, automatic DR/failove
 - arbitrary parameter OIDs/inference, binary row results or full extended-protocol failed-transaction/error-state behavior;
 - general constraint enforcement, exact PostgreSQL NUMERIC/DECIMAL semantics, broad timestamp/timezone semantics or locale-aware collations;
 - linearizable reads from arbitrary followers or automatic strong-read routing;
-- arbitrary Helm/StatefulSet replica scaling or HPA safety outside the explicit managed Phase-7 controller;
+- arbitrary Helm/StatefulSet replica scaling or HPA safety outside the explicit managed controller;
 - managed rolling-upgrade/version orchestration;
-- timestamp-target PITR or automatic disaster recovery; exact committed-index PITR is the bounded Phase-9 capability;
+- timestamp-target PITR or automatic disaster recovery;
 - live-server ONNX join-order planning or distributed query exchange;
 - production-grade authorization/audit policy;
 - broad upgrade/storage/network chaos certification.
