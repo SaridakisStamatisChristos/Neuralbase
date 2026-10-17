@@ -1,41 +1,43 @@
 # NeuralBase development and disaster-recovery runbook
 
-This runbook documents the **tested pre-1.0 operator recovery model** plus the Phase-6 read-consistency controls relevant to validation after failover/recovery. It is not a production-HA or automatic-disaster-recovery guarantee. `Local` reads may lag, strong reads require the current serving leader, membership reconciliation requires the explicit managed profile, and Phase-9 PITR is limited to exact committed Raft indexes from an explicitly managed archive stream.
+This runbook documents the **tested pre-1.0 operator recovery model** plus read-consistency and managed-membership controls relevant to validation after failover or recovery. It is not a production-HA or automatic-disaster-recovery guarantee. `Local` reads may lag, strong reads require the current serving leader, membership reconciliation requires the explicit managed profile, and archived recovery is limited to exact committed Raft indexes from an explicitly managed archive stream.
 
 ## Safety rules
 
-- Treat every backup as sensitive database material. Backups contain table/catalog state and replicated SCRAM verifier material.
-- Prefer authenticated NBEC encryption for retained/off-host backups.
-- Never put backup key bytes on a command line, in logs, in the backup artifact, or in source control.
+- Treat every backup and archive as sensitive database material. They contain table/catalog state and replicated SCRAM verifier material.
+- Prefer authenticated NBEC encryption for retained/off-host backups and authenticated NBPE archive encryption when archive confidentiality is required.
+- Never put backup/archive key bytes on a command line, in logs, in artifacts, or in source control.
 - Never manufacture multiple voters by copying one restored RocksDB directory.
 - Never reuse a historical source node ID as the designated recovery node ID.
 - Never point restore at an existing directory. Restore is intentionally fresh-target-only.
-- Never manually rename a `.restore-partial-*` directory into service.
-- Do not infer timestamp-target PITR, automatic DR, production HA, or linearizable arbitrary-follower reads from this runbook. Exact committed-index PITR requires the explicit Phase-9 archive workflow below.
+- Never manually promote a `.restore-partial-*` or archive staging file into service.
+- Do not infer timestamp-target PITR, automatic DR, production HA, or linearizable arbitrary-follower reads from this runbook.
 - Do not treat a failed `Leader`/`Linearizable` read on a follower as permission to serve a local fallback; route/retry through an application/operator-controlled current-leader path.
+- Do not change Kubernetes/Helm replica counts directly to alter cluster membership. Use the managed reconciliation path or explicit membership operations.
 
-## Build the operator tool
+## Build the operator tools
 
 ```bash
 cargo build --release --locked --bin neuralbase-backup
+cargo build --release --locked --bin neuralbase-pitr
+cargo build --release --locked --bin neuralbase-operator
+cargo build --release --locked --bin neuralbase
 ```
 
-The examples below assume `target/release/neuralbase-backup`, existing backup/key parent directories, and a source captured from this implementation. The server binary is built separately with `cargo build --release --locked --bin neuralbase`; the current Docker runtime image includes only the server.
+The examples below assume the release binaries, existing backup/key parent directories, and data produced by a compatible NeuralBase implementation.
 
 ## Backup formats
 
-NeuralBase Phase 5 has two operator envelopes:
+NeuralBase has two operator backup envelopes:
 
 - `NBBK` v1 — plaintext, versioned logical backup with integrity checks;
 - `NBEC` v1 — authenticated ChaCha20-Poly1305 container around the logical NBBK payload.
 
 Both represent one logical SQL/identity state plus committed membership/recovery metadata and an explicit Raft/state-machine boundary. They are not raw RocksDB copies and they are not the internal Raft snapshot wire format.
 
-## Key handling for NBEC v1
+### Key handling
 
 Generate and store a **raw 32-byte key** using an operating-system or secret-management mechanism suitable for the environment. On Unix, the current loader rejects key files accessible by group or other users; use mode `0600` or stricter.
-
-Example with OpenSSL:
 
 ```bash
 umask 077
@@ -43,79 +45,65 @@ openssl rand 32 > /secure/neuralbase-backup.key
 chmod 600 /secure/neuralbase-backup.key
 ```
 
-NBEC v1 does **not** embed the decryption key or a key identifier. Key selection is therefore an out-of-band operator responsibility. Record which external key protects each retained backup in the secret-management/inventory system, not inside the backup file.
-
-Rotation semantics are deliberately simple:
-
-1. create new backups with the new key;
-2. retain the old key for as long as any old backup encrypted with it must remain recoverable;
-3. verify a new encrypted backup with the new key before retiring an older recovery point;
-4. do not assume NeuralBase can discover the correct key automatically;
-5. a wrong key or modified NBEC artifact fails authentication.
-
-There is no in-place re-key command in Phase 5. Re-encryption, if required operationally, should be performed by restoring/verifying under controlled conditions and creating a new backup, while retaining the original until the replacement is independently verified.
+NBEC does not embed the decryption key or a key identifier. Key selection and rotation are operator responsibilities. Retain an old key for as long as any retained backup still depends on it. Verify a new encrypted backup before retiring an older recovery point.
 
 ## Offline backup
 
-Offline backup is the external CLI capture path. The source RocksDB must not be open by a NeuralBase process; RocksDB's exclusive lock enforces that boundary. It must contain persisted Raft state and committed Phase-3 membership. A database written only in standalone mode does not meet that requirement and is rejected. Stopping a lagging follower captures its validated local recovery boundary, not necessarily the latest acknowledged state on the cluster; choose the source and recovery point accordingly.
+Offline backup is the external CLI capture path. The source RocksDB must not be open by a NeuralBase process; RocksDB's exclusive lock enforces that boundary. The source must contain persisted Raft state and committed membership. A database written only in standalone mode does not meet that requirement.
 
-Stop the selected source member cleanly, then create a plaintext backup:
+Plaintext:
 
 ```bash
 target/release/neuralbase-backup create \
   --db /var/lib/neuralbase/node-a \
-  --output /backups/neuralbase-2026-09-10.nbbk
+  --output /backups/neuralbase.nbbk
 ```
 
-Or create an encrypted backup without publishing plaintext backup bytes:
+Encrypted:
 
 ```bash
 target/release/neuralbase-backup create \
   --db /var/lib/neuralbase/node-a \
-  --output /backups/neuralbase-2026-09-10.nbec \
+  --output /backups/neuralbase.nbec \
   --key-file /secure/neuralbase-backup.key
 ```
 
 Creation stages restrictive bytes, fsyncs them, independently reopens and validates the complete staged artifact, then publishes without overwriting an existing destination. Success is reported only after publication.
 
-### Offline backup interruption semantics
+A stopped follower can be behind the leader's latest acknowledged state. An offline backup therefore captures that member's validated recovery boundary, not necessarily the globally newest cluster boundary.
 
-A destination file is authority only after successful publication. A crash or write failure may leave an unpublished staging artifact, but a staging artifact is never automatically promoted merely because its bytes happen to be valid. Retry the normal command after resolving the failure; do not manually promote temporary files.
+### Interruption semantics
 
-The tested retry path fails closed when it encounters a stale staged publication, removes/quarantines that failed attempt, leaves the final destination absent, and succeeds only on a later clean creation.
+A destination is authoritative only after successful publication. A crash/write failure may leave an unpublished stage, but a stage is never automatically promoted just because its bytes happen to be valid. Retry the normal command after resolving the failure; do not manually rename a stage into service.
 
 ## Independent verification
 
-Plaintext NBBK:
+Plaintext:
 
 ```bash
 target/release/neuralbase-backup verify \
-  --backup /backups/neuralbase-2026-09-10.nbbk
+  --backup /backups/neuralbase.nbbk
 ```
 
-Encrypted NBEC:
+Encrypted:
 
 ```bash
 target/release/neuralbase-backup verify \
-  --backup /backups/neuralbase-2026-09-10.nbec \
+  --backup /backups/neuralbase.nbec \
   --key-file /secure/neuralbase-backup.key
 ```
 
-Verification is independent of restore. It checks the envelope/version, authenticated encryption where applicable, strict logical backup decoding, integrity hashes/checksums, manifest and boundary consistency, identity inclusion, membership/recovery metadata, limits, and unsupported state markers.
-
-Do not use a backup that fails verification. Verification does not repair corrupt state.
+Verification is independent of restore. It checks envelope/version, authenticated encryption where applicable, strict logical decoding, integrity hashes/checksums, manifest/boundary consistency, identity inclusion, membership/recovery metadata, limits, and unsupported state markers. Do not use a backup that fails verification.
 
 ## Online consistent backup
 
-The Phase-5 online implementation is `OnlineBackupCoordinator`. It is leader-coordinated and uses a confirmed Raft barrier plus a stable before/after durable-state fingerprint. A successful artifact corresponds to one explicit committed/applied boundary. Concurrent SQL, identity, membership, compaction, or leadership movement either orders cleanly around that boundary or makes the attempt retry/fail closed.
+`OnlineBackupCoordinator` is the leader-coordinated in-process online path. It uses a confirmed Raft barrier plus a stable before/after durable-state fingerprint. A successful artifact corresponds to one committed/applied boundary. Concurrent SQL, identity, membership, compaction, or leadership movement either orders cleanly around that boundary or makes the attempt retry/fail closed.
 
-Plaintext and encrypted online creation share the same capture path. Encrypted online publication uses the same NBEC authenticated publication primitive as encrypted offline backup.
+Plaintext and encrypted online creation share the same capture path; encrypted online publication uses the same NBEC authenticated publication primitive as encrypted offline backup.
 
-**Current invocation boundary:** `OnlineBackupCoordinator` is an in-process API. The standalone `neuralbase-backup create` command is offline-only and cannot open a RocksDB database already owned by the running server. NeuralBase does not currently expose an authenticated live-server backup management socket/SQL command. Do not describe online backup as a standalone live-server CLI feature.
+**Current invocation boundary:** the standalone `neuralbase-backup create` command is offline-only. NeuralBase does not expose an authenticated live-server backup management socket or SQL command. Do not describe online backup as a standalone live-server CLI feature.
 
-Programmatic integrations construct [`OnlineBackupCoordinator`](../src/online_backup.rs) with the runtime's client channel, shared Raft state, storage, clock and serving-readiness flag. `create_online_backup` takes an output path; `create_encrypted_online_backup` additionally takes an out-of-band key.
-
-An integration must invoke them on the running clustered leader/runtime and must surface failure rather than silently falling back to a follower or offline copy.
+Programmatic integrations construct [`OnlineBackupCoordinator`](../src/online_backup.rs) with the runtime's client channel, shared Raft state, storage, clock, and serving-readiness flag. Integrations must invoke it on the running clustered leader and surface failure rather than silently falling back to a follower or offline copy.
 
 ## Restore into a fresh recovery authority
 
@@ -123,7 +111,7 @@ Plaintext:
 
 ```bash
 target/release/neuralbase-backup restore \
-  --backup /backups/neuralbase-2026-09-10.nbbk \
+  --backup /backups/neuralbase.nbbk \
   --target /var/lib/neuralbase/recovery-a \
   --node-id recovery-a
 ```
@@ -132,7 +120,7 @@ Encrypted:
 
 ```bash
 target/release/neuralbase-backup restore \
-  --backup /backups/neuralbase-2026-09-10.nbec \
+  --backup /backups/neuralbase.nbec \
   --target /var/lib/neuralbase/recovery-a \
   --node-id recovery-a \
   --key-file /secure/neuralbase-backup.key
@@ -140,35 +128,19 @@ target/release/neuralbase-backup restore \
 
 The target must not exist. The recovery node ID must be fresh and absent from the source membership history.
 
-Restore verifies the source artifact **before target creation**, reconstructs SQL/catalog/HLC/apply/identity state in a hidden sibling directory, creates a deliberate new single-voter recovery membership generation at the backed-up Raft boundary, tombstones historical source identities, independently verifies the staged database, and only then atomically publishes the target directory.
+Restore verifies the source **before target creation**, reconstructs SQL/catalog/HLC/apply/identity state in a hidden sibling directory, creates a deliberate new single-voter recovery membership generation at the backed-up Raft boundary, tombstones historical source identities, independently verifies the staged database, and only then atomically publishes the target.
 
-## Interrupted restore semantics
+### Interrupted restore
 
-Phase 5 uses **fail-closed abandonment**, not automatic resume of arbitrary restore remnants.
+Recovery uses fail-closed abandonment, not automatic resume of arbitrary restore remnants. A crash can leave hidden `.TARGET.restore-partial-*` siblings. They are never serving authority. A retry allocates a new staging directory and publishes only a newly completed verified target. After a successful retry and health verification, stale stages may be removed manually for cleanup/forensics.
 
-A crash can leave hidden sibling directories named like `.TARGET.restore-partial-*`. Those directories are not the target and are never serving authority. On retry, restore allocates a fresh staging directory rather than interpreting an old stage as resumable state.
+## Exact committed-index archived recovery
 
-Executable tests cover representative stale stages at these boundaries:
-
-- staging directory and durable `building` marker only;
-- logical SQL/identity data restored but no authoritative recovery Raft metadata;
-- a complete verified staged database before atomic target publication.
-
-A retry must ignore all of them, construct a new verified stage, and publish only the new completed target. Stale stages remain quarantined for explicit operator cleanup/forensics.
-
-After a successful retry and after confirming the final target is healthy, stale `.restore-partial-*` directories may be removed manually. Never rename or serve one directly.
-
-## Phase-9 exact-index point-in-time recovery
-
-Phase 9 adds an **opt-in** archived recovery stream. The recovery coordinate is an exact committed Raft index. Wall-clock timestamp targets are intentionally unsupported in archive v1. Build the PITR tool with:
-
-```bash
-cargo build --release --locked --bin neuralbase-pitr
-```
+Archived recovery is opt-in. Its recovery coordinate is an exact committed Raft index. Wall-clock timestamp targets are intentionally unsupported.
 
 ### 1. Initialize a stream from a verified baseline
 
-Create or select a verified NBBK/NBEC baseline and initialize a distinct archive directory. For a plaintext baseline/archive:
+Plain baseline/archive:
 
 ```bash
 target/release/neuralbase-pitr init \
@@ -176,7 +148,7 @@ target/release/neuralbase-pitr init \
   --archive /archive/neuralbase-pitr
 ```
 
-For encrypted inputs, pass key **file paths**, never raw key bytes:
+Encrypted inputs use key **file paths**, never raw key bytes:
 
 ```bash
 target/release/neuralbase-pitr init \
@@ -186,7 +158,7 @@ target/release/neuralbase-pitr init \
   --archive-key-file /secure/pitr.key
 ```
 
-The PITR archive key is exactly 32 raw bytes and is managed out of band. On Unix, keep key files mode `0600` or stricter. The stream metadata binds the baseline hash/index/term, state-machine compatibility, source membership metadata, encryption mode and a unique timeline.
+The archive key is exactly 32 raw bytes and is managed out of band. Stream metadata binds the baseline hash/index/term, state-machine compatibility, source membership metadata, encryption mode, and a unique timeline.
 
 ### 2. Enable synchronous runtime archival
 
@@ -198,21 +170,29 @@ export NEURALBASE_PITR_KEY_FILE=/secure/pitr.key   # omit for plaintext NBAR
 export NEURALBASE_PITR_MAX_SEGMENTS=100000        # optional; default shown
 ```
 
-With PITR enabled, a committed entry is durably applied to the replicated state machine, its required archive segment is durably published and verified, and only then is confirmed apply reported back to Raft. Archive publication failure therefore fails closed rather than allowing the confirmed apply/compaction frontier to pass the missing recovery position. The historical runtime path is unchanged when `NEURALBASE_PITR_ARCHIVE_DIR` is unset.
+With archival enabled, a committed entry is durably applied to the replicated state machine, its required archive segment is durably published and verified, and only then is confirmed apply reported to Raft. Archive publication failure therefore fails closed rather than allowing confirmed apply/compaction to pass the missing recovery position. The non-archive runtime path is unchanged when `NEURALBASE_PITR_ARCHIVE_DIR` is unset.
 
-### 3. Inspect and verify recoverable targets
+### 3. Inspect and verify targets
 
 ```bash
-target/release/neuralbase-pitr status --archive /archive/neuralbase-pitr --archive-key-file /secure/pitr.key
-target/release/neuralbase-pitr verify --archive /archive/neuralbase-pitr --archive-key-file /secure/pitr.key
-target/release/neuralbase-pitr targets --archive /archive/neuralbase-pitr --archive-key-file /secure/pitr.key
+target/release/neuralbase-pitr status \
+  --archive /archive/neuralbase-pitr \
+  --archive-key-file /secure/pitr.key
+
+target/release/neuralbase-pitr verify \
+  --archive /archive/neuralbase-pitr \
+  --archive-key-file /secure/pitr.key
+
+target/release/neuralbase-pitr targets \
+  --archive /archive/neuralbase-pitr \
+  --archive-key-file /secure/pitr.key
 ```
 
-`targets` reports the baseline, latest frontier and exact inclusive committed-index range. Do not invent a timestamp target. An application/operator that needs time-oriented recovery must maintain its own trustworthy mapping from application time/event to a committed Raft index.
+Supported targets are `baseline`, `latest`, or an exact committed index in the verified range. An application/operator that needs time-oriented recovery must maintain a trustworthy mapping from application time/event to committed Raft index.
 
 ### 4. Recover to an exact point
 
-Fence the old topology and choose a **fresh** recovery node ID. The target directory must not exist:
+Fence the old topology and choose a fresh recovery node ID. The target directory must not exist:
 
 ```bash
 target/release/neuralbase-pitr recover \
@@ -224,11 +204,11 @@ target/release/neuralbase-pitr recover \
   --archive-key-file /secure/pitr.key
 ```
 
-`--target` also accepts `baseline` or `latest`. Recovery verifies the baseline and required archive chain before authority publication, restores into a hidden staging target, deterministically replays through the selected index, reconstructs selected historical membership, creates a fresh single-voter recovery generation with historical source IDs tombstoned, independently reopens/verifies the staged database, and only then atomically publishes the target. A wrong baseline, missing/corrupt segment, incompatible version or unavailable target fails before the requested target becomes serving authority.
+Recovery verifies the baseline and required archive chain before publication, restores into a hidden stage, deterministically replays through the selected index, reconstructs selected historical membership, creates a fresh single-voter generation with historical source IDs tombstoned, independently reopens/verifies the staged database, and only then publishes the target. A wrong baseline, missing/corrupt segment, incompatible version, wrong key, or unavailable target fails before the requested directory becomes serving authority.
 
 ### 5. Branch before creating a new future
 
-After recovery to an earlier point, keep the recovered database **stopped** while creating its new child timeline. This is important because starting Raft can append a new current-term control position.
+After recovery to an earlier point, keep the database **stopped** while creating its child timeline; starting Raft can append a new current-term control position.
 
 ```bash
 target/release/neuralbase-pitr branch \
@@ -240,11 +220,11 @@ target/release/neuralbase-pitr branch \
   --archive /archive/neuralbase-pitr-branch
 ```
 
-The child receives a new timeline and records the parent timeline/branch index. Old parent segments after the branch point are not valid child history. Start the recovered server with the **child** archive directory before accepting new writes.
+The child receives a new timeline and records the parent timeline/branch index. Parent segments after the branch point are not valid child history. Start the recovered server with the **child** archive directory before accepting new writes.
 
 ### 6. Rollover and conservative retirement
 
-`NEURALBASE_PITR_MAX_SEGMENTS` bounds one runtime stream. Before the limit is reached, quiesce the old archive writer and create a verified replacement child whose baseline/branch is exactly the old durable frontier. Only then retire the parent:
+`NEURALBASE_PITR_MAX_SEGMENTS` bounds one stream. Before the limit is reached, quiesce the old writer and create a verified replacement child whose baseline/branch is exactly the old durable frontier. Then retire the parent:
 
 ```bash
 target/release/neuralbase-pitr retire \
@@ -254,159 +234,87 @@ target/release/neuralbase-pitr retire \
   --replacement-archive-key-file /secure/pitr-next.key
 ```
 
-Retirement is deliberately conservative: mismatched lineage, boundary, term, segment sequence/count or staging ambiguity preserves the old data. Never delete archive segments manually to bypass the configured limit.
+Retirement is conservative: mismatched lineage, boundary, term, segment sequence/count, or staging ambiguity preserves the old data. Never delete archive segments manually to bypass the configured limit.
 
-### Phase-9 failure boundary
+### Archived-recovery failure boundary
 
-- Unknown committed command encodings, unsupported archive/state-machine versions, gaps, overlaps, bad links, corrupt finalized segments, wrong timelines and wrong keys fail closed.
-- Staging leftovers are not authoritative and are cleaned/revalidated on open; an interrupted publication never advertises an unverified target.
+- Unknown committed command encodings, unsupported archive/state-machine versions, gaps, overlaps, bad links, corrupt finalized segments, wrong timelines, and wrong keys fail closed.
+- Staging leftovers are not authoritative; interrupted publication never advertises an unverified target.
 - Archive verification is bounded by per-payload and per-stream limits.
-- Phase 9 does not provide remote object-store replication, automatic archive copying, timestamp target mapping, automatic disaster detection/failover, or a measured RPO/RTO SLA.
-- `neuralbase_pitr_*` metrics expose runtime publication/frontier/limit/rejection signals; operators still need their own durable storage, alerting, retention and key-lifecycle policy.
+- Archived recovery does not provide remote object-store replication, automatic archive copying, timestamp mapping, automatic disaster detection/failover, or a measured RPO/RTO SLA.
+- `neuralbase_pitr_*` metrics expose runtime publication/frontier/limit/rejection signals; operators still need their own durable storage, alerting, retention, and key-lifecycle policy.
 
-See [`docs/PITR.md`](../docs/PITR.md) for the format and contract summary.
+See [`docs/PITR.md`](../docs/PITR.md) and [`docs/PITR_CORRECTNESS_MODEL.md`](../docs/PITR_CORRECTNESS_MODEL.md).
 
 ## Complete cluster loss
 
 Use this workflow only when recovery from the healthy existing quorum is no longer possible.
 
 1. Fence/stop all historical nodes. Preserve disks for forensics if needed, but prevent old processes from reconnecting.
-2. Select a retained backup and independently verify it.
+2. Select a retained backup (or verified archive target) and independently verify it.
 3. Provision a new empty storage path for one **fresh** recovery node ID.
-4. Restore exactly one designated recovery authority with `neuralbase-backup restore`.
-5. Start that node with `NEURALBASE_NODE_ID` matching the fresh recovery ID and with a topology appropriate to the new single-voter generation.
-6. Verify SQL data and authentication against the restored node before adding members.
-7. Add additional **empty-disk, fresh-ID learners** through the already-tested membership API.
+4. Restore exactly one designated recovery authority.
+5. Start that node with `NEURALBASE_NODE_ID` matching the fresh recovery ID and a topology appropriate to the new single-voter generation.
+6. Verify SQL data and authentication before adding members.
+7. Add additional **empty-disk, fresh-ID learners** through the membership API or managed reconciler.
 8. Wait for snapshot/log catch-up and confirm learner state before promotion.
-9. Promote learners through the tested joint-consensus path; do not copy the recovery node's RocksDB directory.
+9. Promote learners through joint consensus; do not copy the recovery node's RocksDB directory.
 10. Verify the final voter set and confirm historical source IDs remain removed/tombstoned.
 11. Perform a new acknowledged write, test leadership/failover as appropriate, and verify convergence.
 12. Verify an explicit `Linearizable` read against the current leader after the write and after any failover/restart used in the recovery drill.
-13. Only then return normal traffic according to the environment's own operational controls.
+13. Only then return normal traffic according to the environment's operational controls.
 
-The repository's Phase-5 cluster-recovery integration test executes the core recovery lifecycle: source three-voter state, operator backup, one fresh restored authority, two fresh learners, catch-up/promotion, SQL and SCRAM convergence, new writes, leader loss/election, and full restart. Phase-6 process evidence additionally restores a Phase-5 backup to a fresh recovery node and establishes linearizable read authority in the new generation.
+The cluster-recovery integration suite executes the core fresh-generation lifecycle: source three-voter state, operator backup, one fresh restored authority, two fresh learners, catch-up/promotion, SQL/SCRAM convergence, new writes, leader loss/election, and full restart. The read-consistency process suite additionally restores a backup to a fresh recovery node and establishes linearizable read authority in the new generation.
 
-There is no automatic Kubernetes controller that performs steps 7–10. If the deployment does not expose the membership API operationally, stop at the verified single recovery node rather than inventing a multi-voter topology by disk copying.
+There is no automatic controller that converts arbitrary static deployment replica counts into safe membership. Use the explicit managed profile if deployment reconciliation is required.
 
-## Loss of quorum
+## Strong-read validation after recovery or failover
 
-First distinguish **node loss with a healthy quorum** from **actual quorum loss**.
-
-- If a healthy quorum remains, use the normal learner/removal/replacement membership lifecycle and existing snapshot/log reconstruction. Do not perform cluster-wide DR unnecessarily.
-- If quorum is lost and cannot be safely restored from the persisted current membership, do not force a stale member to self-declare a new quorum. Fence the old topology and recover from a verified external backup as a fresh cluster generation.
-
-Phase 5 does not implement an unsafe `--force-quorum` shortcut.
-
-## Corrupt local storage on one member
-
-If the cluster still has a healthy quorum and the logical member can be reconstructed safely, prefer the existing Phase-2/3 empty-storage snapshot + suffix recovery path. External disaster restore is for loss of recoverable cluster authority, not routine replacement of one damaged replica.
-
-## Validation after restore
-
-At minimum validate:
-
-- expected tables/catalog and representative row counts/values;
-- authentication with expected restored SCRAM users;
-- the new recovery node ID and membership generation;
-- absence of historical source IDs from the active voter set;
-- successful acknowledged post-restore write;
-- explicit linearizable read-after-write through the current leader;
-- restart persistence and a subsequent successful strong read;
-- HLC/apply progress indirectly through successful recovery checks/tests and diagnostics available to the integration.
-
-Example SQL smoke checks:
+Connect to the **current leader** and use one statement per request:
 
 ```bash
-psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 -U restored_user -d postgres \
-  -c 'SELECT 1' \
+psql -X -v ON_ERROR_STOP=1 -h <leader-host> -p 5432 -U <user> -d postgres \
   -c 'SET neuralbase_read_consistency = linearizable' \
-  -c 'SELECT COUNT(*) FROM critical_table'
+  -c 'SELECT 1'
 ```
 
-Replace `restored_user` and `critical_table` with the actual restored names. Repeated `-c` options send separate requests on the **same connection**, preserving the session mode. Do not combine `SET` and `SELECT` into one `-c` string: the read-consistency parser deliberately rejects multiple statements. Separate `psql` invocations also do not preserve the setting.
+`Local` is the default and performs no consensus coordination. `Leader` and `Linearizable` require current-leader authority, a current-term quorum barrier, and confirmed durable local apply. Followers/recovering nodes reject strong reads explicitly; there is no silent downgrade.
 
-The strong-read smoke check must target the current leader. A `25006` not-leader or `57P03` catching-up response is an explicit failure to establish the requested strong-read contract, not a signal to use a stale local fallback.
+## Managed membership reconciliation
 
-Use application-specific integrity checks as well. A successful command exit is not sufficient evidence that the chosen recovery point is semantically the one the application intended.
-
-## Compatibility matrix
-
-| Input | Current behavior |
-|---|---|
-| NBBK v1 with supported state/snapshot/identity/membership versions | accepted after strict verification |
-| NBEC v1 + correct key + supported inner NBBK/state versions | authenticated, decrypted, then strictly verified |
-| NBEC v1 + wrong key or modified authenticated bytes | authentication failure; restore target remains absent |
-| newer/unknown NBBK format version | explicitly rejected as unsupported |
-| newer/unknown NBEC version or algorithm | explicitly rejected as unsupported |
-| unsupported future state-machine/snapshot/identity/membership markers | fail closed; no speculative deserialization |
-| truncated/malformed/oversized/trailing-ambiguous artifact | rejected |
-| restore into existing target | rejected; no merge/overwrite mode |
-| historical source node ID reused as recovery ID | rejected |
-
-Phase 5 does not promise forward compatibility with unknown future backup formats. No migration is inferred. A future migration path must be explicit, versioned, deterministic, tested, and non-destructive to the source backup.
-
-## Backup storage expectations
-
-- Copy only a successfully published and independently verified backup.
-- Keep encrypted backups and their keys in **separate** security domains where practical.
-- Preserve key availability for the retention lifetime of encrypted backups.
-- Use storage durability/versioning appropriate to the environment; NeuralBase does not implement remote-object-store replication itself.
-- Re-verify after transfer and before a disaster restore.
-- Retain more than one recovery point according to the application's own recovery policy.
-- Phase 5 defines no measured RPO/RTO target.
-
-## Wrong key, corruption, or incompatible version
-
-Do not retry restore against a new target until the cause is understood.
-
-- **Wrong key/authentication failure:** select the correct out-of-band key. Do not modify the backup bytes to bypass authentication.
-- **Corruption/checksum failure:** use another verified recovery point; do not repair bytes manually.
-- **Unsupported version/state:** use a NeuralBase build with an explicitly documented compatible reader/migration path. Do not coerce version fields.
-
-## Ordinary cluster operation
-
-The checked-in Compose/Kubernetes/Helm topology remains a development/research topology. Writes are leader-directed; followers reject persistent table/user mutations before proposal.
-
-Reads default to `Local`, which performs no consensus coordination and may lag on a follower. For a leader-authoritative or linearizable leader-path read, set the session mode to `leader` or `linearizable` and connect to the current serving leader. Strong modes fail explicitly on followers/recovering nodes and never silently downgrade to local state.
-
-A healthy cluster can reconstruct a known member from empty storage through the tested snapshot + suffix path while keeping the reconstructing member non-serving until catch-up.
-
-## Required repository gates
-
-Before calling a Phase-6 code/documentation head validated:
+For the tested local-process profile, use a versioned desired topology and the explicit operator:
 
 ```bash
-make test
-make lint
-make confidence
-make adversarial
-make tpch-correctness
+python3 ops/neuralbase_operator.py bootstrap \
+  --config /path/to/desired.json \
+  --server target/release/neuralbase \
+  --planner target/release/neuralbase-operator
+
+python3 ops/neuralbase_operator.py reconcile --steps 100 \
+  --config /path/to/desired.json \
+  --server target/release/neuralbase \
+  --planner target/release/neuralbase-operator
 ```
 
-CI also validates deployment manifests. Exact-head green CI is evidence only for that exact commit and test scope.
+`plan` is advisory/dry-run; execution reobserves and revalidates authority. Fresh members begin non-voting, catch up, then promote. Replacement adds/promotes a fresh incarnation before removal of the old one; leader removal requires transfer first. Removed storage is retained. Tombstoned IDs cannot be reused.
 
-## Explicit non-goals
+The managed Kubernetes profile uses one StatefulSet/PVC per incarnation plus UID/resource-version and managed-field guards. It is separate from the static Helm/Compose examples. HPA and arbitrary raw replica changes remain unsupported. See [`docs/MANAGED_MEMBERSHIP.md`](../docs/MANAGED_MEMBERSHIP.md).
 
-This runbook does **not** provide or claim:
+## Verification after a recovery drill
 
-- wall-clock/timestamp-target point-in-time recovery;
-- automatic disaster detection/failover/recovery;
-- adoption/replacement of unmanaged nodes or automatic disaster replacement;
-- arbitrary StatefulSet replica changes or HPA safety;
-- linearizable reads from arbitrary followers or automatic follower-to-leader read routing;
-- a low-overhead ReadIndex/lease-read implementation;
-- complete authorization/audit/security hardening;
-- production SQL HA or production readiness;
-- a measured RPO/RTO SLA.
+At minimum, record and verify:
 
-For design limits also read `docs/ARCHITECTURE.md`, `docs/DISTRIBUTED.md`, `docs/THREAT_MODEL.md`, `docs/TESTING.md`, `CONFIDENCE.md`, and `ROADMAP.md`.
+- backup/archive independent verification succeeded;
+- restored/recovered target was published only after staged verification;
+- recovery node ID and membership generation are fresh;
+- expected SQL rows/catalog objects are present at the selected recovery boundary;
+- SCRAM authentication succeeds with the credentials expected at that boundary and fails with credentials that should not exist there;
+- source identities remain removed/tombstoned;
+- added learners fully catch up before promotion;
+- an acknowledged post-recovery write converges to every promoted voter;
+- a current-leader `Linearizable` read sees the acknowledged state;
+- failover/restart, if part of the drill, preserves those properties.
 
-## Phase-7 managed membership
+## Claims boundary
 
-For explicit scale-out, scale-in, leader replacement and controller restart, use
-[the Phase-7 guide](../docs/PHASE7_OPERATOR.md). It defines the separate local and
-Kubernetes profiles, immutable incarnation/endpoint inventory, genesis versus
-routing configuration, and blocked-state diagnostics. Removed storage stays
-retained. Do not relabel a PVC or adopt a Phase-5 restore directory through this
-controller; deliberate fresh-cluster DR remains the procedure above. Phase 7 is
-still awaiting its final-head and post-merge validation gate.
+This runbook supports the repository's tested operator-recovery, exact-index archive recovery, read-consistency, and managed-membership contracts. It does **not** establish production SQL HA, arbitrary-follower linearizable reads, automatic strong-read routing, arbitrary Helm/HPA scaling, rolling-upgrade orchestration, timestamp-target PITR, automatic DR, a production RPO/RTO SLA, or complete PostgreSQL compatibility.
