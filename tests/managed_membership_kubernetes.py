@@ -11,8 +11,8 @@ import tempfile
 import time
 
 REPO = Path(__file__).parents[1]
-CONTEXT = "kind-neuralbase-phase7"
-NAMESPACE = "neuralbase-phase7"
+CONTEXT = "kind-neuralbase-membership"
+NAMESPACE = "neuralbase-membership"
 
 
 def kube(*args):
@@ -20,15 +20,15 @@ def kube(*args):
 
 
 def main():
-    with tempfile.TemporaryDirectory(prefix="nb7-kube-") as root:
+    with tempfile.TemporaryDirectory(prefix="nb-membership-kube-") as root:
         ids = ["k7." + c for c in "abcde"]
         dns = {node: f"{node.replace('.', '-')}-0.{node.replace('.', '-')}.{NAMESPACE}.svc.cluster.local" for node in ids}
         config = {"root": root + "/controller", "desired": {"version": 1, "cluster": "k7", "revision": 1,
                   "minimum_voters": 3, "voters": ids[:3], "endpoints": {node: host + ":7001" for node, host in dns.items()}},
                   "processes": {node: {"sql_addr": host + ":5432", "metrics_addr": host + ":9090"} for node, host in dns.items()},
-                  "kubernetes": {"context": CONTEXT, "namespace": NAMESPACE, "image": "neuralbase:phase7", "storage_class": "standard", "storage": "1Gi"}}
+                  "kubernetes": {"context": CONTEXT, "namespace": NAMESPACE, "image": "neuralbase:membership-test", "storage_class": "standard", "storage": "1Gi"}}
         salt = os.urandom(16)
-        salted = hashlib.pbkdf2_hmac("sha256", b"phase7-password", salt, 4096)
+        salted = hashlib.pbkdf2_hmac("sha256", b"membership-test-password", salt, 4096)
         encode = lambda value: base64.b64encode(value).decode()
         identity = {"users": [{"method": "scram-sha-256", "username": "postgres", "salt": encode(salt), "iterations": 4096,
                               "stored_key": encode(hashlib.sha256(hmac.digest(salted, b"Client Key", "sha256")).digest()),
@@ -81,7 +81,7 @@ def main():
             config["desired"]["revision"] += 1
             config["desired"]["voters"] = voters
             write()
-        def sql(node, statement, user="postgres", password="phase7-password"):
+        def sql(node, statement, user="postgres", password="membership-test-password"):
             return kube("exec", node.replace(".", "-") + "-0", "--", "env", "PGPASSWORD=" + password,
                         "psql", "-h", "127.0.0.1", "-U", user, "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-Atc", statement).strip()
         def verify(voters):
@@ -107,7 +107,7 @@ def main():
             leader = first["observed"]["leader"]
             sql(leader, "CREATE TABLE kube_items (id INT)")
             sql(leader, "INSERT INTO kube_items VALUES (1)")
-            sql(leader, "CREATE USER kube_user WITH PASSWORD 'phase7-password'")
+            sql(leader, "CREATE USER kube_user WITH PASSWORD 'membership-test-password'")
             verify(ids[:3])
             change(ids[:4])
             original = Path(root + "/controller/state.json").read_bytes()
@@ -115,16 +115,16 @@ def main():
             assert Path(root + "/controller/state.json").read_bytes() == original
             # Partial creation: config/services succeed, PVC quota rejects the
             # learner's storage. It must not become a voter or lose its intent.
-            kube("create", "quota", "phase7-pvc-limit", "--hard=persistentvolumeclaims=3")
+            kube("create", "quota", "membership-pvc-limit", "--hard=persistentvolumeclaims=3")
             failed = invoke("reconcile")
             assert "quota" in failed.get("blocked", "").lower(), failed
-            kube("delete", "quota", "phase7-pvc-limit")
+            kube("delete", "quota", "membership-pvc-limit")
             invoke("reconcile")
             # External template drift must block, never silently overwrite it.
             kube("patch", "statefulset", "k7-d", "--type=json", "-p", '[{"op":"replace","path":"/spec/template/spec/containers/0/image","value":"invalid.invalid/neuralbase:missing"}]')
             blocked = invoke("reconcile")
             assert "configuration drift" in blocked.get("blocked", "")
-            kube("patch", "statefulset", "k7-d", "--type=json", "-p", '[{"op":"replace","path":"/spec/template/spec/containers/0/image","value":"neuralbase:phase7"}]')
+            kube("patch", "statefulset", "k7-d", "--type=json", "-p", '[{"op":"replace","path":"/spec/template/spec/containers/0/image","value":"neuralbase:membership-test"}]')
             expanded = converge()
             assert len(expanded["observed"]["committed"]["voters"]) == 4
             verify(ids[:4])
