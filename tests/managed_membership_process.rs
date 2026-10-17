@@ -21,7 +21,10 @@ struct Deployment {
 }
 impl Deployment {
     fn new() -> Self {
-        let root = tempfile::Builder::new().prefix("nb7-").tempdir().unwrap();
+        let root = tempfile::Builder::new()
+            .prefix("nb-managed-membership-")
+            .tempdir()
+            .unwrap();
         let mut used = HashSet::new();
         let mut port = || loop {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -38,7 +41,10 @@ impl Deployment {
         }
         let identity_path = root.path().join("bootstrap-users.json");
         let mut registry = UserRegistry::new();
-        registry.add_user(create_scram_user("postgres", "phase7-bootstrap-password"));
+        registry.add_user(create_scram_user(
+            "postgres",
+            "membership-bootstrap-password",
+        ));
         registry
             .save_to_file(identity_path.to_str().unwrap())
             .unwrap();
@@ -135,7 +141,7 @@ impl Deployment {
                 continue;
             };
             let mut client = self
-                .connect(id, "postgres", Some("phase7-bootstrap-password"))
+                .connect(id, "postgres", Some("membership-bootstrap-password"))
                 .unwrap_or_else(|err| {
                     panic!(
                         "connection to observed leader {id} failed before SQL statement {sql:?}: {err}"
@@ -172,12 +178,14 @@ impl Deployment {
             let deadline = Instant::now() + Duration::from_secs(10);
             loop {
                 let result = self
-                    .connect(id, "p7_user", Some("phase-seven-password"))
-                    .and_then(|mut c| c.simple_query("SELECT COUNT(*) FROM p7_items"));
+                    .connect(id, "membership_user", Some("membership-password"))
+                    .and_then(|mut c| c.simple_query("SELECT COUNT(*) FROM membership_items"));
                 if let Ok(rows) = result {
                     if rows.iter().any(
                         |r| matches!(r,SimpleQueryMessage::Row(row) if row.get(0)==Some(count)),
-                    ) && self.connect(id, "p7_user", Some("wrong-password")).is_err()
+                    ) && self
+                        .connect(id, "membership_user", Some("wrong-password"))
+                        .is_err()
                     {
                         break;
                     }
@@ -244,9 +252,9 @@ fn process_controller_scale_replace_restart_and_identity_convergence() {
     fs::write(&d.path, serde_json::to_vec(&d.config).unwrap()).unwrap();
     d.invoke("bootstrap");
     d.converge();
-    d.sql("CREATE TABLE p7_items (id INT, value TEXT)");
-    d.sql("INSERT INTO p7_items VALUES (1, 'before')");
-    d.sql("CREATE USER p7_user WITH PASSWORD 'phase-seven-password'");
+    d.sql("CREATE TABLE membership_items (id INT, value TEXT)");
+    d.sql("INSERT INTO membership_items VALUES (1, 'before')");
+    d.sql("CREATE USER membership_user WITH PASSWORD 'membership-password'");
     let first = vec!["g1.a".to_string(), "g1.b".into(), "g1.c".into()];
     d.verify(&first, "1");
     d.desired(vec![
@@ -309,7 +317,7 @@ fn process_controller_scale_replace_restart_and_identity_convergence() {
         .unwrap()
         .contains(&json!(old)));
     d.verify(&desired, "1");
-    let leader = d.sql("INSERT INTO p7_items VALUES (2, 'after')");
+    let leader = d.sql("INSERT INTO membership_items VALUES (2, 'after')");
     d.verify(&desired, "2");
     // 4 -> 3 follower contraction, with retained retired storage.
     let remove = desired
@@ -347,7 +355,7 @@ fn supervisor_process_identity_and_document_boundaries() {
     let result = Command::new("python3")
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/phase7_supervisor.py"
+            "/tests/managed_membership_supervisor.py"
         ))
         .output()
         .unwrap();
@@ -363,7 +371,7 @@ fn kubernetes_object_and_desired_revision_guards() {
     let result = Command::new("python3")
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/phase7_kubernetes_guards.py"
+            "/tests/managed_membership_kubernetes_guards.py"
         ))
         .output()
         .unwrap();
