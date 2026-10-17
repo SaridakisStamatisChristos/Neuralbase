@@ -5,61 +5,39 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](Cargo.toml)
 
-**NeuralBase is an experimental SQL engine in Rust** with a PostgreSQL wire endpoint, MVCC/RocksDB storage, vectorized/general execution, and Raft-replicated table mutations and SCRAM identity over TCP/TLS. It also includes an ONNX join-order optimizer for library use and benchmarks; the live SQL planner does not currently invoke it.
+**NeuralBase is an experimental SQL engine in Rust** with a PostgreSQL wire endpoint, MVCC/RocksDB storage, vectorized and row-oriented execution paths, and Raft-replicated persistent table mutations and SCRAM identity over TCP/TLS. It also contains an ONNX join-order optimizer for library use and benchmarks; the live SQL planner does not currently invoke it.
 
 > [!IMPORTANT]
-> NeuralBase is **pre-1.0 research/development software**. Configured clusters replicate persistent table mutations and SCRAM identity through Raft, support SQL-aware snapshot/recovery, implement learner/joint-consensus membership changes, provide the tested Phase-5 backup/restore/fresh-cluster recovery lifecycle, expose explicit session-scoped read-consistency modes, include an opt-in Phase-7 managed process/Kubernetes membership reconciliation profile, and now publish an executable Phase-8 SQL compatibility profile. Successful replicated mutations and strong read barriers wait for quorum commit plus confirmed durable local apply. This is still not a production-HA or complete PostgreSQL-compatibility claim: strong reads must be sent to the current leader, SQL transaction blocks remain unsupported, arbitrary-follower linearizable routing is not implemented, raw Helm/StatefulSet replica changes and HPA remain unsupported, timestamp-target PITR and automatic disaster recovery remain open; opt-in exact committed-index PITR is implemented, and broader SQL/security/upgrade hardening is still required.
+> NeuralBase is **pre-1.0 research/development software**. Configured clusters provide bounded, executable evidence for replicated persistent table mutations, SQL-aware snapshot/recovery, coordinated membership changes, replicated SCRAM identity, backup/restore and fresh-cluster recovery, explicit read-consistency modes, managed process/Kubernetes membership reconciliation, an executable SQL compatibility profile, and exact committed-index archived recovery. These capabilities do **not** establish production SQL HA, full PostgreSQL compatibility, SQL transaction blocks, arbitrary-follower linearizable reads, HPA-safe scaling, timestamp-target recovery, automatic disaster recovery, or hardware-independent performance guarantees.
 
-## Current highlights
+## Current capabilities
 
 - PostgreSQL wire endpoint with SCRAM authentication support.
 - Parser/binder plus vectorized and row-oriented execution paths.
 - MVCC, HLC timestamps, RocksDB persistence and bounded general execution.
-- Phase-10 evidence-driven persistent-query routing that avoids unrelated synthetic TPC-H fixture construction while preserving historical fallback semantics.
-- Phase-11 distributed-performance path with incremental RocksDB Raft persistence, pipelined replicated-write proposal locking, persistent ordered TCP/TLS peer writers with `TCP_NODELAY`, process-incarnation fencing, durable apply-frontier recovery and randomized campaign retry deadlines.
-- Deterministic replicated persistent table `CREATE`, `DROP`, `INSERT`, `UPDATE`, and `DELETE`.
+- Deterministic Raft-replicated persistent table `CREATE`, `DROP`, `INSERT`, `UPDATE`, and `DELETE`.
 - Leader-side concrete `UPDATE`/`DELETE` materialization and follower write rejection.
-- Raft acknowledgement only after quorum commit and confirmed durable state-machine apply.
+- Replicated acknowledgement only after quorum commit and confirmed durable local state-machine apply.
 - Versioned logical SQL snapshots with safe stage-before-compaction and restore-before-ACK ordering.
-- Empty-storage member reconstruction from snapshot + remaining log suffix.
-- Coordinated learner admission, catch-up, joint-consensus promotion/removal, durable finalized membership and stale-removed-node protection.
+- Empty-storage member reconstruction from snapshot plus remaining log suffix.
+- Learner admission/catch-up, joint-consensus promotion/removal, durable finalized membership and stale-removed-node protection.
 - Replicated `CREATE USER`, `ALTER USER`, and `DROP USER` with leader-side SCRAM derivation and no plaintext password in Raft identity commands.
-- Cluster authentication from authoritative replicated RocksDB identity state.
-- Strict digest-authorized migration from legacy SCRAM `users.json`; MD5 verifier material is rejected from replication.
-- Versioned NBBK offline/online backup, independent verification, crash-safe fresh-cluster restore, and authenticated NBEC backup encryption.
-- Phase-9 opt-in archived recovery stream with exact committed-Raft-index PITR, authenticated archive encryption, timeline branching, bounded rollover/retirement, and fail-closed replay.
-- Explicit `Local`, `Leader`, and `Linearizable` read modes; strong modes use a current-term replicated barrier and confirmed local apply before query execution, with explicit follower rejection and no silent downgrade.
-- Opt-in managed process/Kubernetes membership reconciliation with guarded committed-state observations, fresh learner creation/promotion, leader transfer, finalized removal, retained storage, object UID/resource-version checks and real kind lifecycle evidence.
-- Executable [`SQL_COMPATIBILITY.yaml`](SQL_COMPATIBILITY.yaml) inventory with fail-closed anti-overclaim tests.
-- PostgreSQL 16 row-for-row TPC-H Q1-Q22 reference checks plus a reusable selected semantic differential suite.
-- Phase-8 fail-closed DML/DDL/window boundaries, exactly-one-statement request handling, and explicit unsupported SQL transaction blocks.
-- Bounded typed extended-protocol parameters with NULL/text/selected binary scalar encodings, statement parameter descriptions, deterministic mutation materialization and real Rust `postgres` client evidence.
-- Docker Compose, Kubernetes StatefulSet and Helm development deployments.
-
-## Test coverage
-
-Current CI-measured Rust production-source coverage is **79.58% lines**, **77.15% functions**, and **78.63% regions** for the `cargo test --features tls --tests --locked` scope. Test, benchmark, and fuzz source files are excluded from the reported denominator.
-
-The CI coverage job publishes standard machine-readable and human-readable outputs on every run: Cobertura `coverage.xml`, `lcov.info`, LLVM JSON, a normalized `coverage-summary.json`, a text summary, and an HTML report. These reports are preserved as GitHub Actions artifacts for 30 days. PostgreSQL-reference Docker tests and the real Kind membership lifecycle remain separate validation gates and are not folded into this source-line percentage.
-
-## Performance evidence
-
-Performance claims are scoped to the exact benchmark commit and runner topology. On Phase-11 head `4fb3303534bb27c15394f2a7952207b857fad2dd`, the GitHub-hosted same-host three-durable-voter characterization completed 27/27 cases with zero failed measured operations.
-
-| Scenario | p50 | p95 | Throughput |
-| --- | ---: | ---: | ---: |
-| Replicated INSERT, 1 client | 0.704 ms | 0.731 ms | 1,436 ops/s |
-| Replicated INSERT, 8 clients | 2.168 ms | 2.993 ms | 3,561 ops/s |
-| Replicated INSERT, 32 clients | 10.131 ms | 14.253 ms | 3,041 ops/s |
-| Replicated INSERT, 64 clients | 25.150 ms | 30.750 ms | 2,538 ops/s |
-
-The persistent-only general-query route also remained effectively flat as unrelated catalog noise increased: approximately 0.255 ms p50 with 0 unrelated tables, 0.282 ms with 16, and 0.276 ms with 64. These are reproducible CI characterization results on one same-host topology, **not** production-capacity, multi-host or hardware-independent throughput claims. See [Phase-10 performance evidence](docs/PHASE10_PROFILE.md) and the checked-in Phase-11 durable benchmark harness for the measurement boundaries.
+- Versioned NBBK offline/online backup, independent verification, crash-safe fresh-cluster recovery and authenticated NBEC backup encryption.
+- Opt-in archived recovery with exact committed-Raft-index targets, authenticated archive encryption, timeline branching, bounded rollover/retirement and fail-closed replay.
+- Session-scoped `Local`, `Leader`, and `Linearizable` reads. Strong modes require the current leader, use a current-term quorum barrier, wait for confirmed durable local apply, and never silently downgrade.
+- Opt-in managed process/Kubernetes membership reconciliation with guarded committed-state observations, fresh learner creation/promotion, leader transfer, finalized removal, retained storage and Kubernetes UID/resource-version checks.
+- Executable [`SQL_COMPATIBILITY.yaml`](SQL_COMPATIBILITY.yaml) with fail-closed anti-overclaim tests and PostgreSQL 16 semantic differential validation.
+- Fail-closed unsupported DML/DDL/window semantics, exactly-one-statement request handling, and explicit unsupported SQL transaction blocks.
+- Bounded typed PostgreSQL extended-protocol parameters with NULL/text/selected binary scalar encodings, statement parameter descriptions and real Rust `postgres` client evidence.
+- Evidence-driven persistent-query routing that avoids unrelated synthetic TPC-H fixture construction while preserving historical fallback semantics.
+- Incremental RocksDB Raft persistence, pipelined replicated-write proposal locking, persistent ordered TCP/TLS peer writers with `TCP_NODELAY`, process-incarnation fencing, durable apply-frontier recovery and randomized campaign retry deadlines.
+- Docker Compose, Kubernetes StatefulSet and Helm **development** deployments.
 
 ## Quick start
 
 ### Single node
 
-Install the [native build prerequisites](CONTRIBUTING.md#development-prerequisites) first. The repository pins Rust `1.88.0` and contains the SQL server and backup/operator binaries.
+Install the [native build prerequisites](CONTRIBUTING.md#development-prerequisites). The repository pins Rust `1.88.0`.
 
 ```bash
 git clone https://github.com/SaridakisStamatisChristos/Neuralbase.git
@@ -70,7 +48,7 @@ NEURALBASE_DB_PATH=./data/neuralbase \
 cargo run --release --locked --bin neuralbase
 ```
 
-In another terminal, run a query with a PostgreSQL client:
+Then query it with a PostgreSQL client:
 
 ```bash
 psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 -U anon -d postgres -c 'SELECT 1'
@@ -78,17 +56,15 @@ psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 -U anon -d postgres -c 'SELECT 1
 
 Without `NEURALBASE_NODE_ID`, table and user mutations use standalone storage. An unset database path selects in-memory/demo operation; standalone RocksDB open failures also fall back to that mode. DML requires successfully opened storage. Clustered startup instead fails closed if durable storage is unavailable.
 
-See the [SQL compatibility limits](docs/SQL_SUPPORT.md#client-and-sql-limitations) and [`SQL_COMPATIBILITY.yaml`](SQL_COMPATIBILITY.yaml) before using application drivers. Send one statement per request. SQL transaction blocks are unsupported. Phase 8 supports only the declared typed Parse/Bind subset; it does **not** imply arbitrary PostgreSQL parameter OIDs, binary row results, full result metadata or complete extended-protocol error-state compatibility.
+Read the [SQL support boundary](docs/SQL_SUPPORT.md) and [`SQL_COMPATIBILITY.yaml`](SQL_COMPATIBILITY.yaml) before using application drivers. Send one statement per request. SQL transaction blocks are unsupported. The typed Parse/Bind subset does not imply arbitrary PostgreSQL parameter OIDs, binary row results, full result metadata or complete extended-protocol error-state compatibility.
 
-### Three-process topology
+### Three-process development topology
 
 ```bash
 docker compose up --build -d --wait
 ```
 
-The SQL endpoints are exposed on ports `5432`, `5433`, and `5434`. Each node owns independent RocksDB storage. Clustered startup requires durable RocksDB; configuring `NEURALBASE_NODE_ID` without `NEURALBASE_DB_PATH`/`DB_PATH` fails closed.
-
-These are development defaults with authentication disabled. Writes and strong reads need the current leader; neither the first port nor a load-balanced Service is guaranteed to select it. TCP health checks establish listener reachability only. See [deployment](docs/DEPLOYMENT.md) for topology, TLS and recovery details.
+The SQL endpoints are exposed on ports `5432`, `5433`, and `5434`. Each node owns independent RocksDB storage. These are development defaults with authentication disabled. Writes and strong reads need the current leader; neither the first port nor a load-balanced Service is guaranteed to select it. TCP health checks establish listener reachability only. See [deployment](docs/DEPLOYMENT.md).
 
 ## Distributed write and identity semantics
 
@@ -96,13 +72,13 @@ Persistent table mutations and clustered user DDL are leader-routed. Followers r
 
 A client-observed replicated success means the entry reached quorum commit and the local state machine confirmed durable apply. A timeout or disconnect after submission is still outcome-uncertain.
 
-For user creation/rotation, the plaintext password exists only at the SQL/leader boundary needed to derive SCRAM material. The replicated identity command contains verifier material, not plaintext. Legacy PostgreSQL MD5 hashes are not accepted into replicated identity because possession of that material is sufficient for MD5 challenge responses.
+For user creation and rotation, plaintext exists only at the SQL/leader boundary needed to derive SCRAM material. Replicated identity commands contain verifier material, not plaintext. PostgreSQL MD5 verifier material is excluded because possession of it is sufficient for MD5 challenge responses.
 
-Phase-8 typed parameters are deterministically materialized before the established parser/binder and replicated mutation path. That preserves the existing deterministic mutation boundary; it is **not** a distributed multi-statement transaction mechanism.
+Typed parameters are deterministically materialized before the established parser/binder and replicated mutation path. This preserves the deterministic mutation boundary; it is not a distributed multi-statement transaction mechanism.
 
 ## Read consistency
 
-Read consistency is session-scoped and defaults to the historical local behavior:
+Read consistency is session-scoped and defaults to local behavior:
 
 ```sql
 SET neuralbase_read_consistency = local;
@@ -110,35 +86,45 @@ SET neuralbase_read_consistency = leader;
 SET neuralbase_read_consistency = linearizable;
 ```
 
-`Local` performs no consensus coordination and may observe only the selected node's locally applied state. `Leader` and `Linearizable` require clustered mode and the current Raft leader. Both currently establish a current-term replicated control barrier and return to SQL execution only after the existing client-command acknowledgement path confirms quorum commit and local durable apply. Followers and recovering/non-serving nodes reject strong reads explicitly; NeuralBase does not silently downgrade them to `Local`.
+`Local` performs no consensus coordination and may observe only the selected node's locally applied state. `Leader` and `Linearizable` require clustered mode and the current serving Raft leader. Both currently establish a current-term replicated control barrier and proceed only after quorum commit plus confirmed durable local apply. Followers and recovering/non-serving nodes reject strong reads explicitly; NeuralBase never silently downgrades them to `Local`.
 
-The current implementation intentionally uses one Raft log barrier per strong read. It does not yet provide automatic follower-to-leader read routing, arbitrary-follower linearizable reads, or a lower-overhead ReadIndex/lease optimization.
+The implementation intentionally uses one Raft log barrier per strong read. Automatic follower-to-leader routing, arbitrary-follower linearizable reads and lower-overhead ReadIndex/lease optimization are not implemented.
 
-## Snapshot and membership semantics
+## Snapshot, membership and managed reconciliation
 
-The logical snapshot contains SQL catalog/data/apply/HLC state and replicated identity state. It is validated and durably staged before log prefix truncation. Followers restore durable state before acknowledging InstallSnapshot.
+The logical snapshot contains SQL catalog/data/apply/HLC state and replicated identity state. It is validated and durably staged before log-prefix truncation. Followers restore durable state before acknowledging `InstallSnapshot`.
 
-The consensus layer supports learners and joint old/new voter configurations. A learner must catch up before promotion; removal is coordinated and the current leader must transfer leadership before being removed. Finalized membership is persisted and removed identities are protected against stale-disk rejoin.
+The consensus layer supports learners and joint old/new voter configurations. Learners must catch up before promotion; removal is coordinated, and the current leader must transfer leadership before being removed. Finalized membership is persisted and removed identities are protected against stale-disk rejoin.
 
-The static Helm/Compose examples do **not** translate replica-count changes into membership. The opt-in [Phase-7 controller](docs/PHASE7_OPERATOR.md) sequences local processes or per-member Kubernetes StatefulSets through the guarded membership path. Exact-head CI has exercised its authenticated process lifecycle and real disposable-kind lifecycle, including partial creation failure, drift, replacement, contraction and retained storage. HPA and arbitrary raw replica changes remain disabled.
+The static Helm/Compose examples do **not** translate replica-count changes into membership. The opt-in [managed membership controller](docs/MANAGED_MEMBERSHIP.md) sequences local processes or per-member Kubernetes StatefulSets through the guarded membership protocol. HPA and arbitrary raw replica changes remain unsupported.
 
-## Legacy identity migration
+## Backup, restore and exact-index recovery
 
-Clustered deployments upgrading from per-node `users.json` must explicitly select one strict SCRAM registry as authoritative:
+NBBK/NBEC backup is distinct from internal Raft snapshots. The external CLI provides offline create/verify/restore; online backup is a tested in-process leader coordinator rather than a standalone live-server CLI. Fresh-cluster recovery establishes a new cluster generation rather than restoring in place into a live cluster.
 
-```bash
-export NEURALBASE_USERS_FILE=/path/to/users.json
-export NEURALBASE_IDENTITY_MIGRATION_SHA256="$(sha256sum "$NEURALBASE_USERS_FILE" | cut -d ' ' -f1)"
-```
+The opt-in archived recovery stream supports baseline/latest or an exact committed Raft index. It does not map wall-clock timestamps to indexes and does not perform automatic disaster detection or recovery. See the [PITR guide](docs/PITR.md) and [correctness model](docs/PITR_CORRECTNESS_MODEL.md).
 
-The selected file is parsed strictly. Duplicate users, malformed fields, MD5 credentials, or a digest mismatch fail closed. Once migration is committed, every node authenticates from replicated RocksDB identity and the legacy file is no longer the live registry.
+## Performance evidence
+
+Performance results are scoped to the recorded commit, runner and topology. The same-host three-durable-voter characterization on measured head `4fb3303534bb27c15394f2a7952207b857fad2dd` completed 27/27 cases with zero failed measured operations.
+
+| Scenario | p50 | p95 | Throughput |
+| --- | ---: | ---: | ---: |
+| Replicated INSERT, 1 client | 0.704 ms | 0.731 ms | 1,436 ops/s |
+| Replicated INSERT, 8 clients | 2.168 ms | 2.993 ms | 3,561 ops/s |
+| Replicated INSERT, 32 clients | 10.131 ms | 14.253 ms | 3,041 ops/s |
+| Replicated INSERT, 64 clients | 25.150 ms | 30.750 ms | 2,538 ops/s |
+
+The persistent-only general-query route remained effectively flat as unrelated catalog noise increased: approximately 0.255 ms p50 with 0 unrelated tables, 0.282 ms with 16, and 0.276 ms with 64. These are CI characterization results on one same-host topology, **not** production-capacity or multi-host guarantees. See the [performance profile](docs/PERFORMANCE_PROFILE.md).
+
+Historical benchmark output tokens retained solely for exact-base/head comparability are documented as historical identifiers; they are not product capability names.
 
 ## Capability snapshot
 
 | Capability | Status |
 |---|---|
 | PostgreSQL wire endpoint | Implemented, partial compatibility surface |
-| Parser + binder | Implemented, with Phase-8 fail-closed semantic guards |
+| Parser + binder | Implemented with fail-closed semantic guards |
 | Executable SQL compatibility profile | **Implemented and anti-overclaim tested** |
 | PostgreSQL-16 selected semantic differential suite | **Implemented** |
 | Typed extended Parse/Bind parameter subset | **Implemented and real-client tested** |
@@ -150,18 +136,14 @@ The selected file is parsed strictly. Duplicate users, malformed fields, MD5 cre
 | Learner/joint-consensus membership changes | **Implemented and lifecycle-tested** |
 | Replicated SCRAM user/auth DDL | **Implemented and process-tested** |
 | Legacy identity migration | **Explicit digest-selected SCRAM migration implemented** |
-| Session `Local` / `Leader` / `Linearizable` reads | **Implemented and Phase-6 tested** |
+| Session `Local` / `Leader` / `Linearizable` reads | **Implemented and tested** |
 | Linearizable arbitrary-follower reads / automatic strong-read routing | **Not implemented** |
-| Managed process / Kubernetes membership reconciliation | **Implemented and Phase-7 lifecycle-tested** |
+| Managed process / Kubernetes membership reconciliation | **Implemented and lifecycle-tested** |
 | Arbitrary Helm replica scaling / HPA | **Unsupported** |
-| Backup / restore / fresh-cluster DR | **Implemented and tested to Phase-5 scope** |
-| Exact committed-index point-in-time recovery | **Implemented and Phase-9 tested** |
-| Timestamp-target PITR / automatic DR | **Not implemented** |
+| Backup / restore / fresh-cluster recovery | **Implemented and tested** |
+| Exact committed-index point-in-time recovery | **Implemented and tested** |
+| Timestamp-target recovery / automatic DR | **Not implemented** |
 | Production SQL HA | **Not claimed** |
-
-## Configuration
-
-The [configuration reference](docs/CONFIGURATION.md) lists runtime environment variables, defaults, aliases and TLS precedence. The [operator runbook](ops/RUNBOOK.md) covers NBBK/NBEC create, verify and restore commands. Managed membership administration uses the private operator socket and controller described in the [Phase-7 guide](docs/PHASE7_OPERATOR.md).
 
 ## Verification
 
@@ -175,7 +157,7 @@ make tpch-correctness
 make sql-differential
 ```
 
-Green CI is evidence for the exact checked commit and tested scopes, not a production-readiness or universal PostgreSQL-compatibility claim. Performance or lifecycle claims should therefore identify the exact measured commit, workflow and topology; historical phase-closure records remain evidence for their bounded scopes rather than evergreen production guarantees.
+Green CI is evidence for the exact checked commit and tested scopes, not a production-readiness or universal PostgreSQL-compatibility claim.
 
 ## Documentation
 
@@ -185,18 +167,21 @@ Green CI is evidence for the exact checked commit and tested scopes, not a produ
 - [Distributed semantics](docs/DISTRIBUTED.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [Configuration reference](docs/CONFIGURATION.md)
+- [Managed membership reconciliation](docs/MANAGED_MEMBERSHIP.md)
 - [Operator recovery runbook](ops/RUNBOOK.md)
-- [Phase-9 PITR operator guide](docs/PITR.md)
+- [Exact-index PITR operator guide](docs/PITR.md)
+- [PITR correctness model](docs/PITR_CORRECTNESS_MODEL.md)
 - [Observability](observability/README.md)
 - [Testing and evidence](docs/TESTING.md)
-- [Phase-10 performance profile](docs/PHASE10_PROFILE.md)
+- [Performance profile](docs/PERFORMANCE_PROFILE.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Roadmap](ROADMAP.md)
 - [Confidence model](CONFIDENCE.md)
+- [Historical development evidence](docs/history/README.md)
 
 ## Project maturity
 
-Phases 1–11 establish the current bounded evidence surface: replicated table mutations, SQL-aware snapshot/recovery, coordinated membership, replicated identity, operator backup/restore/fresh-cluster DR, explicit tested read-consistency modes, opt-in managed process/Kubernetes membership reconciliation, an executable SQL semantic/compatibility profile, evidence-driven query-path optimization, and a durable three-voter performance pass covering incremental Raft persistence, pipelined writes and persistent/fenced peer transport. The project remains pre-1.0: these phases do not add a production-HA, full PostgreSQL compatibility, SQL transaction, HPA, timestamp-target PITR, automatic DR, arbitrary-follower linearizability, or hardware-independent performance claim.
+NeuralBase remains pre-1.0. Its current bounded evidence surface covers replicated table mutations, SQL-aware snapshot/recovery, coordinated and managed membership, replicated identity, backup/restore/fresh-cluster recovery, explicit read consistency, an executable SQL semantic/compatibility profile, exact committed-index archive recovery, query-path optimization, and durable-distributed performance work. None of those capabilities should be read as a claim of production HA or complete PostgreSQL compatibility.
 
 ## License
 
