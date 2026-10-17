@@ -156,10 +156,10 @@ fn distributed_claim_tracks_membership_identity_recovery_reads_and_managed_recon
         .expect("membership evidence must be a list");
     assert!(membership_evidence
         .iter()
-        .any(|item| item.as_str() == Some("tests/phase7_process.rs")));
+        .any(|item| item.as_str() == Some("tests/managed_membership_process.rs")));
     assert!(membership_evidence
         .iter()
-        .any(|item| item.as_str() == Some("tests/phase7_kubernetes.py")));
+        .any(|item| item.as_str() == Some("tests/managed_membership_kubernetes.py")));
 
     let identity = artifacts
         .iter()
@@ -192,7 +192,7 @@ fn distributed_claim_tracks_membership_identity_recovery_reads_and_managed_recon
         .expect("PITR evidence must be a list");
     assert!(pitr_evidence
         .iter()
-        .any(|item| item.as_str() == Some("tests/phase9_pitr_process.rs")));
+        .any(|item| item.as_str() == Some("tests/pitr_process.rs")));
 
     let reads = artifacts
         .iter()
