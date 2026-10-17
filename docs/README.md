@@ -13,9 +13,11 @@ This directory contains the technical documentation for NeuralBase. The root `RE
 | [CONFIGURATION.md](CONFIGURATION.md) | Runtime defaults, aliases, TLS precedence, admission controls and fixed limits |
 | [TESTING.md](TESTING.md) | CI gates and executable evidence limits |
 | [THREAT_MODEL.md](THREAT_MODEL.md) | Threats, trust boundaries and residual risks |
-| [PHASE7_OPERATOR.md](PHASE7_OPERATOR.md) | Opt-in managed process/Kubernetes membership reconciliation profile |
-| [PHASE7_CLOSURE.md](PHASE7_CLOSURE.md) | Phase-7 PR-head evidence and final closure conditions |
-| [PITR.md](PITR.md) | Phase-9 archived recovery stream, exact-index recovery, encryption, branching and retention |
+| [MANAGED_MEMBERSHIP.md](MANAGED_MEMBERSHIP.md) | Opt-in managed process/Kubernetes membership reconciliation profile |
+| [PITR.md](PITR.md) | Archived recovery stream, exact-index recovery, encryption, branching and retention |
+| [PITR_CORRECTNESS_MODEL.md](PITR_CORRECTNESS_MODEL.md) | Correctness boundary for committed-index archive/replay recovery |
+| [PERFORMANCE_PROFILE.md](PERFORMANCE_PROFILE.md) | Reproducible query-path performance evidence and limitations |
+| [history/](history/) | Historical implementation/closure evidence; non-authoritative for current product claims |
 | [`../ops/RUNBOOK.md`](../ops/RUNBOOK.md) | Tested backup/restore, strong-read validation and disaster-recovery operator procedure |
 | [TSAN.md](TSAN.md) | ThreadSanitizer workflow and caveats |
 | [`../observability/README.md`](../observability/README.md) | Metrics actually emitted, development services and tracing limitations |
@@ -26,8 +28,8 @@ Repository-level material includes [`../ROADMAP.md`](../ROADMAP.md), [`../CONFID
 
 ## Current distributed claim in one sentence
 
-Configured clusters replicate persistent table mutations and SCRAM identity through Raft with quorum commit + confirmed durable local apply before success; SQL-aware snapshots preserve both table and identity state; learner/joint-consensus membership transitions, Phase-5 operator backup/restore/fresh-cluster DR, Phase-6 leader-path `Local`/`Leader`/`Linearizable` read modes, the opt-in Phase-7 managed process/Kubernetes membership reconciliation profile, and Phase-9 exact committed-index archived recovery/PITR are implemented and tested within their documented scopes; this still excludes linearizable reads from arbitrary followers, automatic strong-read routing, timestamp-target PITR/automatic DR, arbitrary Helm/HPA scaling, rolling-upgrade orchestration, and production-HA claims.
+Configured clusters replicate persistent table mutations and SCRAM identity through Raft with quorum commit plus confirmed durable local apply before success; SQL-aware snapshots preserve table and identity state; learner/joint-consensus membership transitions, operator backup/restore/fresh-cluster recovery, leader-path `Local`/`Leader`/`Linearizable` read modes, opt-in managed process/Kubernetes membership reconciliation, and exact committed-index archived recovery are implemented and tested within their documented scopes. This excludes linearizable reads from arbitrary followers, automatic strong-read routing, timestamp-target recovery/automatic DR, arbitrary Helm/HPA scaling, rolling-upgrade orchestration, and production-HA claims.
 
 ## Documentation rule
 
-Changes to public behavior, configuration, persistence, consensus, identity, read consistency, deployment topology or executable evidence should update the relevant document in the same pull request. Documentation must distinguish code that exists, behavior verified by tests, deployment behavior exercised in CI, and future design intent.
+Changes to public behavior, configuration, persistence, consensus, identity, read consistency, deployment topology or executable evidence should update the relevant document in the same pull request. Documentation must distinguish code that exists, behavior verified by tests, deployment behavior exercised in CI, historical evidence, and future design intent.
